@@ -1,0 +1,14 @@
+{
+  "name": "stackcrew",
+  "owner": {
+    "name": "stackcrew"
+  },
+  "plugins": [
+    {
+      "name": "stackcrew",
+      "source": "./plugin",
+      "description": "Coding rules, per-stack skills and dev/test roles for AI agents, with a write-time guard hook (stackcrew).",
+      "version": "0.1.0"
+    }
+  ]
+}

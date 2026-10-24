@@ -32,9 +32,3 @@ test('unknown command exits 1 with usage', () => {
   assert.equal(r.status, 1);
   assert.ok(r.stderr.includes('Usage: stackcrew'));
 });
-
-test('unimplemented command prints not implemented and exits 1', () => {
-  const r = run('plugin');
-  assert.equal(r.status, 1);
-  assert.ok(r.stderr.includes('not implemented'));
-});

@@ -6,6 +6,7 @@ import { addCommand } from './commands/add.js';
 import { listCommand } from './commands/list.js';
 import { detectCommand } from './commands/detect.js';
 import { checkCommand } from './commands/check.js';
+import { pluginCommand } from './commands/plugin.js';
 
 const COMMANDS = [
   ['init', 'Set up stackcrew in the current project'],
@@ -25,8 +26,7 @@ export function usage() {
   return `Usage: stackcrew <command> [options]\n\nCommands:\n${lines.join('\n')}\n`;
 }
 
-const HANDLERS = { init: initCommand, sync: syncCommand, add: addCommand, list: listCommand, detect: detectCommand, check: checkCommand };
-const NOT_BUILT = new Set(['plugin']);
+const HANDLERS = { init: initCommand, sync: syncCommand, add: addCommand, list: listCommand, detect: detectCommand, check: checkCommand, plugin: pluginCommand };
 
 function defaultIo() {
   return {
@@ -60,10 +60,6 @@ async function dispatch(argv, io) {
     return 0;
   }
   if (Object.hasOwn(HANDLERS, command)) return HANDLERS[command](argv.slice(1), io);
-  if (NOT_BUILT.has(command)) {
-    io.stderr.write(`stackcrew ${command}: not implemented\n`);
-    return 1;
-  }
   if (command !== undefined) io.stderr.write(`Unknown command: ${command}\n`);
   io.stderr.write(usage());
   return 1;

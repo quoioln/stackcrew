@@ -1,0 +1,136 @@
+import { loadCatalog } from '../catalog/load.js';
+import { validateCatalog } from '../catalog/validate.js';
+import { readFile, writeFile } from 'node:fs/promises';
+import path from 'node:path';
+import { readProfile, writeProfile, validateProfile, PROFILE_FILE } from '../profile.js';
+import { detectProject } from '../detect.js';
+import { planJavaWiring, ARCHUNIT_VERSION } from '../wire/java.js';
+import { StackcrewError } from '../errors.js';
+import { buildContext, loadCustomRules } from '../render/context.js';
+import { renderProject } from '../render/index.js';
+import { applyOps } from '../fs/apply.js';
+import { readPackageVersion } from '../paths.js';
+
+/** Render the profile and apply it to the project. Returns the process exit code. */
+export async function runSync(projectDir, { force = false, wire = false, dryRun = false } = {}, io) {
+  const catalog = await loadCatalog();
+  const catalogErrors = validateCatalog(catalog);
+  if (catalogErrors.length > 0) {
+    for (const e of catalogErrors) io.stderr.write(`catalog error: ${e}\n`);
+    return 1;
+  }
+
+  const profile = await readProfile(projectDir);
+  if (!profile) {
+    io.stderr.write('stackcrew: no stackcrew.json found; run `stackcrew init` first\n');
+    return 1;
+  }
+  const profileErrors = validateProfile(profile, catalog);
+  if (profileErrors.length > 0) {
+    for (const e of profileErrors) io.stderr.write(`${PROFILE_FILE}: ${e}\n`);
+    return 1;
+  }
+
+  let renderProfile = profile;
+  let wiring = null;
+  if (wire) {
+    wiring = await planWire(projectDir, catalog, profile, io);
+    if (typeof wiring === 'number') return wiring;
+    if (wiring.ok) {
+      renderProfile = wiring.profile;
+      if (!dryRun) {
+        for (const e of wiring.changed) await writeFile(path.join(projectDir, e.path), e.content, 'utf8');
+        await writeProfile(projectDir, renderProfile);
+      }
+      for (const e of wiring.changed) io.stdout.write(`${dryRun ? 'would wire' : 'wired'}: ${e.path}\n`);
+      for (const n of wiring.notes) io.stdout.write(`note: ${n}\n`);
+    } else {
+      io.stdout.write('wire: no build file could be wired; add this test dependency and re-run `stackcrew sync --wire`:\n');
+      for (const n of wiring.notes) io.stdout.write(`${n}\n`);
+    }
+  }
+
+  const version = await readPackageVersion();
+  const customRules = await loadCustomRules(projectDir);
+  const ctx = buildContext(catalog, renderProfile, { customRules, cli: `npx --yes stackcrew@${version}`, version });
+  const { ops, warnings } = renderProject(ctx);
+  const report = await applyOps(projectDir, ops, { force, dryRun });
+
+  io.stdout.write(
+    `stackcrew sync: ${report.written.length} written, ${report.unchanged.length} unchanged, `
+      + `${report.deleted.length} deleted, ${report.blocks.length} block(s) updated\n`,
+  );
+  for (const w of warnings) io.stdout.write(`warning: ${w}\n`);
+  if (report.skippedModified.length > 0) {
+    for (const p of report.skippedModified) io.stdout.write(`skipped (edited by hand): ${p}\n`);
+    io.stdout.write('re-run with --force (your edits will be lost) or move them to .stackcrew/custom/\n');
+  }
+  if (ctx.stack.language === 'java' && renderProfile.java?.wired !== true) {
+    io.stdout.write('hint: run `stackcrew sync --wire` to add ArchUnit (test scope) and generate StackcrewArchitectureTest\n');
+  }
+  if (wiring?.ok) {
+    io.stdout.write(
+      'note: .stackcrew/lint/checkstyle.xml is generated but not wired; '
+        + 'add maven-checkstyle-plugin (or the Gradle checkstyle plugin) pointing at it.\n',
+    );
+  }
+  return report.skippedModified.length > 0 || (wiring && !wiring.ok) ? 1 : 0;
+}
+
+const BUILD_FILES = [
+  ['pom.xml', 'pomXml'],
+  ['build.gradle', 'buildGradle'],
+  ['build.gradle.kts', 'buildGradleKts'],
+];
+
+/** Read a build file as UTF-8 (BOM kept). Undefined if absent. Throws MARKER if not UTF-8. */
+async function readBuildFile(projectDir, rel) {
+  let buf;
+  try {
+    buf = await readFile(path.join(projectDir, rel));
+  } catch (err) {
+    if (err.code === 'ENOENT' || err.code === 'EISDIR') return undefined;
+    throw err;
+  }
+  const utf16 = buf.length >= 2 && ((buf[0] === 0xff && buf[1] === 0xfe) || (buf[0] === 0xfe && buf[1] === 0xff));
+  try {
+    if (utf16) throw new Error('utf-16');
+    return new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(buf);
+  } catch {
+    // Same check as readBlockHost in src/fs/apply.js (not exported there).
+    throw new StackcrewError('MARKER', `${rel}: not UTF-8 text; stackcrew will not edit it (convert it to UTF-8 first)`);
+  }
+}
+
+/** Plan --wire without writing. Returns an exit code (number) on failure. */
+async function planWire(projectDir, catalog, profile, io) {
+  if (catalog.stacks.get(profile.stack)?.language !== 'java') {
+    io.stderr.write('--wire: only supported for Java stacks\n');
+    return 1;
+  }
+  let basePackage = profile.java?.basePackage || '';
+  if (!basePackage) basePackage = (await detectProject(projectDir, catalog)).basePackage || '';
+  if (!basePackage) {
+    io.stderr.write('stackcrew: set java.basePackage in stackcrew.json\n');
+    return 1;
+  }
+  const originals = {};
+  for (const [rel] of BUILD_FILES) originals[rel] = await readBuildFile(projectDir, rel);
+  const input = {};
+  for (const [rel, key] of BUILD_FILES) if (originals[rel] !== undefined) input[key] = originals[rel];
+  const plan = planJavaWiring(input);
+  const notes = [...plan.notes];
+  if (Object.keys(input).length === 0) {
+    notes.push(
+      'no pom.xml or build.gradle(.kts) found; add one of:\n'
+        + `Maven:  <dependency><groupId>com.tngtech.archunit</groupId><artifactId>archunit-junit5</artifactId><version>${ARCHUNIT_VERSION}</version><scope>test</scope></dependency>\n`
+        + `Gradle: testImplementation 'com.tngtech.archunit:archunit-junit5:${ARCHUNIT_VERSION}'`,
+    );
+  }
+  return {
+    changed: plan.edits.filter((e) => e.content !== originals[e.path]),
+    notes,
+    ok: plan.wired.length > 0,
+    profile: { ...profile, java: { ...profile.java, basePackage, wired: true } },
+  };
+}

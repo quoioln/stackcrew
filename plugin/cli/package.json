@@ -1,0 +1,8 @@
+{
+  "name": "stackcrew",
+  "version": "0.1.0",
+  "type": "module",
+  "bin": {
+    "stackcrew": "bin/stackcrew.js"
+  }
+}
