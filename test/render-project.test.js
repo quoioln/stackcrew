@@ -84,14 +84,17 @@ test('architecture profile renders context, decisions and escapes pipes', async 
   assert.ok(empty.includes('_No decisions recorded yet._'));
   assert.ok(empty.includes('## How to change'));
 
-  ctx.profile.context = { 'db|kind': 'pg|mysql' };
+  ctx.profile.context = { 'db|kind': 'pg|mysql', note: ['line1', 'line2', 'line3'].join(String.fromCharCode(13, 10)) };
   ctx.profile.decisions = [
     { id: 'D1', area: 'db', decision: 'Use PG', rationale: 'Mature', rejected: ['MySQL', 'Mongo'] },
     { id: 'D2', area: 'cache', decision: 'None', rationale: 'Small', rejected: [] },
   ];
   const md = byPath(renderShared(ctx), 'docs/stackcrew/architecture-profile.md').content;
   assert.ok(md.includes('| Key | Value |'));
-  assert.ok(md.includes('| db\|kind | pg\|mysql |'));
+  const BS = String.fromCharCode(92);
+  assert.ok(md.includes('| db' + BS + '|kind | pg' + BS + '|mysql |'));
+  assert.ok(!md.includes('| db|kind |'));
+  assert.ok(md.includes('| note | line1 line2 line3 |'));
   assert.ok(md.includes('### D1 — db\n'));
   assert.ok(md.includes('**Decision:** Use PG'));
   assert.ok(md.includes('**Rejected:** MySQL; Mongo'));

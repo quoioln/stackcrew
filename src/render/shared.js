@@ -10,7 +10,10 @@ stage('stackcrew check') {
 }
 `;
 
-const cell = (s) => String(s).replaceAll('|', '\|');
+const BS = String.fromCharCode(92);
+const CR = String.fromCharCode(13);
+const LF = String.fromCharCode(10);
+const cell = (s) => String(s).replaceAll(CR + LF, ' ').replaceAll(LF, ' ').replaceAll(CR, ' ').replaceAll('|', BS + '|');
 
 function renderProfileDoc(ctx) {
   const { profile, stack, addons } = ctx;
