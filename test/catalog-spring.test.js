@@ -1,0 +1,200 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import path from 'node:path';
+import os from 'node:os';
+import { mkdtemp, rm, writeFile, mkdir, readFile } from 'node:fs/promises';
+import { fileURLToPath } from 'node:url';
+import { loadCatalog } from '../src/catalog/load.js';
+import { validateCatalog } from '../src/catalog/validate.js';
+import { detectProject } from '../src/detect.js';
+import { compileGuardRules, scanLines } from '../src/guard/scan.js';
+import { createProfile } from '../src/profile.js';
+import { buildContext } from '../src/render/context.js';
+import { renderProject } from '../src/render/index.js';
+import { renderShared } from '../src/render/shared.js';
+import { renderAgentsMdBlock } from '../src/render/agents-md.js';
+
+const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+const ALL = ['claude', 'cursor', 'codex', 'antigravity'];
+const SKILLS = ['stackcrew-spring-integration-provider', 'stackcrew-spring-rest-endpoint', 'stackcrew-spring-boot-testing'];
+
+async function withRealCatalog(fn) {
+  const saved = process.env.STACKCREW_CATALOG_DIR;
+  delete process.env.STACKCREW_CATALOG_DIR;
+  try {
+    return await fn(await loadCatalog());
+  } finally {
+    if (saved !== undefined) process.env.STACKCREW_CATALOG_DIR = saved;
+  }
+}
+
+async function withDir(files, fn) {
+  const dir = await mkdtemp(path.join(os.tmpdir(), 'sc-spring-'));
+  try {
+    for (const [rel, content] of Object.entries(files)) {
+      const abs = path.join(dir, rel);
+      await mkdir(path.dirname(abs), { recursive: true });
+      await writeFile(abs, content);
+    }
+    return await fn(dir);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+}
+
+const profileFor = (catalog, extra = {}) =>
+  createProfile({ stack: 'spring-boot', tools: ALL, mode: 'greenfield', basePackage: 'com.acme.kyc', ...extra }, catalog);
+
+test('spring-boot stack loads with 3 skills and validates', async () => {
+  await withRealCatalog(async (c) => {
+    assert.deepEqual(validateCatalog(c), []);
+    const s = c.stacks.get('spring-boot');
+    assert.equal(s.name, 'Spring Boot');
+    assert.equal(s.language, 'java');
+    assert.equal(s.category, 'backend');
+    assert.equal(s.minVersion, '3.0');
+    assert.equal(s.priority, 10);
+    assert.deepEqual(s.aliases, ['spring', 'springboot']);
+    assert.deepEqual(s.globs, ['**/*.java']);
+    assert.deepEqual(s.skills.map((k) => k.name).sort(), [...SKILLS].sort());
+    const byName = Object.fromEntries(s.skills.map((k) => [k.name, k]));
+    assert.equal(byName['stackcrew-spring-boot-testing'].kind, 'testing');
+    assert.equal(byName['stackcrew-spring-integration-provider'].kind, 'task');
+    for (const k of s.skills) {
+      assert.deepEqual(k.paths, ['**/*.java']);
+      assert.ok(k.description.includes('Spring Boot'));
+    }
+    assert.ok(c.languages.has('java'));
+  });
+});
+
+test('integration-provider skill carries the provider playbook', async () => {
+  await withRealCatalog(async (c) => {
+    const body = c.stacks.get('spring-boot').skills.find((k) => k.name === 'stackcrew-spring-integration-provider').body;
+    for (const needle of ['ProviderPort', 'Adapter', 'Map<String, ProviderPort>', 'Template Method', '@CircuitBreaker', '@Retry', '@TimeLimiter', 'WireMock', 'dempoten', 'traceId', 'Camel variant']) {
+      assert.ok(body.includes(needle), `missing ${needle}`);
+    }
+  });
+});
+
+test('detects spring-boot and not quarkus', async () => {
+  await withRealCatalog(async (c) => {
+    const pom = (extra) => `<project><parent><groupId>org.springframework.boot</groupId>${extra}</parent></project>`;
+    await withDir({ 'pom.xml': pom('') }, async (dir) => {
+      const r = await detectProject(dir, c);
+      assert.equal(r.stack, 'spring-boot');
+    });
+    await withDir({ 'build.gradle.kts': 'plugins { id("org.springframework.boot") version "3.3.0" }' }, async (dir) => {
+      assert.equal((await detectProject(dir, c)).stack, 'spring-boot');
+    });
+    await withDir({ 'pom.xml': pom('<x>io.quarkus</x>') }, async (dir) => {
+      assert.ok(!(await detectProject(dir, c)).candidates.includes('spring-boot'));
+    });
+  });
+});
+
+test('java guard blocks JsonNode, Map<String, Object>, Map<?, ?>, hardcoded URL; allows static final URL', async () => {
+  await withRealCatalog(async (c) => {
+    const guard = c.languages.get('java').guard;
+    const compiled = compileGuardRules(guard);
+    assert.deepEqual([...new Set(guard.map((r) => r.id))].sort(), ['SC-CONST', 'SC-TYPE']);
+    for (const r of guard) {
+      assert.deepEqual(r.globs, ['**/*.java']);
+      assert.deepEqual(r.excludeGlobs, ['**/src/test/**']);
+      assert.ok(r.message.includes('stackcrew-allow: ' + r.id), `${r.id} message names the waiver`);
+    }
+    const scan = (file, text) => scanLines(file, [{ line: 1, text }], compiled).map((v) => v.ruleId);
+    const MAIN = 'src/main/java/com/acme/Foo.java';
+    assert.deepEqual(scan(MAIN, '    JsonNode root = mapper.readTree(body);'), ['SC-TYPE']);
+    assert.deepEqual(scan(MAIN, '    ObjectNode n = mapper.createObjectNode();'), ['SC-TYPE']);
+    assert.deepEqual(scan(MAIN, '    Map<String, Object> payload = new HashMap<>();'), ['SC-TYPE']);
+    assert.deepEqual(scan(MAIN, '    Map< String ,Object > payload;'), ['SC-TYPE']);
+    assert.deepEqual(scan(MAIN, '    Map<?, ?> raw;'), ['SC-TYPE']);
+    assert.deepEqual(scan(MAIN, '    String url = "https://api.hyperverge.co/v1/verify";'), ['SC-CONST']);
+    assert.deepEqual(scan(MAIN, '    String url = "http://localhost:8080";'), ['SC-CONST']);
+    assert.deepEqual(scan(MAIN, '    private static final String BASE_URL = "https://api.hyperverge.co";'), []);
+    assert.deepEqual(scan(MAIN, '    Map<String, KycResult> byCode = Map.of();'), []);
+    assert.deepEqual(scan(MAIN, '    JsonNodeFactory f; // no word-boundary hit'), []);
+    assert.deepEqual(scan(MAIN, '    Map<String, Object> m; // stackcrew-allow: SC-TYPE dynamic webhook payload mapped right away'), []);
+    assert.deepEqual(scan('src/test/java/com/acme/FooTest.java', '    JsonNode root = null;'), []);
+    assert.deepEqual(scan('module/src/test/java/com/acme/FooTest.java', '    String u = "https://x.test";'), []);
+    assert.deepEqual(scan('src/main/resources/x.json', '    JsonNode'), []);
+  });
+});
+
+test('guard.json keeps its regex escapes byte-exact', async () => {
+  const text = await readFile(path.join(ROOT, 'catalog', 'languages', 'java', 'guard.json'), 'utf8');
+  const regexes = JSON.parse(text).rules.map((r) => r.regex);
+  const BS = String.fromCharCode(92);
+  assert.ok(regexes.includes(`${BS}b(JsonNode|ObjectNode)${BS}b`));
+  assert.ok(regexes.includes(`Map<${BS}s*String${BS}s*,${BS}s*Object${BS}s*>`));
+  assert.ok(regexes.includes(`Map<${BS}s*${BS}?${BS}s*,${BS}s*${BS}?${BS}s*>`));
+  assert.ok(regexes.includes(`^(?!.*${BS}bstatic${BS}s+final${BS}b).*"https?://`));
+  assert.ok(!text.includes(String.fromCharCode(8)), 'no raw backspace byte');
+});
+
+test('kafka skill is not shipped by this task; kafka-gated skills need the addon', async () => {
+  await withRealCatalog(async (c) => {
+    const s = c.stacks.get('spring-boot');
+    assert.ok(!s.skills.some((k) => k.name.includes('kafka')));
+    const ctx = buildContext(c, profileFor(c), { cli: 'npx stackcrew', version: '0.0.0' });
+    assert.deepEqual(ctx.skills.filter((k) => k.name.startsWith('stackcrew-spring-')).map((k) => k.name).sort(), [...SKILLS].sort());
+  });
+});
+
+test('wire template fills basePackage and keeps the ArchUnit rules', async () => {
+  await withRealCatalog(async (c) => {
+    const profile = profileFor(c);
+    profile.java.wired = true;
+    const ctx = buildContext(c, profile, { cli: 'npx stackcrew', version: '0.0.0' });
+    const op = renderShared(ctx).find((o) => o.path === 'src/test/java/com/acme/kyc/stackcrew/StackcrewArchitectureTest.java');
+    assert.ok(op, 'wire file rendered');
+    assert.ok(op.content.includes('package com.acme.kyc.stackcrew;'));
+    assert.ok(op.content.includes('@AnalyzeClasses(packages = "com.acme.kyc"'));
+    assert.ok(!op.content.includes('{{sc:'));
+    for (const needle of ['com.fasterxml.jackson.databind.JsonNode', 'com.fasterxml.jackson.databind.node.ObjectNode', 'JavaParameterizedType', 'getActualTypeArguments', 'org.springframework.beans.factory.annotation.Autowired']) {
+      assert.ok(op.content.includes(needle), `missing ${needle}`);
+    }
+    assert.equal(op.content.split('{').length, op.content.split('}').length, 'braces balance');
+  });
+});
+
+test('lint config carries the required modules', async () => {
+  await withRealCatalog(async (c) => {
+    const f = c.stacks.get('spring-boot').lintFiles.find((x) => x.relPath === 'checkstyle.xml');
+    assert.ok(f, 'checkstyle.xml');
+    for (const needle of ['MagicNumber', 'IllegalType', 'JsonNode', 'ObjectNode', 'MethodLength', 'value="60"', 'AvoidStarImport', 'illegalClassNames']) {
+      assert.ok(f.content.includes(needle), `missing ${needle}`);
+    }
+  });
+});
+
+test('spring-boot with all four tools renders within every budget', async () => {
+  await withRealCatalog(async (c) => {
+    const ctx = buildContext(c, profileFor(c), { cli: 'npx stackcrew', version: '0.0.0' });
+    const { ops } = renderProject(ctx); // throws StackcrewError BUDGET when over
+    const agents = renderAgentsMdBlock(ctx);
+    assert.ok(Buffer.byteLength(agents.content) <= 16000, `AGENTS block ${Buffer.byteLength(agents.content)}`);
+    for (const o of ops.filter((x) => x.path.startsWith('.cursor/rules/stackcrew/'))) {
+      assert.ok(o.content.split('\n').length <= 500, `${o.path} lines`);
+    }
+    for (const o of ops.filter((x) => x.path.startsWith('.agents/rules/stackcrew-'))) {
+      assert.ok(Buffer.byteLength(o.content) <= 24000, `${o.path} bytes`);
+    }
+    assert.ok(ops.some((o) => o.path.includes('stackcrew-spring-integration-provider')));
+  });
+});
+
+test('rule files have id, title and a bounded Essentials list', async () => {
+  await withRealCatalog(async (c) => {
+    const s = c.stacks.get('spring-boot');
+    const rules = [c.languages.get('java').rule, s.rules, s.testing];
+    assert.deepEqual(rules.map((r) => r.id), ['lang-java', 'stack-spring-boot', 'stack-spring-boot-testing']);
+    for (const r of rules) {
+      assert.ok(r.title);
+      const n = r.essentials.split('\n').filter((l) => /^- /.test(l)).length;
+      assert.ok(n >= 5 && n <= 15, `${r.id} essentials ${n}`);
+      assert.ok(Buffer.byteLength(r.body) < 24000);
+    }
+  });
+});

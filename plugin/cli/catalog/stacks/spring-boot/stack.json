@@ -1,0 +1,29 @@
+{
+  "id": "spring-boot",
+  "name": "Spring Boot",
+  "category": "backend",
+  "language": "java",
+  "minVersion": "3.0",
+  "globs": [
+    "**/*.java"
+  ],
+  "aliases": [
+    "spring",
+    "springboot"
+  ],
+  "priority": 10,
+  "detect": {
+    "files": [
+      "pom.xml",
+      "build.gradle",
+      "build.gradle.kts"
+    ],
+    "contains": [
+      "org.springframework.boot"
+    ],
+    "excludeContains": [
+      "io.quarkus"
+    ],
+    "packageDeps": []
+  }
+}

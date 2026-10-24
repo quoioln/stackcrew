@@ -1,0 +1,52 @@
+{
+  "rules": [
+    {
+      "id": "SC-TYPE",
+      "globs": [
+        "**/*.java"
+      ],
+      "excludeGlobs": [
+        "**/src/test/**"
+      ],
+      "regex": "\\b(JsonNode|ObjectNode)\\b",
+      "flags": "",
+      "message": "JsonNode/ObjectNode is an untyped payload (SC-TYPE). Define a record/DTO for the payload and map it at the boundary (ObjectMapper.treeToValue or readValue into the record). Waive only with `stackcrew-allow: SC-TYPE <reason>` at the payload deserialization point."
+    },
+    {
+      "id": "SC-TYPE",
+      "globs": [
+        "**/*.java"
+      ],
+      "excludeGlobs": [
+        "**/src/test/**"
+      ],
+      "regex": "Map<\\s*String\\s*,\\s*Object\\s*>",
+      "flags": "",
+      "message": "Map<String, Object> is an untyped bag (SC-TYPE). Define a record/DTO with named fields, or Map<String, KnownType> when every value has one type. Waive only with `stackcrew-allow: SC-TYPE <reason>` at the payload deserialization point."
+    },
+    {
+      "id": "SC-TYPE",
+      "globs": [
+        "**/*.java"
+      ],
+      "excludeGlobs": [
+        "**/src/test/**"
+      ],
+      "regex": "Map<\\s*\\?\\s*,\\s*\\?\\s*>",
+      "flags": "",
+      "message": "Map<?, ?> hides both key and value types (SC-TYPE). Use Map<KnownKey, KnownValue>, or a record/DTO when the keys are fixed. Waive only with `stackcrew-allow: SC-TYPE <reason>` at the payload deserialization point."
+    },
+    {
+      "id": "SC-CONST",
+      "globs": [
+        "**/*.java"
+      ],
+      "excludeGlobs": [
+        "**/src/test/**"
+      ],
+      "regex": "^(?!.*\\bstatic\\s+final\\b).*\"https?://",
+      "flags": "",
+      "message": "Hardcoded URL (SC-CONST). Move it to a `static final` constant, or to @ConfigurationProperties / application.yml for per-environment endpoints. Waive only with `stackcrew-allow: SC-CONST <reason>`."
+    }
+  ]
+}

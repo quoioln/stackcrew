@@ -1,0 +1,95 @@
+---
+id: stack-spring-boot-testing
+title: Spring Boot testing
+---
+# Spring Boot testing
+
+JUnit 5, AssertJ, Mockito, Spring Boot test slices, Testcontainers, WireMock. Extends the core testing rule.
+
+## Essentials
+
+- Every third-party provider has a WireMock contract test covering success, 4xx, 5xx, timeout and a malformed body. Never call a real provider from a test.
+- Use the narrowest test that proves the behavior: plain JUnit for domain logic, `@WebMvcTest` for controllers, `@DataJpaTest` for repositories, `@SpringBootTest` only for a few end-to-end paths.
+- Test the database with Testcontainers running the real engine; H2 does not stand in for PostgreSQL, MySQL or Oracle behavior.
+- Assertions use AssertJ (`assertThat`); structure each test as Arrange-Act-Assert and name it for the behavior (`rejectsExpiredToken`).
+- Mock only true boundaries with Mockito (ports, clients). Never mock the class under test, a record or a value object.
+- Cover at least three negative or edge cases per happy path, and every branch of changed logic.
+- Keep tests deterministic: inject a `Clock`, no `Thread.sleep`, no dependence on order or on the network. Use Awaitility for async results.
+- `StackcrewArchitectureTest` (ArchUnit) must stay green: no `JsonNode`/`ObjectNode`/`Map<String, Object>` in service or domain signatures, no field injection, no controller-to-repository dependency.
+
+## Slice tests
+
+```java
+@WebMvcTest(VerificationController.class)
+class VerificationControllerTest {
+    @Autowired MockMvc mvc;
+    @MockitoBean VerificationService service;
+
+    @Test
+    void rejectsBlankDocumentNumber() throws Exception {
+        mvc.perform(post("/v1/verifications").contentType(APPLICATION_JSON).content(BLANK_DOCUMENT_JSON))
+            .andExpect(status().isBadRequest())
+            .andExpect(jsonPath("$.title").exists());
+    }
+}
+```
+
+- `@MockitoBean` replaces `@MockBean` in Spring Boot 3.4+; use `@MockBean` on 3.0 to 3.3.
+- Request bodies in tests live in constants or `src/test/resources` fixtures, not inline literals repeated across tests.
+- Assert on `ProblemDetail` fields (`status`, `title`, `detail`) for error paths.
+
+## Testcontainers
+
+```java
+@DataJpaTest
+@AutoConfigureTestDatabase(replace = AutoConfigureTestDatabase.Replace.NONE)
+@Testcontainers
+class VerificationRepositoryTest {
+    @Container @ServiceConnection
+    static PostgreSQLContainer<?> postgres = new PostgreSQLContainer<>("postgres:16-alpine");
+}
+```
+
+- `@ServiceConnection` (Spring Boot 3.1+) wires the datasource without manual properties.
+- Reuse one container per test class (static), and run migrations with Flyway or Liquibase so the schema is the real one.
+
+## WireMock for providers
+
+```java
+@WireMockTest
+class HypervergeAdapterTest {
+    @Test
+    void mapsApprovedResponse(WireMockRuntimeInfo wm) {
+        stubFor(post("/v1/verify").willReturn(okJson(APPROVED_BODY)));
+        HypervergeAdapter adapter = adapterFor(wm.getHttpBaseUrl());
+
+        VerifyResult result = adapter.verify(COMMAND);
+
+        assertThat(result.status()).isEqualTo(VerificationStatus.APPROVED);
+    }
+
+    @Test
+    void failsFastOnTimeout(WireMockRuntimeInfo wm) {
+        stubFor(post("/v1/verify").willReturn(ok().withFixedDelay(READ_TIMEOUT_MS * 2)));
+        assertThatThrownBy(() -> adapterFor(wm.getHttpBaseUrl()).verify(COMMAND))
+            .isInstanceOf(ProviderUnavailableException.class);
+    }
+}
+```
+
+- One test class per adapter. The provider response bodies are fixtures that mirror the provider's documented payloads, including its error shapes.
+- Cover: success, validation error (4xx), provider outage (5xx), timeout, malformed or missing fields, and a callback delivered twice (idempotency).
+- Assert the mapping to the domain type, the typed exception for each failure, and that no provider record leaks out of the adapter.
+- Retry and circuit-breaker behavior is tested with a scenario (`inScenario`) that fails then succeeds.
+
+## ArchUnit
+
+- `StackcrewArchitectureTest` is generated into `src/test/java/<base package>/stackcrew/` when wiring is on. Do not edit it by hand; regenerate with the stackcrew `sync`.
+- Add project-specific architecture rules in a separate test class in the same package tree.
+
+## Naming and structure
+
+- Test class `XxxTest` for unit, `XxxIT` or `XxxIntegrationTest` for container-backed tests.
+- Test methods describe behavior: `returnsEmptyWhenNoMatch`, not `test1`.
+- One reason to fail per test; share setup through fixtures and builders in `src/test`, not through inheritance chains.
+- Message text and fixture values inside tests are exempt from SC-CONST; the guard skips `src/test`.
