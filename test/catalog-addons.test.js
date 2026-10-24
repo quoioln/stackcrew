@@ -98,7 +98,14 @@ test('kafka, rabbitmq and camel rules carry the verified API facts', async () =>
     for (const needle of ['DLX', 'prefetch', 'publisher confirms', 'Outbox', 'traceparent']) {
       assert.ok(rabbit.toLowerCase().includes(needle.toLowerCase()), `rabbitmq missing ${needle}`);
     }
+    for (const needle of ['RepublishMessageRecovererWithConfirms', 'getReturned() == null', 'isAck()', 'x-dead-letter-strategy', 'Overflow.rejectPublish', 'getXDeathHeader', 'isInstance', 'RabbitRetryTemplateCustomizer', 'parking']) {
+      assert.ok(rabbit.includes(needle), `rabbitmq missing ${needle}`);
+    }
+    assert.ok(!rabbit.includes('rabbitTemplate.send('), 'parking must not be a fire-and-forget send');
+    assert.ok(!rabbit.includes('getReturn()'), 'getReturn() does not exist');
     const camel = c.addons.get('camel').rules.body;
+    assert.ok(camel.includes('removeOnFailure'), 'camel key lifecycle');
+    assert.ok(!camel.includes('deletes that key'), 'no stale replay-runbook step');
     for (const needle of ['JVM', 'RouteBuilder', 'errorHandler(deadLetterChannel(', 'maximumRedeliveries', 'useOriginalMessage', 'idempotentConsumer', 'throttle(', 'JsonLibrary.Jackson', 'CamelSpringBootTest', 'camel-test-spring-junit5', 'MockEndpoints']) {
       assert.ok(camel.includes(needle), `camel missing ${needle}`);
     }

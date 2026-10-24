@@ -18,7 +18,7 @@ Applies when the profile lists the `rabbitmq` add-on. Extends the core eventing,
 - Exchange, queue and routing-key names are constants. Document the topology (exchange type, bindings, queue arguments) and version it in code.
 - Carry `traceparent` and the correlation id in message headers; enable Micrometer observation on the template and the listener container; restore both into MDC in the consumer.
 - Connections are long-lived, one channel per thread, automatic recovery on, graceful shutdown. Per-service vhost and credentials with least privilege, and TLS.
-- Alert on queue depth, unacked count, consumer count, and dead-letter queue depth.
+- Alert on queue depth, unacked count, consumer count, and parking-lot queue depth (and wait-queue depth growing).
 
 ## When RabbitMQ, and when not
 
@@ -77,6 +77,8 @@ class PaymentsTopology {
         return QueueBuilder.durable(RabbitNames.PAYMENTS_QUEUE).quorum()
             .deadLetterExchange(RabbitNames.PAYMENTS_WAIT_EXCHANGE)
             .deadLetterRoutingKey(RabbitNames.PAYMENTS_WAIT_KEY)
+            .withArgument(RabbitNames.ARG_DEAD_LETTER_STRATEGY, RabbitNames.AT_LEAST_ONCE)   // "x-dead-letter-strategy"
+            .overflow(QueueBuilder.Overflow.rejectPublish)                                     // required by at-least-once
             .build();
     }
 
@@ -86,6 +88,8 @@ class PaymentsTopology {
             .ttl(RabbitNames.RETRY_DELAY_MS)
             .deadLetterExchange(RabbitNames.PAYMENTS_EXCHANGE)
             .deadLetterRoutingKey(RabbitNames.PAYMENT_ROUTING_KEY)
+            .withArgument(RabbitNames.ARG_DEAD_LETTER_STRATEGY, RabbitNames.AT_LEAST_ONCE)
+            .overflow(QueueBuilder.Overflow.rejectPublish)
             .build();
     }
 
@@ -112,16 +116,22 @@ class PaymentsTopology {
 ```
 
 - Quorum queues (`QueueBuilder.durable(name).quorum()`) are the default for replicated, durable queues on a cluster; classic mirrored queues are legacy. They support the per-queue `ttl` used here.
-- Cap the cycles. Spring AMQP maps the broker's `x-death` count to the `retry_count` header (spring-amqp 3.2+). RabbitMQ 4 ignores `x-*` headers set by a client, so the count must come from broker dead-lettering, as here. The listener parks the message when the count reaches the cap instead of failing it again:
+- Quorum queues dead-letter at-most-once by default: a message can be lost if the dead-letter target is unavailable. `x-dead-letter-strategy: at-least-once` fixes that and requires `overflow: reject-publish` on the queue, so set both on every queue that dead-letters (main and wait).
+- Cap the cycles from the broker's `x-death` header: each pass through the wait queue increments the count. RabbitMQ 4 ignores `x-*` headers set by a client, so the count must come from broker dead-lettering, as here. Spring AMQP 3.2+ also maps it to the `retry-count` header (`MessageProperties.RETRY_COUNT`, `getRetryCount()`), which does not exist in 3.1 (Boot 3.2 and 3.3). The helper below reads `x-death` and works on both. At the cap the listener throws `AmqpRejectAndDontRequeueException`: it is in the non-retryable set, so the shared recoverer (below) parks the message with publisher confirms.
 
 ```java
 @RabbitListener(queues = RabbitNames.PAYMENTS_QUEUE)
 public void on(Message message, PaymentRequested request) {
-    if (message.getMessageProperties().getRetryCount() >= RabbitNames.MAX_REDELIVERIES) {
-        rabbitTemplate.send(RabbitNames.PAYMENTS_PARKING_EXCHANGE, RabbitNames.PAYMENTS_PARKING_KEY, message);
-        return;                                   // acked: it now waits in the parking lot
+    if (attempts(message) >= RabbitNames.MAX_REDELIVERIES) {
+        throw new AmqpRejectAndDontRequeueException("attempt cap reached");   // fatal: the recoverer parks it
     }
     handler.handle(request);                      // idempotent; throws on failure
+}
+
+static long attempts(Message message) {           // x-death: one entry per queue and reason, with a count
+    List<Map<String, ?>> deaths = message.getMessageProperties().getXDeathHeader();
+    if (deaths == null || deaths.isEmpty()) { return 0; }
+    return deaths.get(0).get(RabbitNames.X_DEATH_COUNT) instanceof Number count ? count.longValue() : 0;   // "count"
 }
 ```
 
@@ -132,14 +142,20 @@ public void on(Message message, PaymentRequested request) {
 
 ```java
 final class RetryClassification {
+    // Same families as Spring AMQP's DefaultExceptionStrategy: never retry what cannot succeed.
     static final Map<Class<? extends Throwable>, Boolean> RETRYABLE = Map.of(
         InvalidMessageException.class, false,
         AmqpRejectAndDontRequeueException.class, false,
-        MessageConversionException.class, false);
+        org.springframework.amqp.support.converter.MessageConversionException.class, false,
+        org.springframework.messaging.converter.MessageConversionException.class, false,
+        org.springframework.messaging.handler.invocation.MethodArgumentResolutionException.class, false,
+        ClassCastException.class, false);
 
     static boolean isFatal(Throwable failure) {
         for (Throwable t = failure; t != null; t = t.getCause()) {
-            if (RETRYABLE.containsKey(t.getClass())) { return true; }
+            for (Class<? extends Throwable> fatal : RETRYABLE.keySet()) {
+                if (fatal.isInstance(t)) { return true; }       // subclasses count too
+            }
         }
         return false;
     }
@@ -162,10 +178,12 @@ class RabbitRetryConfig {
 
     @Bean
     MessageRecoverer parkingRecoverer(RabbitTemplate template) {
-        var parking = new RepublishMessageRecoverer(template, RabbitNames.PAYMENTS_PARKING_EXCHANGE, RabbitNames.PAYMENTS_PARKING_KEY);
+        var parking = new RepublishMessageRecovererWithConfirms(template,
+            RabbitNames.PAYMENTS_PARKING_EXCHANGE, RabbitNames.PAYMENTS_PARKING_KEY, CachingConnectionFactory.ConfirmType.CORRELATED);
+        parking.setConfirmTimeout(RabbitNames.PARKING_CONFIRM_TIMEOUT_MS);
         return (message, cause) -> {
             if (RetryClassification.isFatal(cause)) {
-                parking.recover(message, cause);                                            // acked and parked
+                parking.recover(message, cause);          // waits for the broker confirm; acked only once parked
             } else {
                 throw new AmqpRejectAndDontRequeueException("retry via the wait queue", cause);   // rejected, dead-lettered
             }
@@ -174,16 +192,26 @@ class RabbitRetryConfig {
 }
 ```
 
-- `InvalidMessageException` is your own typed exception for a failed validation; `MessageConversionException` comes from the message converter. Throw `AmqpRejectAndDontRequeueException` only for a deliberate park.
-- `RepublishMessageRecoverer` acks the failed message and republishes it with exception headers (class, message, stack trace): treat the parking lot as sensitive and never put payload data in an exception message.
+- `InvalidMessageException` is your own typed exception for a failed validation. The two `MessageConversionException` classes (AMQP converter and Spring messaging converter) are spelled out because the simple names clash. Throw `AmqpRejectAndDontRequeueException` only for a deliberate park.
+- Parking must not lose the message, and it is the one publish that must not be fire-and-forget: `RepublishMessageRecovererWithConfirms` (spring-rabbit 2.3.3+) waits for the confirm and throws `AmqpNackReceivedException` on a nack or `AmqpMessageReturnedException` on an unroutable message. The failure leaves the original message unacked-and-rejected, so it goes back into the wait-queue cycle instead of being lost. It needs `publisher-confirm-type: correlated` and `publisher-returns: true`.
+- The recoverer republishes with exception headers (class, message, stack trace): treat the parking lot as sensitive and never put payload data in an exception message.
 - The recoverer runs when in-process retries are exhausted, or at once for a non-retryable exception.
 - Do not requeue in a tight loop. `ImmediateRequeueAmqpException` is for rare, deliberate cases.
 
 ## Publishing: confirms and returns
 
-`publisher-confirm-type: correlated`, `publisher-returns` and `mandatory` only take effect when the publisher waits for the result. Send with a `CorrelationData` (its id is the message id) and wait on `correlationData.getFuture()` with a timeout. Treat the send as failed when the future does not complete, the confirm is a nack, or the correlation data carries a returned message (an unroutable message). Check the accessor names for your Spring AMQP version: the confirm's `ack` or `isAck`, and the returned message's `getReturned` or `getReturn`.
+`publisher-confirm-type: correlated`, `publisher-returns` and `mandatory` only take effect when the publisher waits for the result. Send with a `CorrelationData` (its id is the message id), wait on `getFuture()` with a timeout, and count the send as done only when the confirm is an ack and `getReturned()` is null (a non-null value means the message was unroutable). The accessors are `CorrelationData.getFuture()`, `CorrelationData.Confirm.isAck()` and `CorrelationData.getReturned()` on Spring AMQP 3.x and 4.0 (`ack()` exists only on 4.0).
 
-- In the outbox relay, mark the row published only after a positive confirm and no returned message. Otherwise leave it for the next run: consumers dedupe, so a repeat is safe.
+```java
+CorrelationData correlation = new CorrelationData(row.messageId());
+rabbitTemplate.convertAndSend(row.exchange(), row.routingKey(), row.payload(), correlation);
+CorrelationData.Confirm confirm = correlation.getFuture().get(RabbitNames.CONFIRM_TIMEOUT_MS, TimeUnit.MILLISECONDS);   // throws on timeout
+if (confirm.isAck() && correlation.getReturned() == null) {
+    outbox.markPublished(row.id());                // only now
+}                                                  // otherwise leave the row for the next run
+```
+
+- A timeout, a nack or a returned message leaves the outbox row unpublished for the next run: consumers dedupe, so a repeat is safe.
 - A fire-and-forget `convertAndSend` without `CorrelationData` ignores the broker's answer and can lose a message silently.
 
 ## Context propagation
@@ -194,10 +222,10 @@ class RabbitRetryConfig {
 
 ## Operations
 
-- Metrics: queue depth, unacked messages, consumer count, publish confirm failures, dead-letter queue depth and age of its oldest message.
-- Runbook for a dead-lettered message: inspect, fix the cause, republish it to the main exchange with a tool, never edit the live queue.
+- Metrics: queue depth, unacked messages, consumer count, publish confirm failures, wait-queue depth, parking-lot depth and age of its oldest message.
+- Runbook for a parked message: inspect, fix the cause, republish it to the main exchange with a tool, never edit the live queue.
 - Secrets and certificates come from the environment or a vault. Use one vhost per service, with only the permissions it needs.
-- Test with Testcontainers RabbitMQ (`RabbitMQContainer` with `@ServiceConnection`, Boot 3.1+): a duplicate delivery processed once, a poison message ends in the dead-letter queue after the attempt cap, a message is not acked when the work fails.
+- Test with Testcontainers RabbitMQ (`RabbitMQContainer` with `@ServiceConnection`, Boot 3.1+): a duplicate delivery processed once, a poison message ends in the parking-lot queue after the attempt cap, a message is not acked when the work fails.
 
 ## Other stacks
 

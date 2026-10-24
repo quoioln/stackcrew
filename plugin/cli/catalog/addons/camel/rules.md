@@ -98,7 +98,7 @@ class VerifyC06Route extends RouteBuilder {                     // port entry: t
 - Use a persistent repository: the JDBC idempotent repository from `camel-sql` (a table keyed on processor name and message id; the primary key is what protects concurrent consumers), or a key-value repository on a shared store. Register it as a Spring bean and reference it by its name constant.
 - Key lifecycle, which decides whether you lose or drop messages:
   - By default Camel adds the key eagerly, before the steps run, and removes it only when the exchange fails. A process crash mid-route leaves the key behind, and the broker redelivery is then dropped as a duplicate: a lost message. Use `eager(false)` for an at-least-once source, so the key is added only after the steps succeed. The cost is that two concurrent copies of the same message can both run: that is why effect-level idempotency is still required.
-  - An exchange that the dead-letter channel or `onException(...).handled(true)` took over counts as completed, not failed, so its key stays. The replay runbook deletes that key from the repository before replaying, otherwise the replay is dropped as a duplicate. The dead-letter record keeps the request id header for that purpose.
+  - An exchange that the dead-letter channel or `onException(...).handled(true)` took over is still treated as a failure for this purpose: Camel removes its key (`removeOnFailure` is true by default). A replay of a dead-lettered message is therefore processed again and needs no key clean-up. Set `removeOnFailure(false)` only if you want a dead-lettered message to stay blocked until its key is removed by hand.
 - The repository protects the route, not the effect. A database write inside the route is still made idempotent (see `stackcrew-spring-integration-provider`, callbacks, and the `kafka` add-on consumer rules).
 - Purge old keys on a schedule that matches the longest replay window.
 
@@ -148,6 +148,6 @@ class VerifyC06RouteTest {
 
 ## Observability
 
-- Enable Camel MDC logging so `camel.routeId` and `camel.exchangeId` are in MDC next to `traceId` and the correlation id: add `camel-mdc-starter` and set `camel.mdc.enabled=true` (newer Camel 4.x). Older 4.x lines use `useMDCLogging` on the `CamelContext`.
+- Enable Camel MDC logging so `camel.routeId` and `camel.exchangeId` are in MDC next to `traceId` and the correlation id: on Camel 4.15+ add `camel-mdc-starter` and set `camel.mdc.enabled=true`. Earlier 4.x lines (4.4 to 4.14) use `useMDCLogging` on the `CamelContext`.
 - Camel metrics go through Micrometer (`camel-micrometer-starter`): route exchanges, failures and durations by route id. Tag provider routes with the provider code so the per-provider RED dashboard works (see the `observability` add-on).
 - Propagate `traceparent` and the correlation id as message headers on Kafka and RabbitMQ endpoints, and on HTTP calls.

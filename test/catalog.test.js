@@ -146,6 +146,10 @@ test('add-on languages: missing key is a CATALOG error, [] is valid, unknown lan
     assert.deepEqual(languages, ['java']);
     await writeFile(file, JSON.stringify(withoutLanguages));
     await assert.rejects(loadCatalog(tmp), (e) => e.code === 'CATALOG' && e.message.includes('addons/demo-addon/addon.json') && e.message.includes('languages'));
+    for (const bad of [null, 'java', {}]) {
+      await writeFile(file, JSON.stringify({ ...addon, languages: bad }));
+      await assert.rejects(loadCatalog(tmp), (e) => e.code === 'CATALOG' && e.message.includes('languages'), String(bad));
+    }
     await writeFile(file, JSON.stringify({ ...addon, languages: [] }));
     assert.deepEqual(validateCatalog(await loadCatalog(tmp)), []);
     await writeFile(file, JSON.stringify({ ...addon, languages: ['cobol'] }));

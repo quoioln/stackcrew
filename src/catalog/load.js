@@ -178,8 +178,8 @@ async function loadAddon(dir, folder) {
   const base = `addons/${folder}`;
   const j = await loadJsonObject(dir, `${base}/addon.json`);
   // The key must be written down on purpose: [] means every language, and a forgotten key must not silently mean that.
-  if (!('languages' in j)) {
-    throw new StackcrewError('CATALOG', `${base}/addon.json: "languages" is required (use [] for every language)`);
+  if (!Array.isArray(j.languages)) {
+    throw new StackcrewError('CATALOG', `${base}/addon.json: "languages" must be an array (use [] for every language)`);
   }
   return {
     id: str(j.id),
