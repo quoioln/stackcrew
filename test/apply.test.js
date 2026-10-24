@@ -161,7 +161,17 @@ test('missing manifest deletes nothing', async () => {
 });
 
 test('corrupt manifest deletes nothing', async () => {
-  const cases = ['{', '[]', '{"version":2,"files":{}}', '{"version":1,"files":{"x":1}}', '{"version":1}'];
+  const oldSha = sha256('old\n');
+  const oldKey = 'docs/stackcrew/old.md';
+  const cases = [
+    '{',
+    '[]',
+    '{"version":2,"files":{}}',
+    '{"version":1,"files":{"x":1}}',
+    '{"version":1}',
+    JSON.stringify({ version: 2, files: { [oldKey]: oldSha } }),
+    `{"version":1,"files":{"${oldKey}":"${oldSha}","x":1}}`
+  ];
   for (const bad of cases) {
     const dir = await tmp();
     await mkdir(path.join(dir, '.stackcrew'), { recursive: true });
@@ -224,6 +234,63 @@ test('rejects bad paths with RENDER and writes nothing', async () => {
     assert.equal(await exists(path.join(dir, 'docs')), false);
     assert.equal(await exists(path.join(dir, MANIFEST_PATH)), false);
   }
+});
+
+test('non-UTF-8 block hosts are refused and left byte-identical', async () => {
+  const hosts = {
+    'utf16le.md': Buffer.concat([Buffer.from([0xff, 0xfe]), Buffer.from('hi\n', 'utf16le')]),
+    'utf16be.md': Buffer.from([0xfe, 0xff, 0x00, 0x68]),
+    'latin1.md': Buffer.from([0x63, 0x61, 0x66, 0xe9])
+  };
+  for (const [name, bytes] of Object.entries(hosts)) {
+    const dir = await tmp();
+    await writeFile(path.join(dir, name), bytes);
+    await assert.rejects(
+      applyOps(dir, [owned('docs/stackcrew/a.md', 'A'), block(name, 'B')]),
+      (err) => err.code === 'MARKER' && err.message.includes('not UTF-8 text'),
+      name
+    );
+    assert.deepEqual(await readFile(path.join(dir, name)), bytes);
+    assert.equal(await exists(path.join(dir, 'docs')), false);
+    assert.equal(await exists(path.join(dir, MANIFEST_PATH)), false);
+  }
+});
+
+test('UTF-8 BOM host keeps its bytes before the block', async () => {
+  const dir = await tmp();
+  const head = Buffer.concat([Buffer.from([0xef, 0xbb, 0xbf]), Buffer.from('café\n', 'utf8')]);
+  await writeFile(path.join(dir, 'AGENTS.md'), head);
+  await applyOps(dir, [block('AGENTS.md', 'B')]);
+  const out = await readFile(path.join(dir, 'AGENTS.md'));
+  assert.deepEqual(out.subarray(0, head.length), head);
+  assert.equal(out.subarray(head.length).toString('utf8'), `\n${B}\nB\n${E}\n`);
+});
+
+test('case-only path change does not delete the kept file', async () => {
+  const dir = await tmp();
+  await applyOps(dir, [owned('docs/stackcrew/A.md', 'X\n')]);
+  const r = await applyOps(dir, [owned('docs/stackcrew/a.md', 'X\n')]);
+  assert.deepEqual(r.deleted, []);
+  assert.equal(await exists(path.join(dir, 'docs/stackcrew/a.md')), true);
+  const m = JSON.parse(await readFile(path.join(dir, MANIFEST_PATH), 'utf8'));
+  assert.deepEqual(Object.keys(m.files), ['docs/stackcrew/a.md']);
+});
+
+test('rejects case-only duplicate paths', async () => {
+  const dir = await tmp();
+  await assert.rejects(
+    applyOps(dir, [owned('docs/stackcrew/A.md', '1'), owned('docs/stackcrew/a.md', '2')]),
+    { code: 'RENDER' }
+  );
+});
+
+test('markers mentioned inline in prose are not markers', () => {
+  const both = `Use \`${B}\` and \`${E}\` to mark.\n`;
+  assert.equal(upsertMarkedBlock(both, 'X'), `${both}\n${B}\nX\n${E}\n`);
+  const one = `Mention ${B} only.\n`;
+  assert.equal(upsertMarkedBlock(one, 'X'), `${one}\n${B}\nX\n${E}\n`);
+  const withBlock = `see ${B} here\n${B}\nold\n${E}\nend\n`;
+  assert.equal(upsertMarkedBlock(withBlock, 'N'), `see ${B} here\n${B}\nN\n${E}\nend\n`);
 });
 
 test('rejects path traversal', async () => {

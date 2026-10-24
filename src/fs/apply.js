@@ -35,6 +35,28 @@ function diskHash(text) {
   return sha256(text);
 }
 
+/** Read a block host as UTF-8 text (BOM kept). Null if absent. Throws MARKER if not UTF-8. */
+async function readBlockHost(abs, rel) {
+  let buf;
+  try {
+    buf = await readFile(abs);
+  } catch (err) {
+    if (err.code === 'ENOENT') return null;
+    if (err.code === 'EISDIR') throw new StackcrewError('RENDER', `Cannot update a block in ${rel}: it is not a file`);
+    throw err;
+  }
+  const utf16 = buf.length >= 2 && ((buf[0] === 0xff && buf[1] === 0xfe) || (buf[0] === 0xfe && buf[1] === 0xff));
+  try {
+    if (utf16) throw new Error('utf-16');
+    return new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(buf);
+  } catch {
+    throw new StackcrewError(
+      'MARKER',
+      `${rel}: not UTF-8 text; stackcrew will not edit it (convert it to UTF-8 first)`
+    );
+  }
+}
+
 async function readManifest(abs) {
   let raw;
   try {
@@ -81,19 +103,16 @@ export async function applyOps(projectDir, ops, { force = false, dryRun = false 
   for (const op of ops) {
     const problem = pathProblem(op.path);
     if (problem) throw new StackcrewError('RENDER', `Unsafe output path ${JSON.stringify(op.path)}: ${problem}`);
-    if (seen.has(op.path)) throw new StackcrewError('RENDER', `Duplicate output path: ${op.path}`);
-    seen.add(op.path);
+    const folded = op.path.toLowerCase();
+    if (seen.has(folded)) throw new StackcrewError('RENDER', `Duplicate output path: ${op.path}`);
+    seen.add(folded);
   }
 
   // Phase 2: compute block results (MARKER errors abort here, before any write).
   const blockWrites = [];
   const blocks = [];
   for (const op of ops.filter((o) => o.kind === 'block')) {
-    const existing = await readText(abs(op.path));
-    if (existing !== null && typeof existing === 'object') {
-      throw new StackcrewError('RENDER', `Cannot update a block in ${op.path}: it is not a file`);
-    }
-    const before = existing ?? '';
+    const before = (await readBlockHost(abs(op.path), op.path)) ?? '';
     const after = upsertMarkedBlock(before, op.content);
     blocks.push(op.path);
     if (after !== before) blockWrites.push({ path: op.path, text: after });
@@ -103,6 +122,12 @@ export async function applyOps(projectDir, ops, { force = false, dryRun = false 
   const manifest = await readManifest(abs(MANIFEST_PATH));
   const oldFiles = manifest.files;
   const newFiles = {};
+  // Case-insensitive filesystems: A.md and a.md are the same file.
+  const oldHashFor = (p) => {
+    if (p in oldFiles) return oldFiles[p];
+    const key = Object.keys(oldFiles).find((k) => k.toLowerCase() === p.toLowerCase());
+    return key === undefined ? undefined : oldFiles[key];
+  };
 
   // Phase 4: decide owned ops.
   const written = [];
@@ -120,13 +145,14 @@ export async function applyOps(projectDir, ops, { force = false, dryRun = false 
     } else if (onDisk === newHash) {
       unchanged.push(op.path);
       newFiles[op.path] = newHash;
-    } else if (onDisk === oldFiles[op.path] || force) {
+    } else if (onDisk === oldHashFor(op.path) || force) {
       written.push(op.path);
       fileWrites.push({ path: op.path, text });
       newFiles[op.path] = newHash;
     } else {
       skippedModified.push(op.path);
-      if (op.path in oldFiles) newFiles[op.path] = oldFiles[op.path];
+      const old = oldHashFor(op.path);
+      if (old !== undefined) newFiles[op.path] = old;
     }
   }
 
@@ -135,7 +161,7 @@ export async function applyOps(projectDir, ops, { force = false, dryRun = false 
   const deletions = [];
   if (manifest.status === 'ok') {
     for (const [p, oldHash] of Object.entries(oldFiles)) {
-      if (seen.has(p) || pathProblem(p)) continue;
+      if (seen.has(p.toLowerCase()) || pathProblem(p)) continue;
       const onDisk = diskHash(await readText(abs(p)));
       if (onDisk === null) continue;
       if (onDisk === oldHash || force) {
