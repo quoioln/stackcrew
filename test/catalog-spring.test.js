@@ -45,7 +45,7 @@ async function withDir(files, fn) {
 const profileFor = (catalog, extra = {}) =>
   createProfile({ stack: 'spring-boot', tools: ALL, mode: 'greenfield', basePackage: 'com.acme.kyc', ...extra }, catalog);
 
-test('spring-boot stack loads with 3 skills and validates', async () => {
+test('spring-boot stack loads with 4 skills (kafka one gated by its add-on) and validates', async () => {
   await withRealCatalog(async (c) => {
     assert.deepEqual(validateCatalog(c), []);
     const s = c.stacks.get('spring-boot');
@@ -56,7 +56,7 @@ test('spring-boot stack loads with 3 skills and validates', async () => {
     assert.equal(s.priority, 10);
     assert.deepEqual(s.aliases, ['spring', 'springboot']);
     assert.deepEqual(s.globs, ['**/*.java']);
-    assert.deepEqual(s.skills.map((k) => k.name).sort(), [...SKILLS].sort());
+    assert.deepEqual(s.skills.map((k) => k.name).sort(), [...SKILLS, 'stackcrew-spring-kafka-consumer'].sort());
     const byName = Object.fromEntries(s.skills.map((k) => [k.name, k]));
     assert.equal(byName['stackcrew-spring-boot-testing'].kind, 'testing');
     assert.equal(byName['stackcrew-spring-integration-provider'].kind, 'task');
@@ -71,7 +71,7 @@ test('spring-boot stack loads with 3 skills and validates', async () => {
 test('integration-provider skill carries the provider playbook', async () => {
   await withRealCatalog(async (c) => {
     const body = c.stacks.get('spring-boot').skills.find((k) => k.name === 'stackcrew-spring-integration-provider').body;
-    for (const needle of ['ProviderPort', 'Adapter', 'Map<String, ProviderPort>', 'Template Method', '@CircuitBreaker', '@Retry', '@TimeLimiter', 'WireMock', 'dempoten', 'traceId', 'Camel variant', 'ProviderRejectedException', 'ResourceAccessException', 'CircuitBreakerRegistry', 'ignoreExceptions', 'enableRandomizedWait', 'BulkheadRegistry', 'ON CONFLICT', 'by bean name', 'configs:', 'baseConfig: default', '@Valid Endpoint', 'serialVersionUID', 'OUTCOME_ERROR', 'fallbackExecution', '@Async', 'ON DUPLICATE KEY UPDATE id = id']) {
+    for (const needle of ['ProviderPort', 'Adapter', 'Map<String, ProviderPort>', 'Template Method', '@CircuitBreaker', '@Retry', '@TimeLimiter', 'WireMock', 'dempoten', 'traceId', 'Camel variant', 'ProviderRejectedException', 'ResourceAccessException', 'CircuitBreakerRegistry', 'ignoreExceptions', 'enableRandomizedWait', 'BulkheadRegistry', 'ON CONFLICT', 'by bean name', 'configs:', 'baseConfig: default', '@Valid Endpoint', 'serialVersionUID', 'OUTCOME_ERROR', 'fallbackExecution', '@Async', 'ON DUPLICATE KEY UPDATE id = id', 'useAffectedRows=true']) {
       assert.ok(body.includes(needle), `missing ${needle}`);
     }
     assert.ok(!body.includes('public final VerifyResult verify'), 'template method must not be final (CGLIB)');
@@ -166,10 +166,8 @@ test('guard.json keeps its regex escapes byte-exact', async () => {
   assert.ok(!text.includes(String.fromCharCode(8)), 'no raw backspace byte');
 });
 
-test('kafka skill is not shipped by this task; kafka-gated skills need the addon', async () => {
+test('without add-ons only the three base spring skills are rendered', async () => {
   await withRealCatalog(async (c) => {
-    const s = c.stacks.get('spring-boot');
-    assert.ok(!s.skills.some((k) => k.name.includes('kafka')));
     const ctx = buildContext(c, profileFor(c), { cli: 'npx stackcrew', version: '0.0.0' });
     assert.deepEqual(ctx.skills.filter((k) => k.name.startsWith('stackcrew-spring-')).map((k) => k.name).sort(), [...SKILLS].sort());
   });

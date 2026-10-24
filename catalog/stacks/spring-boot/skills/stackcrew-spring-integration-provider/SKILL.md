@@ -394,6 +394,7 @@ class ProviderEventInbox {
 }
 ```
 
+   On MySQL, `INSERT ... ON DUPLICATE KEY UPDATE id = id` reports a duplicate as 0 affected rows only when MySQL Connector/J runs with `useAffectedRows=true` (a JDBC URL parameter). Without it a duplicate returns 1 (matched rows), `saveIfNew` says "new" and the event is processed twice. Set it on the datasource URL and cover it with an integration test that inserts the same event twice.
 3. Return 200 immediately, also for a duplicate. Do the work after the acknowledgement, never before it.
 4. Process from the persisted row, not from the request. Simplest and safest: an inbox poller (`@Scheduled`, claim `NEW` rows with `FOR UPDATE SKIP LOCKED`, mark `DONE`). If you prefer events, the pieces must all be present, or the listener silently never runs:
 

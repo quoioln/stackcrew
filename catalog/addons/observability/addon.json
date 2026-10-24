@@ -1,0 +1,11 @@
+{
+  "id": "observability",
+  "name": "Observability (Loki, Grafana)",
+  "languages": [],
+  "detect": {
+    "files": [],
+    "contains": [],
+    "excludeContains": [],
+    "packageDeps": []
+  }
+}

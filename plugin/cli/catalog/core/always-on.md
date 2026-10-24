@@ -21,7 +21,7 @@ Then continue to code without waiting, except at the Decision gate.
 ## SC-TYPE
 - Do: model data with a named type (class, record, DTO, struct, interface) and validate at the boundary (schema, bean validation, struct tags).
 - Don't: let untyped values escape or serve as DTOs: `any`/`unknown` leaking past the boundary (TS); `JsonNode`, `ObjectNode`, `Map<String, Object>`, `Map<?, ?>`, `Object` (Java); `interface{}`/`any`, `map[string]interface{}` (Go).
-- Exception: right where a dynamic payload is deserialized, then map to a typed model immediately. Mark it with `stackcrew-allow: SC-TYPE <reason>`.
+- Exception: (a) the point where a truly dynamic payload is first deserialized (map it to a typed model at once); (b) a framework-required signature (e.g. Kafka client config `Map<String, Object>`, `Jwt.getClaims()`). Mark either with `stackcrew-allow: SC-TYPE <reason>` on the same line.
 
 ## SC-CONST
 - Do: put literals in a named constant, enum or config. Search for an existing constant before creating one. Group constants by domain.

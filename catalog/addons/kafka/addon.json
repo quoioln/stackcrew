@@ -1,0 +1,11 @@
+{
+  "id": "kafka",
+  "name": "Apache Kafka",
+  "languages": [],
+  "detect": {
+    "files": ["pom.xml", "build.gradle", "build.gradle.kts", "package.json", "go.mod"],
+    "contains": ["spring-kafka", "kafka-clients", "segmentio/kafka-go", "confluent-kafka-go"],
+    "excludeContains": [],
+    "packageDeps": ["kafkajs"]
+  }
+}

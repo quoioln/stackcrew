@@ -46,6 +46,9 @@ test('always-on content specifics', async () => {
   assert.ok(text.includes('JsonNode'));
   assert.ok(/Map<\?, ?\?>/.test(text));
   assert.ok(text.includes('stackcrew-allow: SC-TYPE'));
+  const typeSec = text.split('## SC-TYPE')[1].split('\n## ')[0];
+  assert.ok(typeSec.includes('first deserialized'), 'exception (a): dynamic payload');
+  assert.ok(typeSec.includes('framework-required signature') && typeSec.includes('Jwt.getClaims()') && typeSec.includes('Kafka client config'), 'exception (b): framework signature');
   const pre = text.split('## SC-PREFLIGHT')[1].split('\n## ')[0];
   assert.equal(pre.split('\n').filter((l) => /^\d. /.test(l)).length, 5);
   const ts = await readFile(path.join(ROOT, 'catalog', 'core', 'rules', 'type-safety.md'), 'utf8');

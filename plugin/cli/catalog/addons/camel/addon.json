@@ -1,0 +1,11 @@
+{
+  "id": "camel",
+  "name": "Apache Camel",
+  "languages": ["java"],
+  "detect": {
+    "files": ["pom.xml", "build.gradle", "build.gradle.kts"],
+    "contains": ["camel-"],
+    "excludeContains": [],
+    "packageDeps": []
+  }
+}

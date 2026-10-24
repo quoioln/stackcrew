@@ -1,0 +1,11 @@
+{
+  "id": "rabbitmq",
+  "name": "RabbitMQ",
+  "languages": [],
+  "detect": {
+    "files": ["pom.xml", "build.gradle", "build.gradle.kts", "package.json", "go.mod"],
+    "contains": ["spring-boot-starter-amqp", "amqp091-go"],
+    "excludeContains": [],
+    "packageDeps": ["amqplib"]
+  }
+}

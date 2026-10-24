@@ -159,8 +159,9 @@ export function validateCatalog(catalog) {
     const src = `addons/${folder}/addon.json`;
     if (a.id !== folder) errs.push(`${src}: id "${a.id}" must equal its folder "${folder}"`);
     if (!isStr(a.name)) errs.push(`${src}: name is required`);
-    if (!isStrArray(a.languages) || a.languages.length === 0) {
-      errs.push(`${src}: languages must be a non-empty string array`);
+    // An empty list means the add-on applies to every language (see validateProfile and detectProject).
+    if (!isStrArray(a.languages)) {
+      errs.push(`${src}: languages must be a string array (empty = all languages)`);
     } else {
       for (const l of a.languages) if (!catalog.languages.has(l)) errs.push(`${src}: unknown language "${l}"`);
     }
