@@ -305,3 +305,13 @@ test('rejects duplicate paths', async () => {
     { code: 'RENDER' }
   );
 });
+
+test('reports unchanged blocks separately (blocks stays the full list)', async () => {
+  const dir = await tmp();
+  const r1 = await applyOps(dir, [block('CLAUDE.md', 'blk')]);
+  assert.deepEqual([r1.blocks, r1.blocksUnchanged], [['CLAUDE.md'], []]);
+  const r2 = await applyOps(dir, [block('CLAUDE.md', 'blk')]);
+  assert.deepEqual([r2.blocks, r2.blocksUnchanged], [['CLAUDE.md'], ['CLAUDE.md']]);
+  const r3 = await applyOps(dir, [block('CLAUDE.md', 'blk2')]);
+  assert.deepEqual([r3.blocks, r3.blocksUnchanged], [['CLAUDE.md'], []]);
+});

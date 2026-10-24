@@ -11,7 +11,7 @@ import { pluginCommand } from './commands/plugin.js';
 const COMMANDS = [
   ['init', 'Set up stackcrew in the current project'],
   ['sync', 'Regenerate rules, skills and roles from the profile'],
-  ['add', 'Add a stack or addon to the profile'],
+  ['add', 'Add add-on(s) to the profile and re-sync'],
   ['list', 'List available stacks and addons'],
   ['detect', 'Detect the project stack'],
   ['check', 'Check changed files against guard rules'],

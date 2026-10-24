@@ -27,6 +27,12 @@ test('help lists every command', () => {
   }
 });
 
+test('help describes add as adding add-ons', () => {
+  const r = run('help');
+  assert.ok(r.stdout.includes('Add add-on(s) to the profile and re-sync'));
+  assert.ok(!r.stdout.includes('Add a stack or addon'));
+});
+
 test('unknown command exits 1 with usage', () => {
   const r = run('bogus');
   assert.equal(r.status, 1);

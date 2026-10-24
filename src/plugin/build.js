@@ -92,6 +92,7 @@ export async function buildPlugin({ pkgRoot, outRoot, version, catalog }) {
       name: 'stackcrew',
       description: DESCRIPTION,
       version,
+      license: 'MIT',
       keywords: ['rules', 'skills', 'design-patterns', 'spring-boot', 'guard'],
     }),
   );

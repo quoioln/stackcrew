@@ -2,6 +2,7 @@
   "name": "stackcrew",
   "description": "Coding rules, per-stack skills and dev/test roles for AI agents, with a write-time guard hook (stackcrew).",
   "version": "0.1.0",
+  "license": "MIT",
   "keywords": [
     "rules",
     "skills",

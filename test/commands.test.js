@@ -51,7 +51,7 @@ test('init with flags writes profile and rendered files', async () => {
   }
   assert.match(r.out, /stackcrew sync: \d+ written, \d+ unchanged, \d+ deleted, \d+ block\(s\) updated/);
   assert.match(r.out, /hint: run `stackcrew sync --wire`/);
-  assert.match(r.out, /next: in Claude Code run \/stackcrew:init/);
+  assert.match(r.out, /next: with the stackcrew Claude Code plugin installed, run \/stackcrew:init for the architecture interview \(without the plugin, Claude Code has no interview skill; see README\)/);
   assert.match(r.out, /next: ask your agent to use the skill stackcrew-init/);
   const profile = await readJson(path.join(dir, 'stackcrew.json'));
   assert.equal(profile.stack, 'demo-java');
@@ -273,4 +273,49 @@ test('init --force never force-overwrites hand-edited generated files', async ()
   assert.equal(r.code, 1);
   assert.ok(r.out.includes(`skipped (edited by hand): ${CORE}`), r.out);
   assert.equal(await readFile(file, 'utf8'), edited);
+});
+
+const SHADOW = /claude-md-shadows-agents-md: creating CLAUDE\.md makes recent Claude Code versions stop reading your existing AGENTS\.md; add "@AGENTS\.md" to CLAUDE\.md yourself/;
+
+test('warns when creating CLAUDE.md would shadow an AGENTS.md with team rules', async () => {
+  const dir = await tmp();
+  await writeFile(path.join(dir, 'AGENTS.md'), '# Team rules\n\nUse tabs.\n');
+  const r = await run(dir, 'init', '--stack', 'demo-java', '--tools', 'claude');
+  assert.equal(r.code, 0, r.err + r.out);
+  assert.match(r.out, SHADOW);
+  assert.ok(existsSync(path.join(dir, 'CLAUDE.md')));
+  assert.ok(!(await readFile(path.join(dir, 'CLAUDE.md'), 'utf8')).includes('@AGENTS.md'), 'must not add @AGENTS.md');
+  const again = await run(dir, 'sync');
+  assert.doesNotMatch(again.out, SHADOW, 'CLAUDE.md exists now: no warning');
+});
+
+test('no shadow warning with an existing .claude/CLAUDE.md, without AGENTS.md, or with only a stackcrew block', async () => {
+  const sdlc = await tmp();
+  await mkdir(path.join(sdlc, '.claude'));
+  await writeFile(path.join(sdlc, '.claude/CLAUDE.md'), '## SDLC Workflow\n');
+  await writeFile(path.join(sdlc, 'AGENTS.md'), '# Team rules\n');
+  const a = await run(sdlc, 'init', '--stack', 'demo-java', '--tools', 'claude');
+  assert.doesNotMatch(a.out, SHADOW);
+
+  const none = await tmp();
+  const b = await run(none, 'init', '--stack', 'demo-java', '--tools', 'claude');
+  assert.doesNotMatch(b.out, SHADOW);
+
+  const own = await tmp();
+  await writeFile(path.join(own, 'AGENTS.md'), '<!-- stackcrew:begin -->\nold\n<!-- stackcrew:end -->\n');
+  const c = await run(own, 'init', '--stack', 'demo-java', '--tools', 'claude');
+  assert.doesNotMatch(c.out, SHADOW);
+
+  const noClaude = await tmp();
+  await writeFile(path.join(noClaude, 'AGENTS.md'), '# Team rules\n');
+  const d = await run(noClaude, 'init', '--stack', 'demo-java', '--tools', 'codex');
+  assert.doesNotMatch(d.out, SHADOW);
+});
+
+test('sync reports only changed blocks', async () => {
+  const dir = await tmp();
+  const first = await run(dir, 'init', '--stack', 'demo-java');
+  assert.match(first.out, /[1-9]\d* block\(s\) updated/);
+  const again = await run(dir, 'sync');
+  assert.match(again.out, /\b0 block\(s\) updated/);
 });

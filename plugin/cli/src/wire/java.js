@@ -42,6 +42,9 @@ function pomDependencyLines(indent) {
 
 const POM_SNIPPET = pomDependencyLines('').join('\n');
 
+const MULTI_MODULE =
+  'multi-module Maven: wire ArchUnit in the module that holds the application classes (stackcrew wires single-module builds only)';
+
 const DECLARED = (file) => `${file} already declares archunit-junit5; not adding it again`;
 
 /** True when text (comments already blanked) declares archunit-junit5 by hand. */
@@ -58,6 +61,7 @@ function planPom(text) {
   for (const tag of ['dependencyManagement', 'build', 'profiles']) {
     masked = blankAll(masked, new RegExp(`<${tag}\\b[^>]*>[\\s\\S]*?</${tag}\\s*>`, 'g'));
   }
+  if (/<packaging>\s*pom\s*<\/packaging>/.test(masked) || /<modules\b/.test(masked)) return { note: [MULTI_MODULE, POM_SNIPPET].join(':\n') };
   if (declaresArchunit(masked)) return { note: DECLARED('pom.xml'), carries: true };
   const open = /<dependencies\s*>/.exec(masked);
   const close = open ? /<\/dependencies\s*>/.exec(masked.slice(open.index)) : null;

@@ -6,6 +6,9 @@ const CURSOR_DIR = '.cursor/skills';
 export const CURSOR_DUPLICATE_WARNING =
   'cursor-duplicate-skills: Cursor reads both .claude/skills and .agents/skills, so stackcrew skills may appear twice in Cursor.';
 
+export const CURSOR_DUPLICATE_AGENTS_WARNING =
+  'cursor-duplicate-agents: Cursor reads .codex/agents as well as .claude/.cursor agents, so stackcrew role agents may appear twice in Cursor.';
+
 /**
  * Decide which skill directories receive stackcrew skills for the chosen tools.
  * @param {string[]} tools
@@ -33,6 +36,8 @@ export function planSkillDirs(tools) {
   const commandDirs = generic.map((dir) => ({ dir, format: 'generic' }));
   if (cursor && claude && !generic.includes(AGENTS_DIR)) commandDirs.push({ dir: CURSOR_DIR, format: 'generic' });
 
-  const warnings = cursor && claude && codex ? [CURSOR_DUPLICATE_WARNING] : [];
+  const warnings = [];
+  if (cursor && claude && codex) warnings.push(CURSOR_DUPLICATE_WARNING);
+  if (cursor && codex) warnings.push(CURSOR_DUPLICATE_AGENTS_WARNING);
   return { taskDirs, commandDirs, warnings };
 }

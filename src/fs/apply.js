@@ -111,11 +111,13 @@ export async function applyOps(projectDir, ops, { force = false, dryRun = false 
   // Phase 2: compute block results (MARKER errors abort here, before any write).
   const blockWrites = [];
   const blocks = [];
+  const blocksUnchanged = [];
   for (const op of ops.filter((o) => o.kind === 'block')) {
     const before = (await readBlockHost(abs(op.path), op.path)) ?? '';
     const after = upsertMarkedBlock(before, op.content);
     blocks.push(op.path);
     if (after !== before) blockWrites.push({ path: op.path, text: after });
+    else blocksUnchanged.push(op.path);
   }
 
   // Phase 3: manifest.
@@ -174,7 +176,7 @@ export async function applyOps(projectDir, ops, { force = false, dryRun = false 
     }
   }
 
-  const report = { written, unchanged, deleted, skippedModified, blocks, manifestStatus: manifest.status };
+  const report = { written, unchanged, deleted, skippedModified, blocks, blocksUnchanged, manifestStatus: manifest.status };
   if (dryRun) return report;
 
   // Phase 6/7: perform writes, then deletions, then the manifest.

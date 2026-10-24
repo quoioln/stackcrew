@@ -41,6 +41,8 @@ test('builds marketplace, manifest, hooks, skills and bundled cli', async () => 
   assert.equal(market.plugins[0].version, version);
   const manifest = JSON.parse(read(outRoot, 'plugin/.claude-plugin/plugin.json'));
   assert.equal(manifest.name, 'stackcrew');
+  assert.equal(manifest.license, 'MIT');
+  assert.equal(manifest.author, undefined, 'author is left to the user');
   const pkg = JSON.parse(read(outRoot, 'plugin/cli/package.json'));
   assert.deepEqual(pkg, { name: 'stackcrew', version, type: 'module', bin: { stackcrew: 'bin/stackcrew.js' } });
   assert.ok(!written.some((p) => p.endsWith('.test.js')), 'no test files bundled');

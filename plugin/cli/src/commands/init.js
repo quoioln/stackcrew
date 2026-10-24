@@ -99,7 +99,7 @@ export async function initCommand(args, io) {
 
   const code = await runSync(io.cwd, { force: false, wire: values.wire, dryRun: false }, io);
   if (code === 0) {
-    if (tools.includes('claude')) io.stdout.write('next: in Claude Code run /stackcrew:init to run the architecture interview\n');
+    if (tools.includes('claude')) io.stdout.write('next: with the stackcrew Claude Code plugin installed, run /stackcrew:init for the architecture interview (without the plugin, Claude Code has no interview skill; see README)\n');
     if (tools.some((t) => t !== 'claude')) io.stdout.write('next: ask your agent to use the skill stackcrew-init\n');
   }
   return code;

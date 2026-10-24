@@ -36,7 +36,7 @@
 /** @typedef {{ path: string, kind: 'owned'|'block', content: string }} FileOp   // path: POSIX, project-relative */
 /** @typedef {{ ops: FileOp[], warnings: string[] }} RenderResult */
 /** @typedef {{ written: string[], unchanged: string[], deleted: string[], skippedModified: string[],
- *   blocks: string[], manifestStatus: 'ok'|'missing'|'corrupt' }} ApplyReport */
+ *   blocks: string[], blocksUnchanged: string[], manifestStatus: 'ok'|'missing'|'corrupt' }} ApplyReport */
 /** @typedef {{ version: 1, files: Record<string, string> }} Manifest   // path → sha256 of LF content */
 /** @typedef {{ file: string, line: number, ruleId: string, message: string, text: string }} Violation */
 /** @typedef {{ file: string, lines: { line: number, text: string }[] }} DiffFile */

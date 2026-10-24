@@ -1,6 +1,6 @@
 import { loadCatalog } from '../catalog/load.js';
 import { validateCatalog } from '../catalog/validate.js';
-import { readFile, writeFile } from 'node:fs/promises';
+import { access, readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { readProfile, writeProfile, validateProfile, PROFILE_FILE } from '../profile.js';
 import { detectProject } from '../detect.js';
@@ -9,6 +9,7 @@ import { StackcrewError } from '../errors.js';
 import { buildContext, loadCustomRules } from '../render/context.js';
 import { renderProject } from '../render/index.js';
 import { applyOps } from '../fs/apply.js';
+import { MD_MARKERS } from '../fs/marked-block.js';
 import { readPackageVersion } from '../paths.js';
 
 /** Render the profile and apply it to the project. Returns the process exit code. */
@@ -38,12 +39,6 @@ export async function runSync(projectDir, { force = false, wire = false, dryRun 
     if (typeof wiring === 'number') return wiring;
     if (wiring.ok) {
       renderProfile = wiring.profile;
-      if (!dryRun) {
-        for (const e of wiring.changed) await writeFile(path.join(projectDir, e.path), e.content, 'utf8');
-        await writeProfile(projectDir, renderProfile);
-      }
-      for (const e of wiring.changed) io.stdout.write(`${dryRun ? 'would wire' : 'wired'}: ${e.path}\n`);
-      for (const n of wiring.notes) io.stdout.write(`note: ${n}\n`);
     } else {
       io.stdout.write('wire: no build file could be wired; add this test dependency and re-run `stackcrew sync --wire`:\n');
       for (const n of wiring.notes) io.stdout.write(`${n}\n`);
@@ -54,11 +49,25 @@ export async function runSync(projectDir, { force = false, wire = false, dryRun 
   const customRules = await loadCustomRules(projectDir);
   const ctx = buildContext(catalog, renderProfile, { customRules, cli: `npx --yes stackcrew@${version}`, version });
   const { ops, warnings } = renderProject(ctx);
+  warnings.push(...(await claudeShadowsAgentsWarning(projectDir, renderProfile)));
+
+  if (wiring?.ok) {
+    // Validate render + apply (paths, markers, budgets) in memory first, so a failure
+    // leaves the build files and the profile untouched.
+    if (!dryRun) await applyOps(projectDir, ops, { force, dryRun: true });
+    if (!dryRun) {
+      for (const e of wiring.changed) await writeFile(path.join(projectDir, e.path), e.content, 'utf8');
+      await writeProfile(projectDir, renderProfile);
+    }
+    for (const e of wiring.changed) io.stdout.write(`${dryRun ? 'would wire' : 'wired'}: ${e.path}\n`);
+    for (const n of wiring.notes) io.stdout.write(`note: ${n}\n`);
+  }
   const report = await applyOps(projectDir, ops, { force, dryRun });
 
+  const blocksChanged = report.blocks.length - (report.blocksUnchanged?.length ?? 0);
   io.stdout.write(
     `stackcrew sync: ${report.written.length} written, ${report.unchanged.length} unchanged, `
-      + `${report.deleted.length} deleted, ${report.blocks.length} block(s) updated\n`,
+      + `${report.deleted.length} deleted, ${blocksChanged} block(s) updated\n`,
   );
   for (const w of warnings) io.stdout.write(`warning: ${w}\n`);
   if (report.skippedModified.length > 0) {
@@ -133,4 +142,32 @@ async function planWire(projectDir, catalog, profile, io) {
     ok: plan.wired.length > 0,
     profile: { ...profile, java: { ...profile.java, basePackage, wired: true } },
   };
+}
+
+export const CLAUDE_SHADOWS_AGENTS_WARNING =
+  'claude-md-shadows-agents-md: creating CLAUDE.md makes recent Claude Code versions stop reading your existing AGENTS.md; '
+  + 'add "@AGENTS.md" to CLAUDE.md yourself if you want both (stackcrew does not, to avoid loading its own rules twice).';
+
+const exists = (abs) => access(abs).then(() => true, () => false);
+
+/**
+ * Claude Code reads AGENTS.md only when no CLAUDE.md / .claude/CLAUDE.md / CLAUDE.local.md exists.
+ * Warn (before this run writes anything) when claude is selected, none of those exist, and AGENTS.md
+ * carries content outside the stackcrew block. Filesystem-dependent, so it lives here, not in the renderer.
+ */
+async function claudeShadowsAgentsWarning(projectDir, profile) {
+  if (!profile.tools.includes('claude')) return [];
+  for (const rel of ['CLAUDE.md', '.claude/CLAUDE.md', 'CLAUDE.local.md']) {
+    if (await exists(path.join(projectDir, ...rel.split('/')))) return [];
+  }
+  let text;
+  try {
+    text = await readFile(path.join(projectDir, 'AGENTS.md'), 'utf8');
+  } catch {
+    return [];
+  }
+  const b = text.indexOf(MD_MARKERS.begin);
+  const e = b === -1 ? -1 : text.indexOf(MD_MARKERS.end, b);
+  const outside = e === -1 ? text : text.slice(0, b) + text.slice(e + MD_MARKERS.end.length);
+  return outside.trim() === '' ? [] : [CLAUDE_SHADOWS_AGENTS_WARNING];
 }

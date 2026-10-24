@@ -38,6 +38,9 @@ export function createProfile({ stack, addons = [], tools = TOOLS, mode, guard =
 
 const isStr = (v) => typeof v === 'string';
 
+/** Values that occur more than once, each reported once, in first-repeat order. */
+const duplicates = (list) => [...new Set(list.filter((v, i) => list.indexOf(v) !== i))];
+
 export function validateProfile(profile, catalog) {
   if (!profile || typeof profile !== 'object' || Array.isArray(profile)) return ['profile: must be an object'];
   const errors = [];
@@ -49,6 +52,7 @@ export function validateProfile(profile, catalog) {
   if (!Array.isArray(profile.addons)) {
     errors.push('addons: must be an array');
   } else {
+    for (const id of duplicates(profile.addons)) errors.push(`addons: duplicate "${id}"`);
     profile.addons.forEach((id, i) => {
       const addon = catalog.addons.get(id);
       if (!addon) errors.push(`addons[${i}]: unknown addon "${id}"`);
@@ -61,6 +65,7 @@ export function validateProfile(profile, catalog) {
   if (!Array.isArray(profile.tools) || profile.tools.length === 0) {
     errors.push('tools: must be a non-empty array');
   } else {
+    for (const t of duplicates(profile.tools)) errors.push(`tools: duplicate "${t}"`);
     const bad = profile.tools.filter((t) => !TOOLS.includes(t));
     if (bad.length > 0) errors.push(`tools: unknown tool(s) ${bad.map((t) => `"${t}"`).join(', ')} (allowed: ${TOOLS.join(', ')})`);
   }

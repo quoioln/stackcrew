@@ -269,3 +269,44 @@ test('sync --wire with a hand-declared archunit pom: pom untouched, wired true, 
   assert.ok(existsSync(path.join(dir, TEST_FILE)));
   assert.equal(JSON.parse(await readFile(path.join(dir, 'stackcrew.json'), 'utf8')).java.wired, true);
 });
+
+const AGGREGATOR_POM = '<project>\n  <packaging>pom</packaging>\n  <modules><module>app</module></modules>\n  <dependencies>\n  </dependencies>\n</project>\n';
+
+test('planJavaWiring: aggregator pom (packaging pom / modules) gets no edit and does not count as wired', () => {
+  for (const pom of [
+    '<project>\n  <packaging>pom</packaging>\n  <dependencies>\n  </dependencies>\n</project>\n',
+    '<project>\n  <modules>\n    <module>app</module>\n  </modules>\n  <dependencies>\n  </dependencies>\n</project>\n',
+    AGGREGATOR_POM,
+  ]) {
+    const r = planJavaWiring({ pomXml: pom });
+    assert.deepEqual([r.edits, r.wired], [[], []]);
+    assert.match(r.notes[0], /^multi-module Maven: wire ArchUnit in the module that holds the application classes/);
+  }
+  const commented = planJavaWiring({ pomXml: '<project>\n  <!-- <packaging>pom</packaging> <modules/> -->\n  <dependencies>\n  </dependencies>\n</project>\n' });
+  assert.deepEqual(commented.wired, ['pom.xml']);
+});
+
+test('sync --wire on a multi-module Maven root exits 1, pom unchanged, wired stays false', async () => {
+  const dir = await javaProject(AGGREGATOR_POM);
+  const r = await run(dir, 'sync', '--wire');
+  assert.equal(r.code, 1, r.err + r.out);
+  assert.match(r.out, /multi-module Maven/);
+  assert.match(r.out, /archunit-junit5/);
+  assert.equal(await readFile(path.join(dir, 'pom.xml'), 'utf8'), AGGREGATOR_POM);
+  assert.ok(!existsSync(path.join(dir, TEST_FILE)));
+  assert.equal(JSON.parse(await readFile(path.join(dir, 'stackcrew.json'), 'utf8')).java.wired, false);
+});
+
+test('sync --wire with a half-marker AGENTS.md aborts before ANY wiring write', async () => {
+  const dir = await javaProject();
+  const agents = 'intro\n<!-- stackcrew:begin -->\nhalf\n';
+  await writeFile(path.join(dir, 'AGENTS.md'), agents);
+  const before = await readFile(path.join(dir, 'stackcrew.json'), 'utf8');
+  const r = await run(dir, 'sync', '--wire');
+  assert.equal(r.code, 1, r.err + r.out);
+  assert.equal(await readFile(path.join(dir, 'pom.xml'), 'utf8'), POM);
+  assert.equal(await readFile(path.join(dir, 'stackcrew.json'), 'utf8'), before);
+  assert.equal(JSON.parse(before).java.wired, false);
+  assert.equal(await readFile(path.join(dir, 'AGENTS.md'), 'utf8'), agents);
+  assert.ok(!existsSync(path.join(dir, TEST_FILE)));
+});

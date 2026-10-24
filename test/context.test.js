@@ -13,18 +13,18 @@ const MINI = path.join(path.dirname(fileURLToPath(import.meta.url)), 'fixtures',
 const OPTS = { cli: 'npx stackcrew', version: '9.9.9' };
 
 const rows = [
-  [['claude'], ['.claude/skills'], [], false],
-  [['cursor'], ['.agents/skills'], ['.agents/skills'], false],
-  [['codex'], ['.agents/skills'], ['.agents/skills'], false],
-  [['antigravity'], ['.agents/skills'], ['.agents/skills'], false],
-  [['claude', 'cursor'], ['.claude/skills'], ['.cursor/skills'], false],
-  [['claude', 'codex'], ['.claude/skills', '.agents/skills'], ['.agents/skills'], false],
-  [['claude', 'antigravity'], ['.claude/skills', '.agents/skills'], ['.agents/skills'], false],
-  [['claude', 'cursor', 'antigravity'], ['.claude/skills', '.agent/skills'], ['.agent/skills', '.cursor/skills'], false],
-  [['claude', 'cursor', 'codex'], ['.claude/skills', '.agents/skills'], ['.agents/skills'], true],
-  [['claude', 'cursor', 'codex', 'antigravity'], ['.claude/skills', '.agents/skills'], ['.agents/skills'], true],
-  [['cursor', 'codex'], ['.agents/skills'], ['.agents/skills'], false],
-  [['cursor', 'antigravity'], ['.agents/skills'], ['.agents/skills'], false],
+  [['claude'], ['.claude/skills'], [], []],
+  [['cursor'], ['.agents/skills'], ['.agents/skills'], []],
+  [['codex'], ['.agents/skills'], ['.agents/skills'], []],
+  [['antigravity'], ['.agents/skills'], ['.agents/skills'], []],
+  [['claude', 'cursor'], ['.claude/skills'], ['.cursor/skills'], []],
+  [['claude', 'codex'], ['.claude/skills', '.agents/skills'], ['.agents/skills'], []],
+  [['claude', 'antigravity'], ['.claude/skills', '.agents/skills'], ['.agents/skills'], []],
+  [['claude', 'cursor', 'antigravity'], ['.claude/skills', '.agent/skills'], ['.agent/skills', '.cursor/skills'], []],
+  [['claude', 'cursor', 'codex'], ['.claude/skills', '.agents/skills'], ['.agents/skills'], ['cursor-duplicate-skills', 'cursor-duplicate-agents']],
+  [['claude', 'cursor', 'codex', 'antigravity'], ['.claude/skills', '.agents/skills'], ['.agents/skills'], ['cursor-duplicate-skills', 'cursor-duplicate-agents']],
+  [['cursor', 'codex'], ['.agents/skills'], ['.agents/skills'], ['cursor-duplicate-agents']],
+  [['cursor', 'antigravity'], ['.agents/skills'], ['.agents/skills'], []],
 ];
 
 test('planSkillDirs table', () => {
@@ -33,8 +33,7 @@ test('planSkillDirs table', () => {
     const label = tools.join('+');
     assert.deepEqual(p.taskDirs.map((d) => d.dir), task, `taskDirs ${label}`);
     assert.deepEqual(p.commandDirs.map((d) => d.dir), cmd, `commandDirs ${label}`);
-    assert.equal(p.warnings.length > 0, warn, `warning ${label}`);
-    if (warn) assert.match(p.warnings[0], /^cursor-duplicate-skills/);
+    assert.deepEqual(p.warnings.map((w) => w.split(':')[0]), warn, `warnings ${label}`);
     for (const d of p.taskDirs) assert.equal(d.format, d.dir === '.claude/skills' ? 'claude' : 'generic');
     assert.ok(p.commandDirs.every((d) => d.format === 'generic'));
   }

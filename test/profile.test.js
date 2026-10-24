@@ -42,6 +42,13 @@ test('validateProfile rejects unknown tool and bad basePackage', async () => {
   assert.ok(validateProfile({ ...p, tools: [] }, c).some((e) => e.startsWith('tools: ')));
 });
 
+test('validateProfile rejects duplicate addons and tools with a field path', async () => {
+  const c = await loadCatalog(MINI);
+  const p = createProfile({ stack: 'demo-java', addons: ['demo-addon'], mode: 'greenfield' }, c);
+  assert.deepEqual(validateProfile({ ...p, addons: ['demo-addon', 'demo-addon'] }, c), ['addons: duplicate "demo-addon"']);
+  assert.deepEqual(validateProfile({ ...p, tools: ['claude', 'codex', 'claude'] }, c), ['tools: duplicate "claude"']);
+});
+
 test('validateProfile checks version, stack, mode, guard, decisions', async () => {
   const c = await loadCatalog(MINI);
   const p = createProfile({ stack: 'demo-java', mode: 'greenfield' }, c);
