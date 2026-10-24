@@ -26,7 +26,7 @@ Mục đích: những thứ test tự động không chứng minh được (hàn
 | X1b | Đo khối stackcrew trong `AGENTS.md` (từ `<!-- stackcrew:begin` đến `<!-- stackcrew:end -->`) và xem output của `init`/`sync` | Khối <= 16.000 byte, không có cảnh báo `agents-md-essentials-reduced` | |
 | X2 | Giao task Java (ví dụ thêm provider) | Codex gọi skill `stackcrew-spring-boot-rules` để đọc phần rule đầy đủ | |
 | X3 | Kiểm tra `.codex/agents/stackcrew-*.toml` | Agent được nạp, không báo lỗi parse | |
-| X4 | Thêm `metadata: { owner: test }` (hoặc khóa `paths:`) vào frontmatter của `.agents/skills/stackcrew-spring-integration-provider/SKILL.md`, mở lại Codex | Codex vẫn liệt kê skill này, không báo lỗi; khóa lạ bị bỏ qua (spec §9.2 c) | |
+| X4 | Thêm một khóa hoàn toàn không chuẩn: dòng `stackcrew_probe: 1` vào frontmatter của `.agents/skills/stackcrew-spring-integration-provider/SKILL.md`, mở lại Codex | Codex vẫn liệt kê skill này, không báo lỗi; khóa lạ `stackcrew_probe` bị bỏ qua (spec §9.2 c) | |
 
 ## Antigravity
 
@@ -35,7 +35,7 @@ Mục đích: những thứ test tự động không chứng minh được (hàn
 | A1 | Mở `BadService.java`. Vào panel Rules của Antigravity (Customizations > Rules) để xem danh sách, rồi hỏi agent: "which rules apply to this file?" | Rule glob trong `.agents/rules/stackcrew-*.md` **thật sự được nạp**: có trong panel và agent nêu được nội dung của chúng. File có `trigger` sai bị bỏ qua mà không báo, nên phải chứng minh bằng câu hỏi này | |
 | A2 | Mở một file không phải Java | Rule `lang-java` và `stack-spring-boot` không nạp | |
 | A3 | Liệt kê skill | Skill trong `.agents/skills/stackcrew-*` hiện đủ | |
-| A4 | Thêm `metadata: { owner: test }` (hoặc khóa `paths:`) vào frontmatter của `.agents/skills/stackcrew-spring-integration-provider/SKILL.md` | Antigravity vẫn liệt kê skill, bỏ qua khóa lạ (spec §9.2 c) | |
+| A4 | Thêm một khóa hoàn toàn không chuẩn: dòng `stackcrew_probe: 1` vào frontmatter của `.agents/skills/stackcrew-spring-integration-provider/SKILL.md` | Antigravity vẫn liệt kê skill, bỏ qua khóa lạ (spec §9.2 c) | |
 
 ## Claude Code
 

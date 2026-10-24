@@ -209,9 +209,15 @@ test('sync is idempotent', (t) => {
 
 test('half marker aborts init and writes nothing', (t) => {
   const dir = project(t);
-  writeFileSync(path.join(dir, 'AGENTS.md'), '# Agents\n<!-- stackcrew:begin -->\nhalf a block\n');
+  const seed = '# Agents\n<!-- stackcrew:begin -->\nhalf a block\n';
+  writeFileSync(path.join(dir, 'AGENTS.md'), seed);
+  // ALL_TOOLS passes --stack spring-boot, so exit 1 can only come from the marker check.
   const r = run(dir, 'init', ...ALL_TOOLS);
   assert.equal(r.status, 1, r.stderr + r.stdout);
+  assert.match(r.stderr, /stackcrew:begin/);
+  assert.match(r.stderr, /nothing was written/);
+  assert.equal(read(dir, 'AGENTS.md'), seed);
+  assert.ok(!existsSync(path.join(dir, 'CLAUDE.md')));
   assert.ok(!existsSync(path.join(dir, '.claude/rules/stackcrew/core.md')));
   assert.ok(!existsSync(path.join(dir, '.stackcrew/manifest.json')));
 });
@@ -230,6 +236,7 @@ test('check fails loudly when the base ref is missing or outside git', (t) => {
   t.after(() => rmSync(bare, { recursive: true, force: true }));
   const n = run(bare, 'check');
   assert.equal(n.status, 2, n.stderr + n.stdout);
+  assert.match(n.stderr, /not a git repository/);
   assert.doesNotMatch(n.stdout, /0 violations/);
 });
 
@@ -251,8 +258,9 @@ test('sync refuses to overwrite a hand-edited file; --force restores it', (t) =>
   assert.equal(read(dir, rel), generated);
 });
 
-for (const [label, corrupt] of [['missing', null], ['corrupt', '{']]) {
-  test(`${label} manifest deletes nothing`, (t) => {
+// 'valid' is the positive control: it proves addon removal really deletes, so the other two are not vacuous.
+for (const [label, corrupt] of [['valid', undefined], ['missing', null], ['corrupt', '{']]) {
+  test(`${label} manifest ${label === 'valid' ? 'deletes the dropped addon rule' : 'deletes nothing'}`, (t) => {
     const dir = project(t);
     const r = run(dir, 'init', '--stack', 'spring-boot', '--addons', 'kafka', '--tools', 'claude');
     assert.equal(r.status, 0, r.stderr + r.stdout);
@@ -264,10 +272,18 @@ for (const [label, corrupt] of [['missing', null], ['corrupt', '{']]) {
     writeFileSync(path.join(dir, 'stackcrew.json'), JSON.stringify(profile, null, 2) + '\n');
     const manifest = path.join(dir, '.stackcrew/manifest.json');
     if (corrupt === null) rmSync(manifest);
-    else writeFileSync(manifest, corrupt);
+    else if (corrupt !== undefined) writeFileSync(manifest, corrupt);
 
-    run(dir, 'sync');
-    assert.ok(existsSync(path.join(dir, stale)), `${stale} must survive a ${label} manifest`);
+    const s = run(dir, 'sync');
+    if (label === 'valid') {
+      assert.equal(s.status, 0, s.stderr + s.stdout);
+      assert.ok(!existsSync(path.join(dir, stale)), `${stale} must be deleted with a valid manifest`);
+    } else {
+      // Without a trusted manifest, changed files look hand-edited: skipped, exit 1, nothing deleted.
+      assert.equal(s.status, 1, s.stderr + s.stdout);
+      assert.match(s.stdout, /, 0 deleted, /);
+      assert.ok(existsSync(path.join(dir, stale)), `${stale} must survive a ${label} manifest`);
+    }
   });
 }
 

@@ -86,6 +86,7 @@ Chi tiết:
 - `init` không có `--stack`: dùng stack phát hiện được; nếu không có và đang ở terminal thì hiện menu chọn. Nếu `stackcrew.json` đã có, `init` từ chối (exit 1) trừ khi có `--force`; `--force` giữ lại `decisions`, `context` và cài đặt `java`.
 - `sync` chỉ tạo, ghi đè hoặc xóa file nằm trong danh sách file do stackcrew sở hữu (ghi trong `.stackcrew/manifest.json`). File sinh ra mà bạn sửa tay sẽ **không bị ghi đè**: được báo, lệnh thoát với exit 1. Dùng `--force` để ghi đè, hoặc chuyển phần sửa sang `.stackcrew/custom/`.
 - `--wire` (Java): thêm `archunit-junit5` (test scope) vào `pom.xml` / `build.gradle(.kts)` và sinh `src/test/java/<basePackage>/stackcrew/StackcrewArchitectureTest.java`.
+
   Lưu ý: với Maven + Spring Boot 3.4.x đến 3.5.4, surefire 3.5.3 không chạy test ArchUnit (xem "Giới hạn hiện tại"). Gradle không bị ảnh hưởng theo hiểu biết hiện tại, nhưng chưa được kiểm chứng. Bản cập nhật engine sắp tới sẽ cho `--wire` xử lý phiên bản surefire.
 - `check` thoát `0` khi sạch, `1` khi có vi phạm, `2` khi không chạy được (ngoài git repo, thiếu base ref, thiếu `.stackcrew/guard.json`). Nó không bao giờ in "0 violations" khi không chạy được. Không có cờ nào thì quét thay đổi so với `HEAD` kèm file chưa theo dõi.
 
