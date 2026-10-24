@@ -1,0 +1,12 @@
+{
+  "rules": [
+    {
+      "id": "SC-TYPE",
+      "globs": ["**/*.java"],
+      "excludeGlobs": ["**/src/test/**"],
+      "regex": "\bJsonNode\b",
+      "flags": "",
+      "message": "Do not use JsonNode in typed code."
+    }
+  ]
+}

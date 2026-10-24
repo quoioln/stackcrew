@@ -1,0 +1,15 @@
+{
+  "id": "demo-java",
+  "name": "Demo Java",
+  "category": "backend",
+  "language": "java",
+  "minVersion": "17",
+  "globs": ["**/*.java"],
+  "aliases": ["demo"],
+  "priority": 10,
+  "detect": {
+    "files": ["pom.xml"],
+    "contains": ["org.springframework.boot"],
+    "excludeContains": ["io.quarkus"]
+  }
+}

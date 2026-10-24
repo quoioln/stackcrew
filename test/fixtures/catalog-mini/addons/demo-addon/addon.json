@@ -1,0 +1,6 @@
+{
+  "id": "demo-addon",
+  "name": "Demo Addon",
+  "languages": ["java"],
+  "detect": { "contains": ["kafka"] }
+}
