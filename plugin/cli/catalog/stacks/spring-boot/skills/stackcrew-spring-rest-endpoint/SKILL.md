@@ -18,7 +18,7 @@ public record CreateVerificationRequest(
     @NotNull VerificationChannel channel) {}
 
 public record VerificationResponse(UUID id, VerificationStatus status, Instant createdAt) {
-    static VerificationResponse from(Verification v) { return new VerificationResponse(v.id(), v.status(), v.createdAt()); }
+    public static VerificationResponse from(Verification v) { return new VerificationResponse(v.id(), v.status(), v.createdAt()); }
 }
 ```
 

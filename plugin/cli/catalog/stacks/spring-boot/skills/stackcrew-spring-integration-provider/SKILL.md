@@ -13,8 +13,8 @@ Follow these steps in order. Write the SC-PREFLIGHT note first: list the existin
 ## 0. Find what exists, and pick the shape
 
 - Search for `ProviderPort`, `ProviderRegistry`, `AbstractProviderAdapter`, `ProviderCodes`, `ProviderException`, `*Mapper`, `ProviderProperties`, `ProviderClientFactory`.
-- **Second provider, or the profile expects several providers** (check `stackcrew.json` context): use the template base (step 5) and the registry (step 6). This is the normal case for an integration hub.
-- **First provider and the profile expects exactly one**: do steps 1-4 with a plain adapter that implements `ProviderPort` directly (same `attempt` body as step 5, wrapped with the same Retry and CircuitBreaker), inject the port, and skip the base and the registry. Introduce both when the second provider arrives; do not build them speculatively.
+- **One rule for the base, registry and strategy:** introduce the template base (step 5) and the registry (step 6) at the second provider, or as soon as `docs/stackcrew/architecture-profile.md` records that more providers are expected (the normal case for an integration hub). Not before.
+- **First provider and the profile expects exactly one**: do steps 1-4 with a plain adapter that implements `ProviderPort` directly (same `attempt` body as step 5, wrapped with the same Retry, CircuitBreaker and Bulkhead), and inject the port. Skip the base and the registry. `ProviderClientFactory` and `ProviderProperties` (step 4) are configuration plumbing for HTTP clients and are fine from the first provider.
 
 ## 1. Port and typed errors in the domain
 
@@ -47,20 +47,26 @@ Typed errors, one base, so callers and Resilience4j can tell the cases apart:
 
 ```java
 public abstract class ProviderException extends RuntimeException {
+    @Serial private static final long serialVersionUID = 1L;       // required: the build compiles with -Xlint:all -Werror
     private final String providerCode;
     protected ProviderException(String providerCode, String message, Throwable cause) { super(message, cause); this.providerCode = providerCode; }
     public String providerCode() { return providerCode; }
 }
 public class ProviderUnavailableException extends ProviderException {   // timeout, connection refused, 5xx, 429
+    @Serial private static final long serialVersionUID = 1L;
     public ProviderUnavailableException(String code, String message, Throwable cause) { super(code, message, cause); }
 }
 public class ProviderRejectedException extends ProviderException {      // 4xx: our request was refused; retrying will not help
+    @Serial private static final long serialVersionUID = 1L;
     public ProviderRejectedException(String code, String message, Throwable cause) { super(code, message, cause); }
 }
 public class ProviderProtocolException extends ProviderException {      // undecodable body, unknown result code
+    @Serial private static final long serialVersionUID = 1L;
     public ProviderProtocolException(String code, String message, Throwable cause) { super(code, message, cause); }
 }
 ```
+
+Every serializable class you add (exceptions especially) declares `@Serial private static final long serialVersionUID = 1L;`.
 
 ## 2. Provider DTOs as records, package-private (the ACL models)
 
@@ -91,17 +97,19 @@ final class C06Mapper {
         C06Codes.NOT_MATCH, VerificationStatus.REJECTED,
         C06Codes.PROCESSING, VerificationStatus.PENDING);
 
-    C06VerifyRequest toRequest(VerifyCommand c) { /* build the provider record */ }
+    C06VerifyRequest toRequest(VerifyCommand c) {
+        return new C06VerifyRequest(c.documentNumber(), Base64.getEncoder().encodeToString(c.selfie()), c.requestId());
+    }
 
     VerifyResult toDomain(C06VerifyResponse r) {
-        if (r == null || r.resultCode() == null) {
-            throw new ProviderProtocolException(ProviderCodes.C06, "missing result code", null);
+        if (r == null || r.resultCode() == null || r.matchScore() == null) {
+            throw new ProviderProtocolException(ProviderCodes.C06, "missing result code or score", null);
         }
         VerificationStatus status = STATUS.get(r.resultCode());
         if (status == null) {
             throw new ProviderProtocolException(ProviderCodes.C06, "unknown result code", null);
         }
-        return new VerifyResult(status, Objects.requireNonNullElse(r.matchScore(), BigDecimal.ZERO), r.transactionId());
+        return new VerifyResult(status, r.matchScore(), r.transactionId());
     }
 }
 ```
@@ -113,7 +121,7 @@ Do not write a properties record and a `RestClient` bean per provider.
 ```java
 @Validated
 @ConfigurationProperties(prefix = "kyc.providers")
-public record ProviderProperties(@NotEmpty Map<String, Endpoint> endpoints) {
+public record ProviderProperties(@NotEmpty Map<String, @Valid Endpoint> endpoints) {   // @Valid on the value type cascades into each Endpoint
     public record Endpoint(@NotBlank String baseUrl, @NotNull Duration connectTimeout, @NotNull Duration readTimeout) {}
 }
 
@@ -122,7 +130,7 @@ public class ProviderClientFactory {
     private final ProviderProperties props;
     private final RestClient.Builder builder;
 
-    ProviderClientFactory(ProviderProperties props, RestClient.Builder builder) { this.props = props; this.builder = builder; }
+    public ProviderClientFactory(ProviderProperties props, RestClient.Builder builder) { this.props = props; this.builder = builder; }
 
     public RestClient create(String providerCode) {
         ProviderProperties.Endpoint e = props.endpoints().get(providerCode);
@@ -141,7 +149,7 @@ kyc:
       C06: { baseUrl: "${C06_BASE_URL}", connectTimeout: 2s, readTimeout: 5s }
 ```
 
-Credentials come from environment variables or a vault, bound the same way, never from code or logs.
+Register the properties with `@ConfigurationPropertiesScan` on the application class or `@EnableConfigurationProperties(ProviderProperties.class)`. The constructor is public so a test can build the factory by hand (see `stackcrew-spring-boot-testing`). Credentials come from environment variables or a vault, bound the same way, never from code or logs.
 
 ## 5. Template Method base: authenticate, call, map, audit
 
@@ -166,11 +174,14 @@ public abstract class AbstractProviderAdapter<REQ, RES> implements ProviderPort 
         this.meters = meters;
     }
 
-    @Override public final String code() { return providerCode; }
+    @Override public String code() { return providerCode; }
 
-    /** The template method. Circuit breaker outermost, so one logical call is one breaker record. */
+    /**
+     * The template method. Circuit breaker outermost, so one logical call is one breaker record.
+     * Not final: a final method called on a CGLIB proxy runs on the proxy instance, whose fields are null.
+     */
     @Override
-    public final VerifyResult verify(VerifyCommand command) {
+    public VerifyResult verify(VerifyCommand command) {
         Supplier<VerifyResult> guarded = CircuitBreaker.decorateSupplier(circuitBreaker,
             Retry.decorateSupplier(retry, Bulkhead.decorateSupplier(bulkhead, () -> attempt(command))));
         Timer.Sample sample = Timer.start(meters);
@@ -183,6 +194,9 @@ public abstract class AbstractProviderAdapter<REQ, RES> implements ProviderPort 
             throw new ProviderUnavailableException(providerCode, "provider call not permitted", e);
         } catch (ProviderException e) {
             finish(sample, command, ProviderMetrics.outcomeOf(e), e);
+            throw e;
+        } catch (RuntimeException e) {                         // anything unexpected is still audited and counted
+            finish(sample, command, ProviderMetrics.OUTCOME_ERROR, e);
             throw e;
         }
     }
@@ -246,7 +260,8 @@ class C06Adapter extends AbstractProviderAdapter<C06VerifyRequest, C06VerifyResp
 }
 ```
 
-- `ProviderMetrics` holds the metric and tag names and `outcomeOf(ProviderException)` as constants.
+- `ProviderMetrics` holds the metric and tag names, the outcome constants (`OUTCOME_SUCCESS`, `OUTCOME_SHORT_CIRCUITED`, `OUTCOME_ERROR`, one per `ProviderException` subtype) and `outcomeOf(ProviderException)`.
+- Adapters carry no class-level aspects or annotations that proxy them; resilience lives in the template.
 - Token providers override `authenticate()` and cache the token until shortly before expiry; never fetch one per call.
 - Providers that differ in every step do not need a base; the port alone is enough.
 
@@ -273,6 +288,7 @@ public class ProviderRegistry {
 
 - Do not inject `Map<String, ProviderPort>` directly and treat its keys as provider codes: Spring keys an injected map by bean name (`c06Adapter`), not by `code()`. Inject the `List` and build the map as above.
 - A duplicate code fails at startup (`toUnmodifiableMap` throws), which is intended.
+- Adding a provider adds one adapter bean, one `kyc.providers.endpoints.<CODE>` entry and a mapper; it automatically gets the default retry, breaker and bulkhead config from step 7.
 - A growing `if (code.equals(...))` or `switch` on a provider code is the wrong shape; this is the right one.
 
 ## 7. Resilience: breaker, retry, bulkhead, jitter
@@ -283,16 +299,20 @@ public class ProviderRegistry {
 ```yaml
 resilience4j:
   circuitbreaker:
-    instances:
-      C06:
+    configs:
+      default:                      # every provider instance inherits this; never leave the exception lists per instance only
         slidingWindowSize: 20
         failureRateThreshold: 50
         waitDurationInOpenState: 30s
         recordExceptions: [com.acme.kyc.domain.provider.ProviderUnavailableException]
         ignoreExceptions: [com.acme.kyc.domain.provider.ProviderRejectedException, com.acme.kyc.domain.provider.ProviderProtocolException]
-  retry:
     instances:
       C06:
+        baseConfig: default
+        waitDurationInOpenState: 60s      # per-provider override of a number only
+  retry:
+    configs:
+      default:
         maxAttempts: 3
         waitDuration: 500ms
         enableExponentialBackoff: true
@@ -300,13 +320,20 @@ resilience4j:
         enableRandomizedWait: true
         retryExceptions: [com.acme.kyc.domain.provider.ProviderUnavailableException, org.springframework.web.client.ResourceAccessException]
         ignoreExceptions: [com.acme.kyc.domain.provider.ProviderRejectedException, com.acme.kyc.domain.provider.ProviderProtocolException]
-  bulkhead:
     instances:
       C06:
+        baseConfig: default
+  bulkhead:
+    configs:
+      default:
         maxConcurrentCalls: 10
         maxWaitDuration: 0
+    instances:
+      C06:
+        baseConfig: default
 ```
 
+- The exception lists live in `configs.default`, so a provider added later (or an instance named in code but absent from the YAML) never falls back to the Resilience4j defaults, which retry and record every exception including 4xx. Instances only override numbers.
 - `ignoreExceptions` wins over the record/retry lists.
 - Retry only idempotent operations (a verification query, a status check). A charge or submission retries only with the provider's idempotency key, or not at all.
 - If you prefer annotations (`@CircuitBreaker(name = ProviderCodes.C06)`, `@Retry`) they work only through the Spring proxy: they are inert on a hand-built bean and on self-invocation, and `circuitBreakerAspectOrder=1` and `retryAspectOrder=2` are needed so the breaker wraps the retry. The template above avoids all of that.
@@ -348,23 +375,50 @@ class VerificationRecorder {
 ```java
 @Repository
 class ProviderEventInbox {
+    private static final String P_PROVIDER = "provider";
+    private static final String P_EVENT_ID = "eventId";
+    private static final String P_PAYLOAD = "payload";
+    private static final String P_STATUS = "status";
     private static final String INSERT_IF_NEW = """
         INSERT INTO provider_event (provider_code, event_id, payload, status)
         VALUES (:provider, :eventId, :payload, :status)
-        ON CONFLICT (provider_code, event_id) DO NOTHING""";          // PostgreSQL; MySQL uses INSERT IGNORE
+        ON CONFLICT (provider_code, event_id) DO NOTHING""";   // PostgreSQL; on MySQL use INSERT ... ON DUPLICATE KEY UPDATE id = id
 
     private final JdbcClient jdbc;
     ProviderEventInbox(JdbcClient jdbc) { this.jdbc = jdbc; }
 
     boolean saveIfNew(String provider, String eventId, String payload) {
-        return jdbc.sql(INSERT_IF_NEW).param("provider", provider).param("eventId", eventId)
-            .param("payload", payload).param("status", EventStatus.NEW.name()).update() == 1;
+        return jdbc.sql(INSERT_IF_NEW).param(P_PROVIDER, provider).param(P_EVENT_ID, eventId)
+            .param(P_PAYLOAD, payload).param(P_STATUS, EventStatus.NEW.name()).update() == 1;
     }
 }
 ```
 
-3. Return 200 immediately, also for a duplicate.
-4. Process from the persisted row, not from the request: an inbox poller (`@Scheduled`, claim `NEW` rows with `FOR UPDATE SKIP LOCKED`, mark `DONE`), or publish an application event after the insert and handle it with `@TransactionalEventListener(phase = AFTER_COMMIT)` on a different bean.
+3. Return 200 immediately, also for a duplicate. Do the work after the acknowledgement, never before it.
+4. Process from the persisted row, not from the request. Simplest and safest: an inbox poller (`@Scheduled`, claim `NEW` rows with `FOR UPDATE SKIP LOCKED`, mark `DONE`). If you prefer events, the pieces must all be present, or the listener silently never runs:
+
+```java
+@Service
+class CallbackIngest {                           // insert and publish in ONE transaction, on this bean
+    private final ProviderEventInbox inbox;
+    private final ApplicationEventPublisher events;
+    CallbackIngest(ProviderEventInbox inbox, ApplicationEventPublisher events) { this.inbox = inbox; this.events = events; }
+
+    @Transactional
+    public void ingest(String provider, String eventId, String payload) {
+        if (inbox.saveIfNew(provider, eventId, payload)) { events.publishEvent(new CallbackStored(provider, eventId)); }
+    }
+}
+
+@Component
+class CallbackProcessor {                        // another bean
+    @Async("callbackExecutor")                   // asynchronous, so the 200 is not held up by the work
+    @TransactionalEventListener(phase = TransactionPhase.AFTER_COMMIT)
+    void on(CallbackStored event) { /* load the row by id and process it, idempotently */ }
+}
+```
+
+   A `@TransactionalEventListener` is not invoked at all when no transaction is active (unless `fallbackExecution = true`), and a synchronous one runs before the caller returns. `@EnableAsync` and a bounded `ThreadPoolTaskExecutor` bean named `callbackExecutor` are required. If the process dies between commit and processing, the row is still `NEW`: keep the poller as the safety net.
 5. For your own outbound mutating calls send an idempotency key derived from the business request id, and store it.
 
 ## 10. Logging and metrics per provider
@@ -385,7 +439,7 @@ One test class per adapter (`C06AdapterTest`) with `@WireMockTest`. Because Resi
 - success mapped to the domain result;
 - 4xx gives `ProviderRejectedException` with no retry (verify one request);
 - 5xx gives `ProviderUnavailableException` after the configured attempts;
-- timeout gives `ProviderUnavailableException` within the read timeout;
+- timeout gives `ProviderUnavailableException`; with retry on, the call takes about `maxAttempts` read timeouts plus backoff, so use `maxAttempts(1)` or short timeouts in the test when asserting duration;
 - malformed body and unknown or missing result code give `ProviderProtocolException`;
 - retry: a WireMock scenario that fails once then succeeds;
 - callback delivered twice is processed once.
@@ -407,7 +461,7 @@ Skip this section unless `stackcrew.json` has `camel` in `addons`. When it does,
 - Do not copy an existing adapter and edit it; use the template base.
 - Do not hardcode URLs, provider codes, header names, status strings, qualifier names, endpoints or timeouts.
 - Do not add an `if/else` chain on the provider code; use the registry.
-- Do not build a base, registry, factory or strategy for a single provider with no second one expected.
+- Do not build a template base, registry or strategy for a single provider when `docs/stackcrew/architecture-profile.md` does not record that more are expected (`ProviderClientFactory` and `ProviderProperties` are plain configuration plumbing and are fine from the first provider).
 - Do not retry non-idempotent calls blindly, do not retry or trip the breaker on 4xx, and do not swallow provider errors into `null` or an empty result.
 - Do not call the provider inside a `@Transactional` method, and do not rely on `@Transactional`, `@Retry` or `@CircuitBreaker` through `this.` self-invocation.
 - Do not return provider messages or codes to API clients; use a stable `ProblemDetail` detail.

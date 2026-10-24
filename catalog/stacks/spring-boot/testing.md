@@ -58,10 +58,15 @@ class VerificationRepositoryTest {
 ```java
 @WireMockTest
 class HypervergeAdapterTest {
+    private static final String VERIFY_PATH = "/v1/verify";
+    private static final Duration CONNECT = Duration.ofMillis(200);
+    private static final Duration READ = Duration.ofMillis(300);
+    private static final int READ_DELAY_MS = 900;
+
     @Test
     void mapsApprovedResponse(WireMockRuntimeInfo wm) {
-        stubFor(post("/v1/verify").willReturn(okJson(APPROVED_BODY)));
-        HypervergeAdapter adapter = adapterFor(wm.getHttpBaseUrl());
+        stubFor(post(VERIFY_PATH).willReturn(okJson(APPROVED_BODY)));
+        HypervergeAdapter adapter = adapterFor(wm.getHttpBaseUrl(), 3);
 
         VerifyResult result = adapter.verify(COMMAND);
 
@@ -69,27 +74,30 @@ class HypervergeAdapterTest {
     }
 
     @Test
-    void failsFastOnTimeout(WireMockRuntimeInfo wm) {
-        stubFor(post("/v1/verify").willReturn(ok().withFixedDelay(READ_TIMEOUT_MS * 2)));
-        assertThatThrownBy(() -> adapterFor(wm.getHttpBaseUrl()).verify(COMMAND))
+    void timesOutAsUnavailable(WireMockRuntimeInfo wm) {
+        stubFor(post(VERIFY_PATH).willReturn(ok().withFixedDelay(READ_DELAY_MS)));
+        // one attempt: with retry on, the failure takes about maxAttempts x READ plus backoff, not one READ
+        assertThatThrownBy(() -> adapterFor(wm.getHttpBaseUrl(), 1).verify(COMMAND))
             .isInstanceOf(ProviderUnavailableException.class);   // ResourceAccessException translated by the template
     }
 
     @Test
     void retriesOnceThenSucceeds(WireMockRuntimeInfo wm) {
-        stubFor(post("/v1/verify").inScenario(FLAKY).whenScenarioStateIs(STARTED)
+        stubFor(post(VERIFY_PATH).inScenario(FLAKY).whenScenarioStateIs(STARTED)
             .willReturn(serverError()).willSetStateTo(RECOVERED));
-        stubFor(post("/v1/verify").inScenario(FLAKY).whenScenarioStateIs(RECOVERED).willReturn(okJson(APPROVED_BODY)));
+        stubFor(post(VERIFY_PATH).inScenario(FLAKY).whenScenarioStateIs(RECOVERED).willReturn(okJson(APPROVED_BODY)));
 
-        assertThat(adapterFor(wm.getHttpBaseUrl()).verify(COMMAND).status()).isEqualTo(VerificationStatus.APPROVED);
+        assertThat(adapterFor(wm.getHttpBaseUrl(), 3).verify(COMMAND).status()).isEqualTo(VerificationStatus.APPROVED);
     }
 
     /** Hand-built: Resilience4j runs inside the adapter template, so no Spring context is needed. */
-    private HypervergeAdapter adapterFor(String baseUrl) {
-        RetryRegistry retries = RetryRegistry.of(RetryConfig.custom().maxAttempts(3).waitDuration(Duration.ofMillis(10))
+    private HypervergeAdapter adapterFor(String baseUrl, int maxAttempts) {
+        var endpoint = new ProviderProperties.Endpoint(baseUrl, CONNECT, READ);
+        var clients = new ProviderClientFactory(new ProviderProperties(Map.of(ProviderCodes.HYPERVERGE, endpoint)), RestClient.builder());
+        RetryRegistry retries = RetryRegistry.of(RetryConfig.custom().maxAttempts(maxAttempts).waitDuration(Duration.ofMillis(10))
             .retryExceptions(ProviderUnavailableException.class)
             .ignoreExceptions(ProviderRejectedException.class, ProviderProtocolException.class).build());
-        return new HypervergeAdapter(clientFor(baseUrl), CircuitBreakerRegistry.ofDefaults(), retries,
+        return new HypervergeAdapter(clients, CircuitBreakerRegistry.ofDefaults(), retries,
             BulkheadRegistry.ofDefaults(), new NoOpProviderAudit(), new SimpleMeterRegistry());
     }
 }
@@ -98,6 +106,7 @@ class HypervergeAdapterTest {
 - One test class per adapter. The provider response bodies are fixtures that mirror the provider's documented payloads, including its error shapes.
 - Cover: success, validation error (4xx), provider outage (5xx), timeout, malformed or missing fields, and a callback delivered twice (idempotency).
 - Assert the mapping to the domain type, the typed exception for each failure, and that no provider record leaks out of the adapter.
+- The test kit builds `ProviderClientFactory` by hand (public constructor), plus all three registries (`CircuitBreakerRegistry`, `RetryRegistry`, `BulkheadRegistry`) programmatically; the default registries do not carry the production exception lists, so set them as above when retry matters.
 - Retry and circuit-breaker behavior is tested with a scenario (`inScenario`) that fails then succeeds, and with a 4xx that must produce exactly one request (`verify(1, postRequestedFor(...))`) and `ProviderRejectedException`.
 
 ## ArchUnit

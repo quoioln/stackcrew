@@ -38,7 +38,7 @@ VerifyResponse result = restClient.get().uri(url).retrieve().body(VerifyResponse
 
 A value that is a bag of one known type is fine: `Map<String, KycResult>`.
 
-The only exception is the spot where a truly dynamic payload is first deserialized. Map it to a record on the next line and mark it: `stackcrew-allow: SC-TYPE <reason>`.
+There are two exceptions. One is the spot where a truly dynamic payload is first deserialized: map it to a record on the next line. The other is a signature a framework requires (a Kafka client config `Map<String, Object>`, `Jwt.getClaims()`). Mark both on the same line: `stackcrew-allow: SC-TYPE <reason>`.
 
 ## SC-CONST: wrong and right
 

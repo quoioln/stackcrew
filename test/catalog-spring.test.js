@@ -71,9 +71,13 @@ test('spring-boot stack loads with 3 skills and validates', async () => {
 test('integration-provider skill carries the provider playbook', async () => {
   await withRealCatalog(async (c) => {
     const body = c.stacks.get('spring-boot').skills.find((k) => k.name === 'stackcrew-spring-integration-provider').body;
-    for (const needle of ['ProviderPort', 'Adapter', 'Map<String, ProviderPort>', 'Template Method', '@CircuitBreaker', '@Retry', '@TimeLimiter', 'WireMock', 'dempoten', 'traceId', 'Camel variant', 'ProviderRejectedException', 'ResourceAccessException', 'CircuitBreakerRegistry', 'ignoreExceptions', 'enableRandomizedWait', 'BulkheadRegistry', 'ON CONFLICT', 'by bean name']) {
+    for (const needle of ['ProviderPort', 'Adapter', 'Map<String, ProviderPort>', 'Template Method', '@CircuitBreaker', '@Retry', '@TimeLimiter', 'WireMock', 'dempoten', 'traceId', 'Camel variant', 'ProviderRejectedException', 'ResourceAccessException', 'CircuitBreakerRegistry', 'ignoreExceptions', 'enableRandomizedWait', 'BulkheadRegistry', 'ON CONFLICT', 'by bean name', 'configs:', 'baseConfig: default', '@Valid Endpoint', 'serialVersionUID', 'OUTCOME_ERROR', 'fallbackExecution', '@Async', 'ON DUPLICATE KEY UPDATE id = id']) {
       assert.ok(body.includes(needle), `missing ${needle}`);
     }
+    assert.ok(!body.includes('public final VerifyResult verify'), 'template method must not be final (CGLIB)');
+    assert.ok(!body.includes('public final String code'), 'code() must not be final');
+    assert.ok(!body.includes('BigDecimal.ZERO'), 'missing score is a protocol error');
+    assert.ok(body.includes('public ProviderClientFactory('), 'public factory constructor');
     assert.ok(!body.includes('@Qualifier("'), 'no literal qualifier');
     assert.ok(!body.includes('"providerCode"'), 'no literal property key');
   });

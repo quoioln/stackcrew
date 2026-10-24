@@ -60,7 +60,7 @@ class ApiExceptionHandler {
 - Service: business rules and transactions. Depends on ports (interfaces) for anything external, never on a concrete adapter.
 - Repository: Spring Data interface only; a service never builds SQL strings.
 - Pick a pattern only with a signal (see `stackcrew-pattern-guide`): growing `if/switch` on a provider code is Strategy + registry; the same step sequence with different calls is Template Method; wrapping a third-party model is an Adapter with an ACL.
-- A second provider added by copy-paste of the first adapter is an SC-REUSE violation: introduce the template base at the second provider. For a single provider a port plus adapter is enough.
+- A second provider added by copy-paste of the first adapter is an SC-REUSE violation: introduce the template base, registry and strategy at the second provider, or as soon as `docs/stackcrew/architecture-profile.md` records that more providers are expected. For a single provider with no more expected a port plus adapter is enough; `ProviderClientFactory` and `ProviderProperties` are configuration plumbing and fine from the first.
 
 ## Untyped data belongs at the edge
 
@@ -72,7 +72,7 @@ class ApiExceptionHandler {
 1. `ProviderPort` in the domain package speaks only domain records (`VerifyCommand`, `VerifyResult`) and throws typed `ProviderException`s.
 2. `XxxAdapter` in `infrastructure.<provider>`; its request and response records are package-private and mapped by `XxxMapper` (null-safe: a malformed reply is `ProviderProtocolException`, not an NPE).
 3. `ProviderRegistry` is built from the injected `List<ProviderPort>` with `Collectors.toUnmodifiableMap(ProviderPort::code, ...)`. Do not inject `Map<String, ProviderPort>` and assume its keys are provider codes: Spring keys an injected map by bean name.
-4. The shared flow (authenticate, call, map, audit) lives once in a public `AbstractProviderAdapter` whose template method applies Resilience4j programmatically from the registries (no proxy traps, testable by hand). Introduce base and registry at the second provider, not before.
+4. The shared flow (authenticate, call, map, audit) lives once in a public `AbstractProviderAdapter` whose template method applies Resilience4j programmatically from the registries (no proxy traps, testable by hand); its methods are not `final`, since a final method on a CGLIB proxy runs against null fields. Introduce base and registry at the second provider or when the architecture profile records that more are expected.
 5. Error translation inside the template: `ResourceAccessException` and 5xx/429 to `ProviderUnavailableException`, other 4xx to `ProviderRejectedException`, undecodable body to `ProviderProtocolException`.
 6. Callbacks: verify the signature, insert the raw event atomically (`INSERT ... ON CONFLICT DO NOTHING`), return 200, process from the stored row.
 7. A WireMock contract test per provider with success, 4xx, 5xx, timeout and malformed-body cases.
@@ -82,13 +82,13 @@ Full steps with code: skill `stackcrew-spring-integration-provider`.
 ## Transactions and async
 
 - A remote call never runs inside a `@Transactional` method. Call first, then persist in a different bean (another `@Service`) or with `TransactionTemplate`; `this.save()` on a `@Transactional` method of the same class bypasses the proxy.
-- Persist an incoming callback with one atomic idempotent statement, acknowledge, and process later from the persisted row (an inbox poller, or `@TransactionalEventListener(phase = AFTER_COMMIT)` on another bean). Never catch `DataIntegrityViolationException` inside the same transaction.
+- Persist an incoming callback with one atomic idempotent statement, acknowledge, and process later from the persisted row (an inbox poller is the simplest; with events, insert and `publishEvent` inside one `@Transactional` method of the ingest bean and make the `@TransactionalEventListener(phase = AFTER_COMMIT)` listener on another bean `@Async` with `@EnableAsync` and a bounded executor, since such a listener never runs without a transaction and a synchronous one delays the 200). Never catch `DataIntegrityViolationException` inside the same transaction.
 - `@Async`, `@Retry`, `@CircuitBreaker` and `@Transactional` all work through the proxy: they do nothing on `this.` calls or on a hand-built bean in a unit test.
 
 ## Resilience
 
 - Keep the Resilience4j config per provider in `application.yml` (`resilience4j.circuitbreaker.instances.<provider>`, `.retry.instances.<provider>`, `.bulkhead.instances.<provider>`); the instance name is the provider-code constant. The starter turns it into `CircuitBreakerRegistry`, `RetryRegistry` and `BulkheadRegistry` beans.
-- Count only real provider trouble. Retry: `retryExceptions` = `ProviderUnavailableException`, `ResourceAccessException`; `ignoreExceptions` = `ProviderRejectedException`, `ProviderProtocolException`. Circuit breaker: `recordExceptions` = `ProviderUnavailableException`; `ignoreExceptions` = the same two. Ignore wins over record or retry.
+- Put the exception lists in `configs.default` (`baseConfig: default`), not only per instance, so every provider, including one added later, gets them. Count only real provider trouble. Retry: `retryExceptions` = `ProviderUnavailableException`, `ResourceAccessException`; `ignoreExceptions` = `ProviderRejectedException`, `ProviderProtocolException`. Circuit breaker: `recordExceptions` = `ProviderUnavailableException`; `ignoreExceptions` = the same two. Ignore wins over record or retry.
 - Retry with exponential backoff and jitter (`enableExponentialBackoff`, `enableRandomizedWait`); cap attempts; retry only idempotent operations.
 - Add a bulkhead (`maxConcurrentCalls`) per provider so one slow provider cannot exhaust the thread pool.
 - If annotations are used instead of the programmatic template, set `resilience4j.circuitbreaker.circuitBreakerAspectOrder=1` and `resilience4j.retry.retryAspectOrder=2` so the breaker wraps the retry.
