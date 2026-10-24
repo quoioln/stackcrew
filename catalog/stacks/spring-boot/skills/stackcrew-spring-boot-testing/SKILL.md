@@ -28,15 +28,16 @@ class VerificationServiceTest {
 
     @Test
     void rejectsWhenProviderReturnsNoMatch() {
-        // Arrange
+        // Arrange: the registry keys providers by code(), so stub it before building the registry
+        when(provider.code()).thenReturn(ProviderCodes.C06);
         when(provider.verify(any())).thenReturn(new VerifyResult(VerificationStatus.REJECTED, BigDecimal.ZERO, "ref-1"));
         var service = new VerificationService(new ProviderRegistry(List.of(provider)), clock);
 
         // Act
-        VerificationResponse response = service.create(COMMAND);
+        Verification result = service.create(COMMAND);
 
         // Assert
-        assertThat(response.status()).isEqualTo(VerificationStatus.REJECTED);
+        assertThat(result.status()).isEqualTo(VerificationStatus.REJECTED);
     }
 }
 ```
@@ -48,7 +49,8 @@ class VerificationServiceTest {
 ## 3. Provider adapters with WireMock
 
 - Use `@WireMockTest` and point the adapter's `RestClient` at `wm.getHttpBaseUrl()`.
-- Cases: success, 4xx, 5xx, timeout (`withFixedDelay`), malformed body, retry scenario (fail then succeed), duplicate callback.
+- Resilience4j is applied in the adapter's template, so build the adapter by hand with `CircuitBreakerRegistry` and `RetryRegistry` (a short `waitDuration`, `retryExceptions(ProviderUnavailableException.class)`, `ignoreExceptions(ProviderRejectedException.class, ProviderProtocolException.class)`) and short client timeouts. No Spring context is needed.
+- Cases: success, 4xx (one request, no retry), 5xx, timeout (`withFixedDelay`), malformed body, retry scenario (fail then succeed), duplicate callback.
 - Assert the domain result and typed exception; assert no provider record type appears in the public signature.
 - Response fixtures live in `src/test/resources/<provider>/`.
 
@@ -66,7 +68,7 @@ class VerificationServiceTest {
 
 - Run the tests and report the real result. Do not claim green without running them.
 - Every assertion checks real behavior; no empty `assertThat(x).isNotNull()` as the only check.
-- Test strings and numbers do not need constants (the guard skips `src/test`), but a value used in several tests belongs in a shared fixture.
+- Only message text inside tests is exempt from SC-CONST (the guard skips `src/test`); fixture values used in several tests belong in constants or fixture files.
 
 ## Do not
 

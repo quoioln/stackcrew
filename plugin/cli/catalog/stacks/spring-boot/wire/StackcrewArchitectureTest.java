@@ -1,5 +1,6 @@
 package {{sc:basePackage}}.stackcrew;
 
+import com.tngtech.archunit.ArchConfiguration;
 import com.tngtech.archunit.core.domain.JavaClass;
 import com.tngtech.archunit.core.domain.JavaCodeUnit;
 import com.tngtech.archunit.core.domain.JavaField;
@@ -16,6 +17,7 @@ import com.tngtech.archunit.lang.SimpleConditionEvent;
 
 import java.util.List;
 
+import static com.tngtech.archunit.library.freeze.FreezingArchRule.freeze;
 import static com.tngtech.archunit.lang.syntax.ArchRuleDefinition.classes;
 import static com.tngtech.archunit.lang.syntax.ArchRuleDefinition.noClasses;
 import static com.tngtech.archunit.lang.syntax.ArchRuleDefinition.noFields;
@@ -36,26 +38,45 @@ class StackcrewArchitectureTest {
     private static final String OBJECT = "java.lang.Object";
     private static final String AUTOWIRED = "org.springframework.beans.factory.annotation.Autowired";
 
+    // Brownfield safety: every rule is frozen. Existing violations are recorded in the archunit_store
+    // directory (commit it; it may only shrink) and only NEW violations fail. The store may be created
+    // without an extra archunit.properties resource: the key below is `freeze.store` + `default.allowStoreCreation`.
+    static {
+        ArchConfiguration.get().setProperty("freeze.store.default.allowStoreCreation", "true");
+    }
+
+    // Scope note: the untyped-payload rule scans ..service.. and ..domain.. only. Boundary deserialization of a
+    // dynamic payload and framework configuration (Kafka client config, JWT claims) belong in infrastructure,
+    // adapter or config packages, which are not scanned. A JSON attribute of a domain entity is a typed
+    // record plus an AttributeConverter, not a Map<String, Object> or JsonNode field.
+
     /** SC-TYPE: no untyped payloads in service or domain fields, parameters or return types. */
     @ArchTest
-    static final ArchRule no_untyped_payloads_in_service_and_domain = classes()
+    static final ArchRule no_untyped_payloads_in_service_and_domain = freeze(classes()
             .that().resideInAnyPackage("..service..", "..domain..")
             .should(notExposeUntypedPayloads())
-            .allowEmptyShould(true);
+            .allowEmptyShould(true));
 
     /** Constructor injection only. */
     @ArchTest
-    static final ArchRule no_field_injection = noFields()
+    static final ArchRule no_field_injection = freeze(noFields()
             .should().beAnnotatedWith(AUTOWIRED)
             .because("use constructor injection")
-            .allowEmptyShould(true);
+            .allowEmptyShould(true));
 
     /** Layering: a controller goes through a service, never straight to a repository. */
     @ArchTest
-    static final ArchRule controllers_do_not_depend_on_repositories = noClasses()
+    static final ArchRule controllers_do_not_depend_on_repositories = freeze(noClasses()
             .that().resideInAnyPackage("..controller..", "..web..", "..api..")
             .should().dependOnClassesThat().resideInAnyPackage("..repository..", "..repositories..")
-            .allowEmptyShould(true);
+            .allowEmptyShould(true));
+
+    /** Anti-corruption: provider DTOs live in infrastructure or adapter packages and must not leak into the domain. */
+    @ArchTest
+    static final ArchRule domain_does_not_depend_on_infrastructure = freeze(noClasses()
+            .that().resideInAPackage("..domain..")
+            .should().dependOnClassesThat().resideInAnyPackage("..infrastructure..", "..adapter..")
+            .allowEmptyShould(true));
 
     private static ArchCondition<JavaClass> notExposeUntypedPayloads() {
         return new ArchCondition<>("not expose JsonNode, ObjectNode or Map with an Object value type") {

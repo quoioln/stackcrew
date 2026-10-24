@@ -12,9 +12,21 @@
   </module>
 
   <module name="TreeWalker">
-    <!-- SC-CONST: magic numbers. Constants, hashCode and annotation values are allowed. -->
+    <!-- Waivers: a comment on the same line, with a reason, suppresses that rule only (matches the guard and the docs). -->
+    <module name="SuppressWithNearbyCommentFilter">
+      <property name="commentFormat" value="stackcrew-allow: SC-TYPE [^ ]"/>
+      <property name="checkFormat" value="IllegalType"/>
+      <property name="influenceFormat" value="0"/>
+    </module>
+    <module name="SuppressWithNearbyCommentFilter">
+      <property name="commentFormat" value="stackcrew-allow: SC-CONST [^ ]"/>
+      <property name="checkFormat" value="MagicNumber"/>
+      <property name="influenceFormat" value="0"/>
+    </module>
+
+    <!-- SC-CONST: magic numbers. Only -1, 0 and 1 are idioms; everything else is a named constant. -->
     <module name="MagicNumber">
-      <property name="ignoreNumbers" value="-1, 0, 1, 2"/>
+      <property name="ignoreNumbers" value="-1, 0, 1"/>
       <property name="ignoreHashCodeMethod" value="true"/>
       <property name="ignoreAnnotation" value="true"/>
     </module>

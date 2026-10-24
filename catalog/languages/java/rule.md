@@ -8,16 +8,15 @@ Java 17+ (LTS). Applies to every `.java` file. The Spring-specific rules live in
 
 ## Essentials
 
-- SC-TYPE: no `JsonNode`, `ObjectNode`, `Map<String, Object>`, `Map<?, ?>` or `Object` as a DTO or method signature. Define a `record` and map the payload at the boundary.
-- SC-CONST: no magic strings or numbers (URLs, header names, status codes, keys, timeouts, limits, roles). Use a `static final` constant, an `enum` or `@ConfigurationProperties`; search for an existing constant first.
-- SC-REUSE: search the codebase for an existing util or service before writing logic; extract repeated logic into one shared method with one abstraction level.
+- Java form of SC-TYPE, SC-CONST, SC-REUSE: a `record` instead of `JsonNode`, `ObjectNode`, `Map<String, Object>`, `Map<?, ?>` or `Object`; an `enum`, constant or `@ConfigurationProperties` instead of a magic string or number or a URL; search for an existing util or constant before writing one. Examples below.
 - DTOs and value objects are `record`s. Lombok `@Builder` only on a class with many optional fields (or a large record that needs a builder); never Lombok or `@Data` on a JPA entity.
-- Use `jakarta.*` (never `javax.*`) and Java 17 features: `record`, `sealed` types, `switch` expressions, text blocks.
-- Return `Optional` for an absent result; never use `Optional` for fields or parameters. Annotate nullability where the project has adopted it.
-- Never swallow an exception: wrap with context and keep the cause; no control flow through exceptions.
-- Time is `java.time` (UTC `Instant`, an injected `Clock`); money is `BigDecimal` or integer minor units.
+- Jakarta EE APIs use `jakarta.*`: never `javax.persistence|validation|servlet|annotation|transaction|inject|ws.rs`. JDK packages stay `javax`: `javax.crypto`, `javax.sql`, `javax.net.ssl`.
+- Return `Optional` for an absent result (never as a field or parameter). Never swallow an exception: wrap with context and keep the cause; no control flow through exceptions.
+- Time is `java.time` (UTC `Instant`, an injected `Clock`), never `Date` or `Calendar`; money is `BigDecimal` or integer minor units.
+- Use Java 17 features: `record`, `sealed` types, `switch` expressions, text blocks.
 - Immutable by default: `final` fields, no setters on value objects, `List.copyOf` for stored collections.
 - Close every `Closeable` with try-with-resources.
+- Untyped values may exist only at the boundary (adapter, infrastructure or config code that first deserializes a payload, or a framework-required signature); mark them `stackcrew-allow: SC-TYPE <reason>` on the same line and map to a record at once.
 
 ## SC-TYPE: wrong and right
 

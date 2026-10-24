@@ -17,8 +17,12 @@ public record CreateVerificationRequest(
     @NotBlank @Size(max = 32) String documentNumber,
     @NotNull VerificationChannel channel) {}
 
-public record VerificationResponse(UUID id, VerificationStatus status, Instant createdAt) {}
+public record VerificationResponse(UUID id, VerificationStatus status, Instant createdAt) {
+    static VerificationResponse from(Verification v) { return new VerificationResponse(v.id(), v.status(), v.createdAt()); }
+}
 ```
+
+`Verification` is the domain result record the service returns; the response record is an API type that only the controller creates.
 
 - `jakarta.validation.constraints.*` only. Put constraints on the record components.
 - Statuses and channels are enums; never raw strings.
@@ -36,8 +40,9 @@ class VerificationController {
 
     @PostMapping
     ResponseEntity<VerificationResponse> create(@Valid @RequestBody CreateVerificationRequest request) {
-        VerificationResponse created = service.create(request.toCommand());
-        return ResponseEntity.created(URI.create(ApiPaths.VERIFICATIONS + "/" + created.id())).body(created);
+        Verification created = service.create(request.toCommand());
+        URI location = ServletUriComponentsBuilder.fromCurrentRequest().path("/{id}").buildAndExpand(created.id()).toUri();
+        return ResponseEntity.created(location).body(VerificationResponse.from(created));
     }
 }
 ```
@@ -48,15 +53,15 @@ class VerificationController {
 
 ## 3. Service and layering
 
-- The service owns the rules and the transaction (`@Transactional`, `readOnly = true` for queries).
-- It talks to ports for anything external (see `stackcrew-spring-integration-provider`) and to repositories for data.
-- Map entity to response record in a mapper (or a static factory on the record); reuse an existing mapper before writing one.
+- The service owns the rules and the transaction (`@Transactional`, `readOnly = true` for queries). It takes a command and returns a domain result (`Verification`), never an API DTO.
+- It talks to ports for anything external (see `stackcrew-spring-integration-provider`) and to repositories for data. A remote call never runs inside its `@Transactional` method; call first, then persist through another bean.
+- Map entity to domain result in the service or a mapper, and domain result to response record in the controller; reuse an existing mapper before writing one.
 
 ## 4. Errors as ProblemDetail
 
 - One `@RestControllerAdvice` for the service. Add handlers there rather than catching in controllers.
 - Return `ProblemDetail` with the right status: 400 validation, 401/403 auth, 404 not found, 409 conflict, 422 business rule, 502/503 provider failure.
-- Domain errors are specific exceptions carrying an error code constant; the advice maps them. Never return `ResponseEntity<String>` for an error and never leak stack traces or provider messages.
+- Domain errors are specific exceptions carrying an error code constant; the advice maps them with a stable, safe `detail` (a constant), never `ex.getMessage()`. Never return `ResponseEntity<String>` for an error and never leak stack traces, provider messages or provider codes.
 - Validation failures (`MethodArgumentNotValidException`) are mapped to a `ProblemDetail` with a list of field errors in a typed record, not a `Map<String, Object>`.
 
 ## 5. Pagination
@@ -71,7 +76,7 @@ public record PageResponse<T>(List<T> items, int page, int size, long total) {}
 
 ## 6. Idempotency and safety
 
-- POST that creates money or external side effects takes an `Idempotency-Key` header (constant name) and stores it.
+- A non-idempotent endpoint that creates a resource or moves money takes an `Idempotency-Key` header (constant name) and stores it.
 - Check authorization at the object level (`@PreAuthorize` or an ownership check), not only the role.
 
 ## 7. Tests

@@ -71,9 +71,23 @@ test('spring-boot stack loads with 3 skills and validates', async () => {
 test('integration-provider skill carries the provider playbook', async () => {
   await withRealCatalog(async (c) => {
     const body = c.stacks.get('spring-boot').skills.find((k) => k.name === 'stackcrew-spring-integration-provider').body;
-    for (const needle of ['ProviderPort', 'Adapter', 'Map<String, ProviderPort>', 'Template Method', '@CircuitBreaker', '@Retry', '@TimeLimiter', 'WireMock', 'dempoten', 'traceId', 'Camel variant']) {
+    for (const needle of ['ProviderPort', 'Adapter', 'Map<String, ProviderPort>', 'Template Method', '@CircuitBreaker', '@Retry', '@TimeLimiter', 'WireMock', 'dempoten', 'traceId', 'Camel variant', 'ProviderRejectedException', 'ResourceAccessException', 'CircuitBreakerRegistry', 'ignoreExceptions', 'enableRandomizedWait', 'BulkheadRegistry', 'ON CONFLICT', 'by bean name']) {
       assert.ok(body.includes(needle), `missing ${needle}`);
     }
+    assert.ok(!body.includes('@Qualifier("'), 'no literal qualifier');
+    assert.ok(!body.includes('"providerCode"'), 'no literal property key');
+  });
+});
+
+test('javax ban is scoped to Jakarta EE packages', async () => {
+  await withRealCatalog(async (c) => {
+    const s = c.stacks.get('spring-boot');
+    for (const text of [c.languages.get('java').rule.body, s.rules.body]) {
+      assert.ok(text.includes('javax.persistence|validation|servlet|annotation|transaction|inject|ws.rs'));
+      assert.ok(text.includes('javax.crypto') && text.includes('javax.sql') && text.includes('javax.net.ssl'));
+      assert.ok(!text.includes('(never `javax.*`)'));
+    }
+    assert.ok(!s.rules.body.includes('Map<String, ProviderPort> keyed'), 'registry keyed by bean name is not claimed');
   });
 });
 
@@ -116,6 +130,17 @@ test('java guard blocks JsonNode, Map<String, Object>, Map<?, ?>, hardcoded URL;
     assert.deepEqual(scan(MAIN, '    Map<String, KycResult> byCode = Map.of();'), []);
     assert.deepEqual(scan(MAIN, '    JsonNodeFactory f; // no word-boundary hit'), []);
     assert.deepEqual(scan(MAIN, '    Map<String, Object> m; // stackcrew-allow: SC-TYPE dynamic webhook payload mapped right away'), []);
+    // Edge cases: not code, or an allowed shape.
+    assert.deepEqual(scan(MAIN, 'import com.fasterxml.jackson.databind.JsonNode;'), []);
+    assert.deepEqual(scan(MAIN, '   * Parsed from {@link JsonNode} by the mapper.'), []);
+    assert.deepEqual(scan(MAIN, '    // returns Map<String, Object> today'), []);
+    assert.deepEqual(scan(MAIN, '     * See <a href="https://docs.example.com/api">the docs</a>'), []);
+    assert.deepEqual(scan(MAIN, '    /* https://docs.example.com */'), []);
+    assert.deepEqual(scan(MAIN, '            "https://xml.example.com/ns/v1";'), []);
+    assert.deepEqual(scan(MAIN, '            "https://xml.example.com/ns/v1")'), []);
+    // Flagged shapes.
+    assert.deepEqual(scan(MAIN, '    private Map<String, Object> attributes;'), ['SC-TYPE']);
+    assert.deepEqual(scan(MAIN, '        return client.get().uri("https://api.example.com/v1/x").retrieve();'), ['SC-CONST']);
     assert.deepEqual(scan('src/test/java/com/acme/FooTest.java', '    JsonNode root = null;'), []);
     assert.deepEqual(scan('module/src/test/java/com/acme/FooTest.java', '    String u = "https://x.test";'), []);
     assert.deepEqual(scan('src/main/resources/x.json', '    JsonNode'), []);
@@ -126,10 +151,14 @@ test('guard.json keeps its regex escapes byte-exact', async () => {
   const text = await readFile(path.join(ROOT, 'catalog', 'languages', 'java', 'guard.json'), 'utf8');
   const regexes = JSON.parse(text).rules.map((r) => r.regex);
   const BS = String.fromCharCode(92);
-  assert.ok(regexes.includes(`${BS}b(JsonNode|ObjectNode)${BS}b`));
-  assert.ok(regexes.includes(`Map<${BS}s*String${BS}s*,${BS}s*Object${BS}s*>`));
-  assert.ok(regexes.includes(`Map<${BS}s*${BS}?${BS}s*,${BS}s*${BS}?${BS}s*>`));
-  assert.ok(regexes.includes(`^(?!.*${BS}bstatic${BS}s+final${BS}b).*"https?://`));
+  const SKIP = `^(?!${BS}s*(import${BS}s|${BS}*|//|/${BS}*)).*`;
+  assert.ok(regexes.includes(`${SKIP}${BS}b(JsonNode|ObjectNode)${BS}b`));
+  assert.ok(regexes.includes(`${SKIP}Map<${BS}s*String${BS}s*,${BS}s*Object${BS}s*>`));
+  assert.ok(regexes.includes(`${SKIP}Map<${BS}s*${BS}?${BS}s*,${BS}s*${BS}?${BS}s*>`));
+  // Ruling R20 regex (supersedes the plan's verbatim one).
+  assert.ok(
+    regexes.includes(`^(?!${BS}s*(${BS}*|//|/${BS}*))(?!.*${BS}bstatic${BS}s+final${BS}b)(?!${BS}s*"[^"]*"${BS}s*[;,)]*${BS}s*$).*"https?://`),
+  );
   assert.ok(!text.includes(String.fromCharCode(8)), 'no raw backspace byte');
 });
 
@@ -152,6 +181,9 @@ test('wire template fills basePackage and keeps the ArchUnit rules', async () =>
     assert.ok(op.content.includes('package com.acme.kyc.stackcrew;'));
     assert.ok(op.content.includes('@AnalyzeClasses(packages = "com.acme.kyc"'));
     assert.ok(!op.content.includes('{{sc:'));
+    for (const needle of ['freeze(', 'freeze.store.default.allowStoreCreation', 'domain_does_not_depend_on_infrastructure', '"..infrastructure..", "..adapter.."']) {
+      assert.ok(op.content.includes(needle), `missing ${needle}`);
+    }
     for (const needle of ['com.fasterxml.jackson.databind.JsonNode', 'com.fasterxml.jackson.databind.node.ObjectNode', 'JavaParameterizedType', 'getActualTypeArguments', 'org.springframework.beans.factory.annotation.Autowired']) {
       assert.ok(op.content.includes(needle), `missing ${needle}`);
     }
@@ -163,9 +195,10 @@ test('lint config carries the required modules', async () => {
   await withRealCatalog(async (c) => {
     const f = c.stacks.get('spring-boot').lintFiles.find((x) => x.relPath === 'checkstyle.xml');
     assert.ok(f, 'checkstyle.xml');
-    for (const needle of ['MagicNumber', 'IllegalType', 'JsonNode', 'ObjectNode', 'MethodLength', 'value="60"', 'AvoidStarImport', 'illegalClassNames']) {
+    for (const needle of ['MagicNumber', 'IllegalType', 'JsonNode', 'ObjectNode', 'MethodLength', 'value="60"', 'AvoidStarImport', 'illegalClassNames', 'SuppressWithNearbyCommentFilter', 'stackcrew-allow: SC-TYPE [^ ]', 'stackcrew-allow: SC-CONST [^ ]', 'influenceFormat', 'value="-1, 0, 1"']) {
       assert.ok(f.content.includes(needle), `missing ${needle}`);
     }
+    assert.ok(!f.content.includes(String.fromCharCode(92)), 'no backslash in checkstyle.xml');
   });
 });
 

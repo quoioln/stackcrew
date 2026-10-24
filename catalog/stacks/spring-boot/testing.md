@@ -15,7 +15,7 @@ JUnit 5, AssertJ, Mockito, Spring Boot test slices, Testcontainers, WireMock. Ex
 - Mock only true boundaries with Mockito (ports, clients). Never mock the class under test, a record or a value object.
 - Cover at least three negative or edge cases per happy path, and every branch of changed logic.
 - Keep tests deterministic: inject a `Clock`, no `Thread.sleep`, no dependence on order or on the network. Use Awaitility for async results.
-- `StackcrewArchitectureTest` (ArchUnit) must stay green: no `JsonNode`/`ObjectNode`/`Map<String, Object>` in service or domain signatures, no field injection, no controller-to-repository dependency.
+- `StackcrewArchitectureTest` (ArchUnit) must stay green: no `JsonNode`/`ObjectNode`/`Map<String, Object>` in service or domain signatures, no field injection, no controller-to-repository dependency, no domain-to-infrastructure dependency. Its baseline `archunit_store` is committed and only shrinks.
 
 ## Slice tests
 
@@ -72,7 +72,25 @@ class HypervergeAdapterTest {
     void failsFastOnTimeout(WireMockRuntimeInfo wm) {
         stubFor(post("/v1/verify").willReturn(ok().withFixedDelay(READ_TIMEOUT_MS * 2)));
         assertThatThrownBy(() -> adapterFor(wm.getHttpBaseUrl()).verify(COMMAND))
-            .isInstanceOf(ProviderUnavailableException.class);
+            .isInstanceOf(ProviderUnavailableException.class);   // ResourceAccessException translated by the template
+    }
+
+    @Test
+    void retriesOnceThenSucceeds(WireMockRuntimeInfo wm) {
+        stubFor(post("/v1/verify").inScenario(FLAKY).whenScenarioStateIs(STARTED)
+            .willReturn(serverError()).willSetStateTo(RECOVERED));
+        stubFor(post("/v1/verify").inScenario(FLAKY).whenScenarioStateIs(RECOVERED).willReturn(okJson(APPROVED_BODY)));
+
+        assertThat(adapterFor(wm.getHttpBaseUrl()).verify(COMMAND).status()).isEqualTo(VerificationStatus.APPROVED);
+    }
+
+    /** Hand-built: Resilience4j runs inside the adapter template, so no Spring context is needed. */
+    private HypervergeAdapter adapterFor(String baseUrl) {
+        RetryRegistry retries = RetryRegistry.of(RetryConfig.custom().maxAttempts(3).waitDuration(Duration.ofMillis(10))
+            .retryExceptions(ProviderUnavailableException.class)
+            .ignoreExceptions(ProviderRejectedException.class, ProviderProtocolException.class).build());
+        return new HypervergeAdapter(clientFor(baseUrl), CircuitBreakerRegistry.ofDefaults(), retries,
+            BulkheadRegistry.ofDefaults(), new NoOpProviderAudit(), new SimpleMeterRegistry());
     }
 }
 ```
@@ -80,16 +98,18 @@ class HypervergeAdapterTest {
 - One test class per adapter. The provider response bodies are fixtures that mirror the provider's documented payloads, including its error shapes.
 - Cover: success, validation error (4xx), provider outage (5xx), timeout, malformed or missing fields, and a callback delivered twice (idempotency).
 - Assert the mapping to the domain type, the typed exception for each failure, and that no provider record leaks out of the adapter.
-- Retry and circuit-breaker behavior is tested with a scenario (`inScenario`) that fails then succeeds.
+- Retry and circuit-breaker behavior is tested with a scenario (`inScenario`) that fails then succeeds, and with a 4xx that must produce exactly one request (`verify(1, postRequestedFor(...))`) and `ProviderRejectedException`.
 
 ## ArchUnit
 
 - `StackcrewArchitectureTest` is generated into `src/test/java/<base package>/stackcrew/` when wiring is on. Do not edit it by hand; regenerate with the stackcrew `sync`.
 - Add project-specific architecture rules in a separate test class in the same package tree.
+- The rules are wrapped in `FreezingArchRule`: existing violations of a brownfield codebase are recorded in the `archunit_store` directory and only new violations fail. Commit `archunit_store`; it may only shrink, so fix violations and let the baseline lose lines, never add to it by hand or re-freeze to hide a new violation.
+- The rules cover `..service..` and `..domain..` only (plus domain must not depend on `..infrastructure..` or `..adapter..`, and controllers must not depend on repositories). Boundary deserialization and framework config belong in `infrastructure`, `adapter` or `config` packages, outside the scan.
 
 ## Naming and structure
 
 - Test class `XxxTest` for unit, `XxxIT` or `XxxIntegrationTest` for container-backed tests.
 - Test methods describe behavior: `returnsEmptyWhenNoMatch`, not `test1`.
 - One reason to fail per test; share setup through fixtures and builders in `src/test`, not through inheritance chains.
-- Message text and fixture values inside tests are exempt from SC-CONST; the guard skips `src/test`.
+- Only message text inside tests is exempt from SC-CONST; the guard skips `src/test`, but fixture values used in several tests belong in constants or fixture files.
