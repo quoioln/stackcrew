@@ -19,6 +19,8 @@ const BAD_SERVICE = 'src/main/java/com/example/kyc/service/BadService.java';
 function childEnv(extra = {}) {
   const env = { ...process.env, ...extra };
   delete env.STACKCREW_CATALOG_DIR;
+  // Safe under git hooks: inherited GIT_DIR / GIT_INDEX_FILE would redirect the child's git calls.
+  for (const k of Object.keys(env)) if (k.startsWith('GIT_')) delete env[k];
   return env;
 }
 
@@ -27,7 +29,7 @@ function run(cwd, ...args) {
 }
 
 function git(cwd, ...args) {
-  const r = spawnSync('git', ['-c', 'user.email=t@t', '-c', 'user.name=t', ...args], { cwd, encoding: 'utf8' });
+  const r = spawnSync('git', ['-c', 'user.email=t@t', '-c', 'user.name=t', ...args], { cwd, encoding: 'utf8', env: childEnv() });
   assert.equal(r.status, 0, `git ${args.join(' ')}: ${r.stderr}`);
   return r.stdout;
 }
@@ -132,6 +134,9 @@ test('existing SDLC CLAUDE.md and AGENTS.md survive byte-for-byte', (t) => {
     const after = read(dir, file);
     assert.ok(after.startsWith(seed), `${file} prefix changed after init`);
     assert.ok(after.includes(BEGIN), `${file} has the block`);
+    const appended = after.slice(seed.length);
+    assert.ok(appended.includes('\r\n'), `${file} block uses CRLF`);
+    assert.ok(!/(^|[^\r])\n/.test(appended), `${file} block has a bare LF`);
   }
 
   const second = run(dir, 'sync');
@@ -175,6 +180,7 @@ test('check flags the seeded violation', (t) => {
   assert.ok(!bad.stdout.includes('BadService2.java:3'), 'import lines are skipped');
 });
 
+// Calls src/guard/hook.js directly; the plugin-wired path (hooks.json) is covered by manual checklist L4.
 test('hook blocks writing BadService content', (t) => {
   const dir = project(t);
   initAll(dir);
@@ -199,4 +205,100 @@ test('sync is idempotent', (t) => {
   const second = run(dir, 'sync');
   assert.equal(second.status, 0, second.stderr + second.stdout);
   assert.match(second.stdout, /stackcrew sync: 0 written, /);
+});
+
+test('half marker aborts init and writes nothing', (t) => {
+  const dir = project(t);
+  writeFileSync(path.join(dir, 'AGENTS.md'), '# Agents\n<!-- stackcrew:begin -->\nhalf a block\n');
+  const r = run(dir, 'init', ...ALL_TOOLS);
+  assert.equal(r.status, 1, r.stderr + r.stdout);
+  assert.ok(!existsSync(path.join(dir, '.claude/rules/stackcrew/core.md')));
+  assert.ok(!existsSync(path.join(dir, '.stackcrew/manifest.json')));
+});
+
+test('check fails loudly when the base ref is missing or outside git', (t) => {
+  const dir = project(t);
+  initAll(dir);
+  git(dir, 'add', '-A');
+  git(dir, 'commit', '-q', '-m', 'base');
+  const r = run(dir, 'check', '--base', 'origin/nope');
+  assert.equal(r.status, 2, r.stderr + r.stdout);
+  assert.match(r.stderr, /base ref not found/);
+  assert.doesNotMatch(r.stdout, /0 violations/);
+
+  const bare = mkdtempSync(path.join(tmpdir(), 'stackcrew-nogit-'));
+  t.after(() => rmSync(bare, { recursive: true, force: true }));
+  const n = run(bare, 'check');
+  assert.equal(n.status, 2, n.stderr + n.stdout);
+  assert.doesNotMatch(n.stdout, /0 violations/);
+});
+
+test('sync refuses to overwrite a hand-edited file; --force restores it', (t) => {
+  const dir = project(t);
+  initAll(dir);
+  const rel = '.claude/rules/stackcrew/core.md';
+  const generated = read(dir, rel);
+  const edited = generated + '\nMy own note.\n';
+  writeFileSync(path.join(dir, rel), edited);
+
+  const r = run(dir, 'sync');
+  assert.equal(r.status, 1, r.stderr + r.stdout);
+  assert.ok(r.stdout.includes('skipped (edited by hand)'), r.stdout);
+  assert.equal(read(dir, rel), edited);
+
+  const f = run(dir, 'sync', '--force');
+  assert.equal(f.status, 0, f.stderr + f.stdout);
+  assert.equal(read(dir, rel), generated);
+});
+
+for (const [label, corrupt] of [['missing', null], ['corrupt', '{']]) {
+  test(`${label} manifest deletes nothing`, (t) => {
+    const dir = project(t);
+    const r = run(dir, 'init', '--stack', 'spring-boot', '--addons', 'kafka', '--tools', 'claude');
+    assert.equal(r.status, 0, r.stderr + r.stdout);
+    const stale = '.claude/rules/stackcrew/addon-kafka.md';
+    assert.ok(existsSync(path.join(dir, stale)));
+
+    const profile = JSON.parse(read(dir, 'stackcrew.json'));
+    profile.addons = [];
+    writeFileSync(path.join(dir, 'stackcrew.json'), JSON.stringify(profile, null, 2) + '\n');
+    const manifest = path.join(dir, '.stackcrew/manifest.json');
+    if (corrupt === null) rmSync(manifest);
+    else writeFileSync(manifest, corrupt);
+
+    run(dir, 'sync');
+    assert.ok(existsSync(path.join(dir, stale)), `${stale} must survive a ${label} manifest`);
+  });
+}
+
+test('hook fails open', (t) => {
+  const dir = project(t);
+  initAll(dir);
+  const content = read(dir, BAD_SERVICE).replaceAll('BadService', 'BadServiceCopy');
+  const target = path.join(dir, 'src/main/java/com/example/kyc/service/BadServiceCopy.java');
+  const spawnHook = (input, projectDir) => spawnSync(process.execPath, [hookJs], {
+    input,
+    encoding: 'utf8',
+    env: childEnv({ CLAUDE_PROJECT_DIR: projectDir }),
+  });
+  const payload = (file, cwd) => JSON.stringify({ tool_name: 'Write', cwd, tool_input: { file_path: file, content } });
+
+  // Sanity: the same payload is blocked in the initialized project.
+  assert.equal(spawnHook(payload(target, dir), dir).status, 2);
+
+  assert.equal(spawnHook('{ not json', dir).status, 0, 'malformed stdin');
+
+  const outside = mkdtempSync(path.join(tmpdir(), 'stackcrew-outside-'));
+  t.after(() => rmSync(outside, { recursive: true, force: true }));
+  assert.equal(spawnHook(payload(path.join(outside, 'BadServiceCopy.java'), dir), dir).status, 0, 'file outside project');
+
+  const bare = mkdtempSync(path.join(tmpdir(), 'stackcrew-noguard-'));
+  t.after(() => rmSync(bare, { recursive: true, force: true }));
+  assert.equal(spawnHook(payload(path.join(bare, 'BadServiceCopy.java'), bare), bare).status, 0, 'no guard.json');
+
+  const guardPath = path.join(dir, '.stackcrew/guard.json');
+  const guard = JSON.parse(readFileSync(guardPath, 'utf8'));
+  guard.enabled = false;
+  writeFileSync(guardPath, JSON.stringify(guard));
+  assert.equal(spawnHook(payload(target, dir), dir).status, 0, 'enabled: false');
 });

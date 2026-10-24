@@ -12,7 +12,7 @@ Mục đích: những thứ test tự động không chứng minh được (hàn
 
 | # | Bước | Kỳ vọng | Kết quả |
 | --- | --- | --- | --- |
-| C1 | Mở `BadService.java`, xem rule đang áp dụng | Các rule `.cursor/rules/stackcrew/*.mdc` gắn vào file `*.java` (core, lang-java, stack-spring-boot) | |
+| C1 | Mở `BadService.java`. Xem Cursor Settings > Rules (mục Project Rules) và chỉ báo rule ở đầu khung chat. Rồi hỏi agent: "which rules apply to this file?" | Các rule `.cursor/rules/stackcrew/*.mdc` (core, lang-java, stack-spring-boot) hiện là Project Rules, và agent liệt kê chúng khi đang mở file `*.java`. Mở một file không phải Java thì rule theo glob không được liệt kê | |
 | C2 | Liệt kê skill trong Settings | Mỗi skill stackcrew hiện **một lần**, hoặc có đúng cảnh báo `cursor-duplicate-skills` (Cursor đọc cả `.claude/skills` và `.agents/skills`) | |
 | C3 | Liệt kê agent | Agent stackcrew được đọc từ `.claude/agents`, hiện đúng một lần | |
 | C4 | Mở một agent có `model: sonnet/opus/haiku` | Cursor chấp nhận trường `model` (spec §9.2 b), không báo lỗi frontmatter | |
@@ -23,18 +23,19 @@ Mục đích: những thứ test tự động không chứng minh được (hàn
 | # | Bước | Kỳ vọng | Kết quả |
 | --- | --- | --- | --- |
 | X1 | Hỏi Codex "bạn đang áp dụng quy tắc nào" | Trả lời dựa trên các Essentials trong khối stackcrew của `AGENTS.md` | |
+| X1b | Đo khối stackcrew trong `AGENTS.md` (từ `<!-- stackcrew:begin` đến `<!-- stackcrew:end -->`) và xem output của `init`/`sync` | Khối <= 16.000 byte, không có cảnh báo `agents-md-essentials-reduced` | |
 | X2 | Giao task Java (ví dụ thêm provider) | Codex gọi skill `stackcrew-spring-boot-rules` để đọc phần rule đầy đủ | |
 | X3 | Kiểm tra `.codex/agents/stackcrew-*.toml` | Agent được nạp, không báo lỗi parse | |
-| X4 | Skill có khóa lạ trong `SKILL.md` | Codex bỏ qua khóa lạ, vẫn nạp skill (spec §9.2 c) | |
+| X4 | Thêm `metadata: { owner: test }` (hoặc khóa `paths:`) vào frontmatter của `.agents/skills/stackcrew-spring-integration-provider/SKILL.md`, mở lại Codex | Codex vẫn liệt kê skill này, không báo lỗi; khóa lạ bị bỏ qua (spec §9.2 c) | |
 
 ## Antigravity
 
 | # | Bước | Kỳ vọng | Kết quả |
 | --- | --- | --- | --- |
-| A1 | Mở `BadService.java`, xem rule nào đang nạp | Rule glob trong `.agents/rules/stackcrew-*.md` **thật sự được nạp** (file có `trigger` sai bị bỏ qua mà không báo, nên phải kiểm bằng mắt) | |
+| A1 | Mở `BadService.java`. Vào panel Rules của Antigravity (Customizations > Rules) để xem danh sách, rồi hỏi agent: "which rules apply to this file?" | Rule glob trong `.agents/rules/stackcrew-*.md` **thật sự được nạp**: có trong panel và agent nêu được nội dung của chúng. File có `trigger` sai bị bỏ qua mà không báo, nên phải chứng minh bằng câu hỏi này | |
 | A2 | Mở một file không phải Java | Rule `lang-java` và `stack-spring-boot` không nạp | |
 | A3 | Liệt kê skill | Skill trong `.agents/skills/stackcrew-*` hiện đủ | |
-| A4 | Khóa lạ trong `SKILL.md` | Antigravity bỏ qua khóa lạ, vẫn nạp skill (spec §9.2 c) | |
+| A4 | Thêm `metadata: { owner: test }` (hoặc khóa `paths:`) vào frontmatter của `.agents/skills/stackcrew-spring-integration-provider/SKILL.md` | Antigravity vẫn liệt kê skill, bỏ qua khóa lạ (spec §9.2 c) | |
 
 ## Claude Code
 
@@ -67,9 +68,9 @@ Quy trình (đã chạy ngày 2026-10-24, kết quả bên dưới):
 
 1. Copy fixture ra thư mục tạm, `git init`.
 2. `node <repo>/bin/stackcrew.js init --stack spring-boot --tools claude --wire`.
-3. `mvn -q test`: **đạt**, thư mục `archunit_store/` được tạo (ghi lại vi phạm có sẵn của `BadService`).
+3. `mvn test` (không dùng `-q`, để thấy `Tests run: N`; hoặc xem `target/surefire-reports`): **đạt**, thư mục `archunit_store/` được tạo (ghi lại vi phạm có sẵn của `BadService`).
 4. Thêm `src/main/java/com/example/kyc/service/BadService2.java` có field `Map<String, Object>`.
-5. `mvn -q test` lần nữa: **fail**, thông báo ArchUnit nêu `BadService2`.
+5. `mvn test` lần nữa: **fail**, thông báo ArchUnit nêu `BadService2`.
 
 Kết quả: **đạt** (Maven 3.9.12, JDK 21.0.9 Corretto, Spring Boot 3.5.11 / surefire 3.5.4).
 
