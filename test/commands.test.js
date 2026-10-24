@@ -121,13 +121,13 @@ test('sync without a profile exits 1 telling to run init', async () => {
   assert.match(r.err, /run `stackcrew init` first/);
 });
 
-test('sync --wire is not implemented yet and writes nothing', async () => {
+test('sync --wire without a base package exits 1 and writes nothing', async () => {
   const dir = await tmp();
   await run(dir, 'init', '--stack', 'demo-java');
   const before = await readFile(path.join(dir, CORE), 'utf8');
   const r = await run(dir, 'sync', '--wire');
   assert.equal(r.code, 1);
-  assert.match(r.err, /--wire: not implemented yet/);
+  assert.match(r.err, /set java.basePackage in stackcrew.json/);
   assert.equal(await readFile(path.join(dir, CORE), 'utf8'), before);
 });
 

@@ -1,6 +1,11 @@
 import { loadCatalog } from '../catalog/load.js';
 import { validateCatalog } from '../catalog/validate.js';
-import { readProfile, validateProfile, PROFILE_FILE } from '../profile.js';
+import { readFile, writeFile } from 'node:fs/promises';
+import path from 'node:path';
+import { readProfile, writeProfile, validateProfile, PROFILE_FILE } from '../profile.js';
+import { detectProject } from '../detect.js';
+import { planJavaWiring } from '../wire/java.js';
+import { StackcrewError } from '../errors.js';
 import { buildContext, loadCustomRules } from '../render/context.js';
 import { renderProject } from '../render/index.js';
 import { applyOps } from '../fs/apply.js';
@@ -26,15 +31,23 @@ export async function runSync(projectDir, { force = false, wire = false, dryRun 
     return 1;
   }
 
-  // WIRE-BRANCH (Task 15 replaces this block with ArchUnit wiring).
+  let renderProfile = profile;
+  let wiring = null;
   if (wire) {
-    io.stderr.write('--wire: not implemented yet\n');
-    return 1;
+    wiring = await planWire(projectDir, catalog, profile, io);
+    if (typeof wiring === 'number') return wiring;
+    renderProfile = wiring.profile;
+    if (!dryRun) {
+      for (const e of wiring.changed) await writeFile(path.join(projectDir, e.path), e.content, 'utf8');
+      await writeProfile(projectDir, renderProfile);
+    }
+    for (const e of wiring.changed) io.stdout.write(`${dryRun ? 'would wire' : 'wired'}: ${e.path}\n`);
+    for (const n of wiring.notes) io.stdout.write(`note: ${n}\n`);
   }
 
   const version = await readPackageVersion();
   const customRules = await loadCustomRules(projectDir);
-  const ctx = buildContext(catalog, profile, { customRules, cli: `npx --yes stackcrew@${version}`, version });
+  const ctx = buildContext(catalog, renderProfile, { customRules, cli: `npx --yes stackcrew@${version}`, version });
   const { ops, warnings } = renderProject(ctx);
   const report = await applyOps(projectDir, ops, { force, dryRun });
 
@@ -47,8 +60,65 @@ export async function runSync(projectDir, { force = false, wire = false, dryRun 
     for (const p of report.skippedModified) io.stdout.write(`skipped (edited by hand): ${p}\n`);
     io.stdout.write('re-run with --force (your edits will be lost) or move them to .stackcrew/custom/\n');
   }
-  if (ctx.stack.language === 'java' && profile.java?.wired !== true) {
+  if (ctx.stack.language === 'java' && renderProfile.java?.wired !== true) {
     io.stdout.write('hint: run `stackcrew sync --wire` to add ArchUnit (test scope) and generate StackcrewArchitectureTest\n');
   }
+  if (wiring) {
+    io.stdout.write(
+      'note: .stackcrew/lint/checkstyle.xml is generated but not wired; '
+        + 'add maven-checkstyle-plugin (or the Gradle checkstyle plugin) pointing at it.\n',
+    );
+  }
   return report.skippedModified.length > 0 ? 1 : 0;
+}
+
+const BUILD_FILES = [
+  ['pom.xml', 'pomXml'],
+  ['build.gradle', 'buildGradle'],
+  ['build.gradle.kts', 'buildGradleKts'],
+];
+
+/** Read a build file as UTF-8 (BOM kept). Undefined if absent. Throws MARKER if not UTF-8. */
+async function readBuildFile(projectDir, rel) {
+  let buf;
+  try {
+    buf = await readFile(path.join(projectDir, rel));
+  } catch (err) {
+    if (err.code === 'ENOENT' || err.code === 'EISDIR') return undefined;
+    throw err;
+  }
+  const utf16 = buf.length >= 2 && ((buf[0] === 0xff && buf[1] === 0xfe) || (buf[0] === 0xfe && buf[1] === 0xff));
+  try {
+    if (utf16) throw new Error('utf-16');
+    return new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(buf);
+  } catch {
+    // Same check as readBlockHost in src/fs/apply.js (not exported there).
+    throw new StackcrewError('MARKER', `${rel}: not UTF-8 text; stackcrew will not edit it (convert it to UTF-8 first)`);
+  }
+}
+
+/** Plan --wire without writing. Returns an exit code (number) on failure. */
+async function planWire(projectDir, catalog, profile, io) {
+  if (catalog.stacks.get(profile.stack)?.language !== 'java') {
+    io.stderr.write('--wire: only supported for Java stacks\n');
+    return 1;
+  }
+  let basePackage = profile.java?.basePackage || '';
+  if (!basePackage) basePackage = (await detectProject(projectDir, catalog)).basePackage || '';
+  if (!basePackage) {
+    io.stderr.write('stackcrew: set java.basePackage in stackcrew.json\n');
+    return 1;
+  }
+  const originals = {};
+  for (const [rel] of BUILD_FILES) originals[rel] = await readBuildFile(projectDir, rel);
+  const input = {};
+  for (const [rel, key] of BUILD_FILES) if (originals[rel] !== undefined) input[key] = originals[rel];
+  const plan = planJavaWiring(input);
+  const notes = [...plan.notes];
+  if (Object.keys(input).length === 0) notes.push('no pom.xml or build.gradle(.kts) found; add com.tngtech.archunit:archunit-junit5 (test scope) yourself');
+  return {
+    changed: plan.edits.filter((e) => e.content !== originals[e.path]),
+    notes,
+    profile: { ...profile, java: { ...profile.java, basePackage, wired: true } },
+  };
 }
