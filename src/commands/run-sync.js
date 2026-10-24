@@ -4,7 +4,7 @@ import { readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { readProfile, writeProfile, validateProfile, PROFILE_FILE } from '../profile.js';
 import { detectProject } from '../detect.js';
-import { planJavaWiring } from '../wire/java.js';
+import { planJavaWiring, ARCHUNIT_VERSION } from '../wire/java.js';
 import { StackcrewError } from '../errors.js';
 import { buildContext, loadCustomRules } from '../render/context.js';
 import { renderProject } from '../render/index.js';
@@ -36,13 +36,18 @@ export async function runSync(projectDir, { force = false, wire = false, dryRun 
   if (wire) {
     wiring = await planWire(projectDir, catalog, profile, io);
     if (typeof wiring === 'number') return wiring;
-    renderProfile = wiring.profile;
-    if (!dryRun) {
-      for (const e of wiring.changed) await writeFile(path.join(projectDir, e.path), e.content, 'utf8');
-      await writeProfile(projectDir, renderProfile);
+    if (wiring.ok) {
+      renderProfile = wiring.profile;
+      if (!dryRun) {
+        for (const e of wiring.changed) await writeFile(path.join(projectDir, e.path), e.content, 'utf8');
+        await writeProfile(projectDir, renderProfile);
+      }
+      for (const e of wiring.changed) io.stdout.write(`${dryRun ? 'would wire' : 'wired'}: ${e.path}\n`);
+      for (const n of wiring.notes) io.stdout.write(`note: ${n}\n`);
+    } else {
+      io.stdout.write('wire: no build file could be wired; add this test dependency and re-run `stackcrew sync --wire`:\n');
+      for (const n of wiring.notes) io.stdout.write(`${n}\n`);
     }
-    for (const e of wiring.changed) io.stdout.write(`${dryRun ? 'would wire' : 'wired'}: ${e.path}\n`);
-    for (const n of wiring.notes) io.stdout.write(`note: ${n}\n`);
   }
 
   const version = await readPackageVersion();
@@ -63,13 +68,13 @@ export async function runSync(projectDir, { force = false, wire = false, dryRun 
   if (ctx.stack.language === 'java' && renderProfile.java?.wired !== true) {
     io.stdout.write('hint: run `stackcrew sync --wire` to add ArchUnit (test scope) and generate StackcrewArchitectureTest\n');
   }
-  if (wiring) {
+  if (wiring?.ok) {
     io.stdout.write(
       'note: .stackcrew/lint/checkstyle.xml is generated but not wired; '
         + 'add maven-checkstyle-plugin (or the Gradle checkstyle plugin) pointing at it.\n',
     );
   }
-  return report.skippedModified.length > 0 ? 1 : 0;
+  return report.skippedModified.length > 0 || (wiring && !wiring.ok) ? 1 : 0;
 }
 
 const BUILD_FILES = [
@@ -115,10 +120,17 @@ async function planWire(projectDir, catalog, profile, io) {
   for (const [rel, key] of BUILD_FILES) if (originals[rel] !== undefined) input[key] = originals[rel];
   const plan = planJavaWiring(input);
   const notes = [...plan.notes];
-  if (Object.keys(input).length === 0) notes.push('no pom.xml or build.gradle(.kts) found; add com.tngtech.archunit:archunit-junit5 (test scope) yourself');
+  if (Object.keys(input).length === 0) {
+    notes.push(
+      'no pom.xml or build.gradle(.kts) found; add one of:\n'
+        + `Maven:  <dependency><groupId>com.tngtech.archunit</groupId><artifactId>archunit-junit5</artifactId><version>${ARCHUNIT_VERSION}</version><scope>test</scope></dependency>\n`
+        + `Gradle: testImplementation 'com.tngtech.archunit:archunit-junit5:${ARCHUNIT_VERSION}'`,
+    );
+  }
   return {
     changed: plan.edits.filter((e) => e.content !== originals[e.path]),
     notes,
+    ok: plan.wired.length > 0,
     profile: { ...profile, java: { ...profile.java, basePackage, wired: true } },
   };
 }

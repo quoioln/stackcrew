@@ -212,3 +212,60 @@ test('sync --wire refuses a non-UTF-8 build file and writes nothing', async () =
   assert.equal(await readFile(path.join(dir, 'build.gradle'), 'utf8'), 'dependencies {\n}\n');
   assert.ok(!existsSync(path.join(dir, TEST_FILE)));
 });
+
+const DM_ONLY_POM = '<project>\n  <dependencyManagement>\n    <dependencies>\n      <dependency><groupId>x</groupId><artifactId>bom</artifactId></dependency>\n    </dependencies>\n  </dependencyManagement>\n</project>\n';
+
+test('planJavaWiring: self-closing dependencies, profile-only pom, subprojects-only gradle, brace in string', () => {
+  const sc = planJavaWiring({ pomXml: '<project>\n  <dependencies/>\n</project>\n' });
+  assert.deepEqual([sc.edits, sc.wired], [[], []]);
+  assert.equal(sc.notes.length, 1);
+  const prof = planJavaWiring({ pomXml: '<project>\n  <profiles><profile><dependencies>\n  </dependencies></profile></profiles>\n</project>\n' });
+  assert.deepEqual([prof.edits, prof.wired], [[], []]);
+  const sub = planJavaWiring({ buildGradle: 'subprojects {\n  dependencies {\n    implementation "a:b:1"\n  }\n}\nallprojects { dependencies { } }\n' });
+  assert.deepEqual([sub.edits, sub.wired], [[], []]);
+  assert.match(sub.notes[0], /build\.gradle/);
+  const str = planJavaWiring({ buildGradle: 'def s = "{"\ndependencies {\n}\n' });
+  assert.deepEqual(str.wired, ['build.gradle']);
+  assert.ok(str.edits[0].content.indexOf('// stackcrew:begin') > str.edits[0].content.indexOf('dependencies {'));
+});
+
+test('planJavaWiring: hand-declared archunit-junit5 is left alone and counts as wired', () => {
+  const pom = POM.replace('</dependencies>\n  <build>', '<dependency><groupId>com.tngtech.archunit</groupId><artifactId>archunit-junit5</artifactId><scope>test</scope></dependency>\n  </dependencies>\n  <build>');
+  const r = planJavaWiring({ pomXml: pom });
+  assert.deepEqual([r.edits, r.wired], [[], ['pom.xml']]);
+  assert.equal(r.notes[0], 'pom.xml already declares archunit-junit5; not adding it again');
+  const g = planJavaWiring({ buildGradleKts: 'dependencies {\n  testImplementation("com.tngtech.archunit:archunit-junit5:1.0.0")\n}\n' });
+  assert.deepEqual([g.edits, g.wired], [[], ['build.gradle.kts']]);
+  const commented = planJavaWiring({ buildGradle: 'dependencies {\n  // testImplementation "com.tngtech.archunit:archunit-junit5:1"\n}\n' });
+  assert.equal(commented.edits.length, 1);
+});
+
+async function assertNotWired(dir, r) {
+  assert.equal(r.code, 1, r.err + r.out);
+  assert.match(r.out, /wire: no build file could be wired; add this test dependency and re-run `stackcrew sync --wire`:/);
+  assert.match(r.out, /archunit-junit5/);
+  assert.ok(!existsSync(path.join(dir, TEST_FILE)));
+  assert.equal(JSON.parse(await readFile(path.join(dir, 'stackcrew.json'), 'utf8')).java.wired, false);
+}
+
+test('sync --wire with no build file exits 1, no ArchUnit test, wired stays false', async () => {
+  const dir = await javaProject(null);
+  await assertNotWired(dir, await run(dir, 'sync', '--wire'));
+});
+
+test('sync --wire with a dependencyManagement-only pom: same, pom unchanged', async () => {
+  const dir = await javaProject(DM_ONLY_POM);
+  await assertNotWired(dir, await run(dir, 'sync', '--wire'));
+  assert.equal(await readFile(path.join(dir, 'pom.xml'), 'utf8'), DM_ONLY_POM);
+});
+
+test('sync --wire with a hand-declared archunit pom: pom untouched, wired true, test emitted', async () => {
+  const pom = '<project>\n  <dependencies>\n    <dependency><groupId>com.tngtech.archunit</groupId><artifactId>archunit-junit5</artifactId><version>1.0.0</version><scope>test</scope></dependency>\n  </dependencies>\n</project>\n';
+  const dir = await javaProject(pom);
+  const r = await run(dir, 'sync', '--wire');
+  assert.equal(r.code, 0, r.err + r.out);
+  assert.match(r.out, /note: pom\.xml already declares archunit-junit5; not adding it again/);
+  assert.equal(await readFile(path.join(dir, 'pom.xml'), 'utf8'), pom);
+  assert.ok(existsSync(path.join(dir, TEST_FILE)));
+  assert.equal(JSON.parse(await readFile(path.join(dir, 'stackcrew.json'), 'utf8')).java.wired, true);
+});

@@ -42,17 +42,23 @@ function pomDependencyLines(indent) {
 
 const POM_SNIPPET = pomDependencyLines('').join('\n');
 
+const DECLARED = (file) => `${file} already declares archunit-junit5; not adding it again`;
+
+/** True when text (comments already blanked) declares archunit-junit5 by hand. */
+const declaresArchunit = (text) => text.includes('com.tngtech.archunit') && text.includes('archunit-junit5');
+
 function planPom(text) {
   const eol = eolOf(text);
   const existingIndent = markerIndent(text, MD_MARKERS.begin);
   if (existingIndent !== null) {
-    return { content: upsertMarkedBlock(text, pomDependencyLines(existingIndent).join('\n'), MD_MARKERS) };
+    return { content: upsertMarkedBlock(text, pomDependencyLines(existingIndent).join('\n'), MD_MARKERS), carries: true };
   }
 
   let masked = blankAll(text, /<!--[\s\S]*?-->/g, (c) => c.trim() === MD_MARKERS.begin || c.trim() === MD_MARKERS.end);
   for (const tag of ['dependencyManagement', 'build', 'profiles']) {
     masked = blankAll(masked, new RegExp(`<${tag}\\b[^>]*>[\\s\\S]*?</${tag}\\s*>`, 'g'));
   }
+  if (declaresArchunit(masked)) return { note: DECLARED('pom.xml'), carries: true };
   const open = /<dependencies\s*>/.exec(masked);
   const close = open ? /<\/dependencies\s*>/.exec(masked.slice(open.index)) : null;
   if (!open || !close) {
@@ -77,9 +83,9 @@ function planPom(text) {
 
   const block = [indent + MD_MARKERS.begin, ...pomDependencyLines(indent), indent + MD_MARKERS.end].join(eol);
   if (/^[ \t]*$/.test(text.slice(lineStart, closeIdx))) {
-    return { content: text.slice(0, lineStart) + block + eol + text.slice(lineStart) };
+    return { content: text.slice(0, lineStart) + block + eol + text.slice(lineStart), carries: true };
   }
-  return { content: text.slice(0, closeIdx) + eol + block + eol + text.slice(closeIdx) };
+  return { content: text.slice(0, closeIdx) + eol + block + eol + text.slice(closeIdx), carries: true };
 }
 
 // ---------- Gradle ----------
@@ -134,8 +140,10 @@ function planGradle(text, file) {
   const eol = eolOf(text);
   const existingIndent = markerIndent(text, GRADLE_MARKERS.begin);
   if (existingIndent !== null) {
-    return { content: upsertMarkedBlock(text, gradleLine(kotlin, existingIndent), GRADLE_MARKERS) };
+    return { content: upsertMarkedBlock(text, gradleLine(kotlin, existingIndent), GRADLE_MARKERS), carries: true };
   }
+  const uncommented = blankAll(blankAll(text, /\/\*[\s\S]*?\*\//g), /\/\/[^\r\n]*/g);
+  if (declaresArchunit(uncommented)) return { note: DECLARED(file), carries: true };
   const at = findTopLevelDependencies(text);
   if (at === -1) {
     return {
@@ -149,9 +157,9 @@ function planGradle(text, file) {
   if (text.slice(at, lineEnd).trim() === '') {
     const insertAt = nl === -1 ? text.length : nl + 1;
     const lead = nl === -1 ? eol : '';
-    return { content: text.slice(0, insertAt) + lead + block + eol + text.slice(insertAt) };
+    return { content: text.slice(0, insertAt) + lead + block + eol + text.slice(insertAt), carries: true };
   }
-  return { content: text.slice(0, at) + eol + block + eol + text.slice(at) };
+  return { content: text.slice(0, at) + eol + block + eol + text.slice(at), carries: true };
 }
 
 /**
@@ -159,11 +167,13 @@ function planGradle(text, file) {
  * texts (undefined = file absent) and returns the edits and notes; the caller does I/O.
  * Throws StackcrewError MARKER when an existing marked block is corrupt.
  * @param {{ pomXml?: string, buildGradle?: string, buildGradleKts?: string }} files
- * @returns {{ edits: { path: 'pom.xml'|'build.gradle'|'build.gradle.kts', content: string }[], notes: string[] }}
+ * `wired` lists the files that carry the ArchUnit dependency after the edits (marked block, or declared by hand).
+ * @returns {{ edits: { path: 'pom.xml'|'build.gradle'|'build.gradle.kts', content: string }[], notes: string[], wired: string[] }}
  */
 export function planJavaWiring({ pomXml, buildGradle, buildGradleKts } = {}) {
   const edits = [];
   const notes = [];
+  const wired = [];
   const jobs = [
     ['pom.xml', pomXml, (t) => planPom(t)],
     ['build.gradle', buildGradle, (t) => planGradle(t, 'build.gradle')],
@@ -174,6 +184,7 @@ export function planJavaWiring({ pomXml, buildGradle, buildGradleKts } = {}) {
     const r = plan(text);
     if (r.content !== undefined) edits.push({ path: file, content: r.content });
     if (r.note) notes.push(r.note);
+    if (r.carries) wired.push(file);
   }
-  return { edits, notes };
+  return { edits, notes, wired };
 }
