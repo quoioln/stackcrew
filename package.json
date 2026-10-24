@@ -1,0 +1,22 @@
+{
+  "name": "stackcrew",
+  "version": "0.1.0",
+  "description": "Coding rules, per-stack skills and dev/test roles for AI agents (Claude Code, Cursor, Codex, Antigravity)",
+  "type": "module",
+  "bin": {
+    "stackcrew": "bin/stackcrew.js"
+  },
+  "files": [
+    "bin",
+    "src",
+    "catalog",
+    "README.md"
+  ],
+  "engines": {
+    "node": ">=18.3"
+  },
+  "scripts": {
+    "test": "node --test"
+  },
+  "license": "MIT"
+}
