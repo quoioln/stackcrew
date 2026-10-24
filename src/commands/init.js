@@ -38,7 +38,8 @@ export async function initCommand(args, io) {
     'no-guard': { type: 'boolean' },
   }, USAGE);
 
-  if ((await readProfile(io.cwd)) && !values.force) {
+  const existing = await readProfile(io.cwd);
+  if (existing && !values.force) {
     io.stderr.write(`stackcrew: already initialized (${PROFILE_FILE} exists); use \`stackcrew sync\`\n`);
     return 1;
   }
@@ -79,6 +80,16 @@ export async function initCommand(args, io) {
     basePackage: stack.language === 'java' ? detected.basePackage : null,
   }, catalog);
 
+  if (existing) {
+    if (existing.decisions) profile.decisions = existing.decisions;
+    if (existing.context) profile.context = existing.context;
+    if (profile.java && existing.java) {
+      if (typeof existing.java.basePackage === 'string') profile.java.basePackage = existing.java.basePackage;
+      if (existing.java.wired === true) profile.java.wired = true;
+    }
+    io.stdout.write('overwriting existing stackcrew.json (kept: decisions, context, java settings)\n');
+  }
+
   const errors = validateProfile(profile, catalog);
   if (errors.length > 0) {
     for (const e of errors) io.stderr.write(`stackcrew: ${e}\n`);
@@ -86,7 +97,7 @@ export async function initCommand(args, io) {
   }
   await writeProfile(io.cwd, profile);
 
-  const code = await runSync(io.cwd, { force: values.force, wire: values.wire }, io);
+  const code = await runSync(io.cwd, { force: false, wire: values.wire, dryRun: false }, io);
   if (code === 0) {
     if (tools.includes('claude')) io.stdout.write('next: in Claude Code run /stackcrew:init to run the architecture interview\n');
     if (tools.some((t) => t !== 'claude')) io.stdout.write('next: ask your agent to use the skill stackcrew-init\n');

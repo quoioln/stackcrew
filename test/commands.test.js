@@ -244,3 +244,33 @@ test('custom rule in .stackcrew/custom is rendered for claude and cursor', async
     assert.ok((await readFile(path.join(dir, f), 'utf8')).includes('CUSTOMMARK'), f);
   }
 });
+
+test('init --force keeps decisions, context and java settings', async () => {
+  const dir = await tmp();
+  await run(dir, 'init', '--stack', 'demo-java');
+  const p = await readJson(path.join(dir, 'stackcrew.json'));
+  p.decisions = [{ id: 'd1', area: 'db', decision: 'postgres', rationale: 'r', rejected: ['mysql'] }];
+  p.context = { team: 'payments' };
+  p.java = { basePackage: 'com.acme.app', wired: true };
+  await writeFile(path.join(dir, 'stackcrew.json'), JSON.stringify(p, null, 2));
+  const r = await run(dir, 'init', '--force', '--stack', 'demo-java', '--tools', 'claude');
+  assert.equal(r.code, 0, r.err + r.out);
+  assert.match(r.out, /overwriting existing stackcrew\.json \(kept: decisions, context, java settings\)/);
+  const q = await readJson(path.join(dir, 'stackcrew.json'));
+  assert.deepEqual(q.decisions, p.decisions);
+  assert.deepEqual(q.context, p.context);
+  assert.equal(q.java.basePackage, 'com.acme.app');
+  assert.deepEqual(q.tools, ['claude']);
+});
+
+test('init --force never force-overwrites hand-edited generated files', async () => {
+  const dir = await tmp();
+  await run(dir, 'init', '--stack', 'demo-java');
+  const file = path.join(dir, CORE);
+  const edited = (await readFile(file, 'utf8')) + '\nMY HAND EDIT\n';
+  await writeFile(file, edited);
+  const r = await run(dir, 'init', '--force', '--stack', 'demo-java');
+  assert.equal(r.code, 1);
+  assert.ok(r.out.includes(`skipped (edited by hand): ${CORE}`), r.out);
+  assert.equal(await readFile(file, 'utf8'), edited);
+});
