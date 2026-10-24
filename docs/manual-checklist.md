@@ -72,12 +72,21 @@ Quy trình (đã chạy ngày 2026-10-24, kết quả bên dưới):
 4. Thêm `src/main/java/com/example/kyc/service/BadService2.java` có field `Map<String, Object>`.
 5. `mvn test` lần nữa: **fail**, thông báo ArchUnit nêu `BadService2`.
 
-Kết quả: **đạt** (Maven 3.9.12, JDK 21.0.9 Corretto, Spring Boot 3.5.11 / surefire 3.5.4).
+Kết quả: **đạt** (Maven 3.9.12, JDK 21.0.9 Corretto). Chạy lại ngày 2026-10-24 (Task 22b) trên bản sao fixture, chỉ đổi phiên bản parent Spring Boot:
 
-- Lần 1: `Tests run: 4, Failures: 0`, `BUILD SUCCESS`, `archunit_store/` có 4 file rule và `stored.rules`.
-- Lần 2: `Tests run: 4, Failures: 1`, `com.example.kyc.service.BadService2.data has field type java.util.Map<java.lang.String, java.lang.Object> (SC-TYPE)`.
+| Spring Boot | surefire | Lần 1 (store mới) | Lần 2 (+ `BadService2`) |
+|---|---|---|---|
+| 3.2.12 | 3.1.2 | `Tests run: 5, Failures: 0`, BUILD SUCCESS | `Tests run: 5, Failures: 1`, exit 1 |
+| 3.3.13 | 3.2.5 | `Tests run: 5, Failures: 0`, BUILD SUCCESS | `Tests run: 5, Failures: 1`, exit 1 |
+| 3.4.9 | 3.5.3 | `Tests run: 5, Failures: 0`, BUILD SUCCESS | `Tests run: 5, Failures: 1`, exit 1 |
+| 3.5.4 | 3.5.3 | `Tests run: 5, Failures: 0`, BUILD SUCCESS | `Tests run: 5, Failures: 1`, exit 1 |
+| 3.5.11 | 3.5.4 | `Tests run: 5, Failures: 0`, BUILD SUCCESS | `Tests run: 5, Failures: 1`, exit 1 |
+| 3.4.9 (Gradle 8.14.4) | — | `tests="5" failures="0"`, exit 0 | `tests="5" failures="1"`, exit 1 |
 
-**Cảnh báo bắt buộc kiểm:** với Spring Boot 3.4.x đến 3.5.4 (surefire 3.5.3), `mvn test` báo `Tests run: 0` và build xanh, ArchUnit **không chạy**. Mọi lần kiểm Maven phải thấy `Tests run: 4` (hoặc nhiều hơn) trong log; nếu thấy 0 thì nâng surefire lên >= 3.5.4. Plan 3 cần quyết định `--wire` có tự đặt `maven-surefire-plugin.version` hay chỉ cảnh báo.
+- Lần 1: `archunit_store/` có 4 file rule và `stored.rules`.
+- Lần 2: thông báo nêu `com.example.kyc.service.BadService2.data has field type java.util.Map<java.lang.String, java.lang.Object> (SC-TYPE)`; vi phạm có sẵn của `BadService` không bị báo.
+
+**Bắt buộc kiểm:** log phải có `Tests run: 5` (Gradle: `build/test-results/test/TEST-*.xml` có `tests="5"`). Nếu thấy `Tests run: 0` hoặc ít hơn 5, gate ArchUnit không hoạt động. Khi đó kiểm tra `StackcrewArchitectureTest` có bị sửa tay về dạng field `static final ArchRule` không (surefire 3.5.3 bỏ kết quả của rule dạng field), và với Gradle, task `test` có `useJUnitPlatform()` không.
 
 ## Ký xác nhận
 

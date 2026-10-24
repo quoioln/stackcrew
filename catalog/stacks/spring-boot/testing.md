@@ -112,7 +112,7 @@ class HypervergeAdapterTest {
 ## ArchUnit
 
 - `StackcrewArchitectureTest` is generated into `src/test/java/<base package>/stackcrew/` when wiring is on. Do not edit it by hand; regenerate with the stackcrew `sync`.
-- Add project-specific architecture rules in a separate test class in the same package tree.
+- Add project-specific architecture rules in a separate test class in the same package tree. Declare each rule as a method, `@ArchTest static void rule_name(JavaClasses classes) { ... .check(classes); }`, not as a `static final ArchRule` field: maven-surefire-plugin 3.5.3 runs field rules but drops their results, so the build stays green even with violations.
 - The rules are wrapped in `FreezingArchRule`: existing violations of a brownfield codebase are recorded in the `archunit_store` directory and only new violations fail. Commit `archunit_store`; it may only shrink, so fix violations and let the baseline lose lines, never add to it by hand or re-freeze to hide a new violation.
 - The rules cover `..service..` and `..domain..` only (plus domain must not depend on `..infrastructure..` or `..adapter..`, and controllers must not depend on repositories). Boundary deserialization and framework config belong in `infrastructure`, `adapter` or `config` packages, outside the scan.
 

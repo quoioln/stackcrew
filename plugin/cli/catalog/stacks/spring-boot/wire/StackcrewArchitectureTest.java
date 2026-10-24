@@ -2,6 +2,7 @@ package {{sc:basePackage}}.stackcrew;
 
 import com.tngtech.archunit.ArchConfiguration;
 import com.tngtech.archunit.core.domain.JavaClass;
+import com.tngtech.archunit.core.domain.JavaClasses;
 import com.tngtech.archunit.core.domain.JavaCodeUnit;
 import com.tngtech.archunit.core.domain.JavaField;
 import com.tngtech.archunit.core.domain.JavaParameterizedType;
@@ -11,7 +12,6 @@ import com.tngtech.archunit.core.importer.ImportOption;
 import com.tngtech.archunit.junit.AnalyzeClasses;
 import com.tngtech.archunit.junit.ArchTest;
 import com.tngtech.archunit.lang.ArchCondition;
-import com.tngtech.archunit.lang.ArchRule;
 import com.tngtech.archunit.lang.ConditionEvents;
 import com.tngtech.archunit.lang.SimpleConditionEvent;
 
@@ -50,33 +50,61 @@ class StackcrewArchitectureTest {
     // adapter or config packages, which are not scanned. A JSON attribute of a domain entity is a typed
     // record plus an AttributeConverter, not a Map<String, Object> or JsonNode field.
 
+    // Why methods and not `static final ArchRule` fields: maven-surefire-plugin 3.5.3 (managed by Spring Boot
+    // 3.4.5-3.4.9 and 3.5.0-3.5.5) drops the results of tests whose JUnit source is not a method or a class.
+    // ArchUnit gives a field rule its own FieldSource, so field rules ran but were never reported: "Tests run: 0"
+    // and a green build even with new violations. An @ArchTest method has a MethodSource and is reported by
+    // every surefire version. Keep every rule in this file a method.
+
     /** SC-TYPE: no untyped payloads in service or domain fields, parameters or return types. */
     @ArchTest
-    static final ArchRule no_untyped_payloads_in_service_and_domain = freeze(classes()
-            .that().resideInAnyPackage("..service..", "..domain..")
-            .should(notExposeUntypedPayloads())
-            .allowEmptyShould(true));
+    static void no_untyped_payloads_in_service_and_domain(JavaClasses classes) {
+        freeze(classes()
+                .that().resideInAnyPackage("..service..", "..domain..")
+                .should(notExposeUntypedPayloads())
+                .allowEmptyShould(true)).check(classes);
+    }
 
     /** Constructor injection only. */
     @ArchTest
-    static final ArchRule no_field_injection = freeze(noFields()
-            .should().beAnnotatedWith(AUTOWIRED)
-            .because("use constructor injection")
-            .allowEmptyShould(true));
+    static void no_field_injection(JavaClasses classes) {
+        freeze(noFields()
+                .should().beAnnotatedWith(AUTOWIRED)
+                .because("use constructor injection")
+                .allowEmptyShould(true)).check(classes);
+    }
 
     /** Layering: a controller goes through a service, never straight to a repository. */
     @ArchTest
-    static final ArchRule controllers_do_not_depend_on_repositories = freeze(noClasses()
-            .that().resideInAnyPackage("..controller..", "..web..", "..api..")
-            .should().dependOnClassesThat().resideInAnyPackage("..repository..", "..repositories..")
-            .allowEmptyShould(true));
+    static void controllers_do_not_depend_on_repositories(JavaClasses classes) {
+        freeze(noClasses()
+                .that().resideInAnyPackage("..controller..", "..web..", "..api..")
+                .should().dependOnClassesThat().resideInAnyPackage("..repository..", "..repositories..")
+                .allowEmptyShould(true)).check(classes);
+    }
 
     /** Anti-corruption: provider DTOs live in infrastructure or adapter packages and must not leak into the domain. */
     @ArchTest
-    static final ArchRule domain_does_not_depend_on_infrastructure = freeze(noClasses()
-            .that().resideInAPackage("..domain..")
-            .should().dependOnClassesThat().resideInAnyPackage("..infrastructure..", "..adapter..")
-            .allowEmptyShould(true));
+    static void domain_does_not_depend_on_infrastructure(JavaClasses classes) {
+        freeze(noClasses()
+                .that().resideInAPackage("..domain..")
+                .should().dependOnClassesThat().resideInAnyPackage("..infrastructure..", "..adapter..")
+                .allowEmptyShould(true)).check(classes);
+    }
+
+    /**
+     * Sanity check: the rules above allow an empty selection, so a wrong base package would make all of them pass
+     * without checking anything. This fails instead when no production class was imported.
+     */
+    @ArchTest
+    static void base_package_contains_classes(JavaClasses classes) {
+        if (classes.isEmpty()) {
+            throw new AssertionError("StackcrewArchitectureTest imported no classes from {{sc:basePackage}}"
+                    + " (test classes excluded), so no architecture rule checked anything."
+                    + " Set java.basePackage in stackcrew.json to the root package of your main code"
+                    + " and run `stackcrew sync`.");
+        }
+    }
 
     private static ArchCondition<JavaClass> notExposeUntypedPayloads() {
         return new ArchCondition<>("not expose JsonNode, ObjectNode or Map with an Object value type") {

@@ -87,7 +87,7 @@ Chi tiết:
 - `sync` chỉ tạo, ghi đè hoặc xóa file nằm trong danh sách file do stackcrew sở hữu (ghi trong `.stackcrew/manifest.json`). File sinh ra mà bạn sửa tay sẽ **không bị ghi đè**: được báo, lệnh thoát với exit 1. Dùng `--force` để ghi đè, hoặc chuyển phần sửa sang `.stackcrew/custom/`.
 - `--wire` (Java): thêm `archunit-junit5` (test scope) vào `pom.xml` / `build.gradle(.kts)` và sinh `src/test/java/<basePackage>/stackcrew/StackcrewArchitectureTest.java`.
 
-  Lưu ý: với Maven + Spring Boot 3.4.x đến 3.5.4, surefire 3.5.3 không chạy test ArchUnit (xem "Giới hạn hiện tại"). Gradle không bị ảnh hưởng theo hiểu biết hiện tại, nhưng chưa được kiểm chứng. Bản cập nhật engine sắp tới sẽ cho `--wire` xử lý phiên bản surefire.
+  Test sinh ra có 5 test: 4 rule (khai báo dạng method `@ArchTest`) và `base_package_contains_classes`. Test cuối fail khi `java.basePackage` không khớp class nào, vì khi đó 4 rule sẽ pass mà không kiểm gì. Sau `mvn test` / `gradle test`, log phải có `Tests run: 5`. Đã kiểm với Maven 3.9.12 trên Spring Boot 3.2.12, 3.3.13, 3.4.9, 3.5.4, 3.5.11 (surefire 3.1.2, 3.2.5, 3.5.3, 3.5.4) và Gradle 8.14.4 trên Spring Boot 3.4.9 (xem "Giới hạn hiện tại").
 - `check` thoát `0` khi sạch, `1` khi có vi phạm, `2` khi không chạy được (ngoài git repo, thiếu base ref, thiếu `.stackcrew/guard.json`). Nó không bao giờ in "0 violations" khi không chạy được. Không có cờ nào thì quét thay đổi so với `HEAD` kèm file chưa theo dõi.
 
 ## Jenkins
@@ -151,7 +151,8 @@ Chạy `stackcrew sync` để render. Mỗi rule có phần `## Essentials` tố
 - Guard hook lúc ghi (L2) **chỉ có trên Claude Code**. Tool khác chỉ có L1 (rule) và L3 (build, CI).
 - `.stackcrew/lint/checkstyle.xml` được sinh nhưng **chưa nối** vào build: thêm `maven-checkstyle-plugin` (hoặc plugin checkstyle của Gradle) trỏ vào file đó.
 - ArchUnit dùng `FreezingArchRule`: lần chạy test đầu tiên ghi vi phạm hiện có vào thư mục `archunit_store/`. **Phải commit `archunit_store/`**; từ đó chỉ vi phạm mới làm test fail.
-- Surefire 3.5.3 (Spring Boot 3.4.x đến 3.5.4 khóa phiên bản này) không chạy test ArchUnit: báo `Tests run: 0` mà build vẫn xanh. Dùng Spring Boot 3.5.5 trở lên hoặc đặt `<maven-surefire-plugin.version>3.5.4</maven-surefire-plugin.version>`, rồi kiểm tra log có `Tests run: 4`.
+- Surefire 3.5.3 (Spring Boot 3.4.5–3.4.9 và 3.5.0–3.5.5 khóa phiên bản này) bỏ kết quả của rule ArchUnit khai báo dạng field (`@ArchTest static final ArchRule ...`): rule vẫn chạy nhưng log báo `Tests run: 0` và build vẫn xanh dù có vi phạm. Test do stackcrew sinh khai báo mọi rule dạng method (`@ArchTest static void ten_rule(JavaClasses classes)`) nên không bị ảnh hưởng, với mọi phiên bản surefire. Rule ArchUnit **của bạn** trong class khác: viết dạng method, hoặc nâng surefire lên 3.5.4 trở lên (với `spring-boot-starter-parent`: `<maven-surefire-plugin.version>3.5.4</maven-surefire-plugin.version>`).
+- Gradle không dùng surefire nên không bị lỗi trên. Task `test` phải có `useJUnitPlatform()` (Spring Initializr có sẵn); thiếu dòng này thì Gradle không chạy test JUnit 5 nào, kể cả ArchUnit.
 - Codex không có glob nên `AGENTS.md` chỉ chứa các Essentials rút gọn (tối đa 5 mục mỗi rule, tự giảm 5 → 3 → 1 kèm cảnh báo `agents-md-essentials-reduced` nếu vượt ngân sách 16.000 byte); phần đầy đủ nằm trong skill `stackcrew-spring-boot-rules`.
 
 ## Phát triển

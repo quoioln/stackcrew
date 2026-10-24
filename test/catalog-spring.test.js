@@ -193,6 +193,35 @@ test('wire template fills basePackage and keeps the ArchUnit rules', async () =>
   });
 });
 
+// Surefire 3.5.3 (SUREFIRE-1643) drops results of tests whose JUnit TestSource is neither a MethodSource nor a
+// ClassSource. ArchUnit gives @ArchTest fields its own FieldSource, so field rules ran but were never reported:
+// "Tests run: 0" and a green build even with violations. @ArchTest methods carry a MethodSource and are reported.
+const FIELD_RULE = /@ArchTest\s+(?:public\s+)?static\s+final\s+ArchRule\b/;
+const RULE_METHODS = ['no_untyped_payloads_in_service_and_domain', 'no_field_injection',
+  'controllers_do_not_depend_on_repositories', 'domain_does_not_depend_on_infrastructure'];
+
+test('wire template declares every rule as an @ArchTest method, plus a non-empty import check', async () => {
+  assert.match('@ArchTest\n    static final ArchRule x = y;', FIELD_RULE, 'FIELD_RULE regex lost its escapes');
+  await withRealCatalog(async (c) => {
+    const profile = profileFor(c);
+    profile.java.wired = true;
+    const ctx = buildContext(c, profile, { cli: 'npx stackcrew', version: '0.0.0' });
+    const { content } = renderShared(ctx).find((o) => o.path === 'src/test/java/com/acme/kyc/stackcrew/StackcrewArchitectureTest.java');
+    assert.doesNotMatch(content, FIELD_RULE);
+    assert.ok(content.includes('import com.tngtech.archunit.core.domain.JavaClasses;'));
+    for (const name of RULE_METHODS) {
+      assert.match(content, new RegExp(`@ArchTest\\n {4}static void ${name}\\(JavaClasses classes\\) \\{\\n {8}freeze\\(`), name);
+    }
+    assert.equal(content.split('.check(classes);').length - 1, RULE_METHODS.length);
+    assert.match(content, /@ArchTest\n {4}static void base_package_contains_classes\(JavaClasses classes\) \{\n {8}if \(classes\.isEmpty\(\)\) \{/);
+    assert.ok(content.includes('"StackcrewArchitectureTest imported no classes from com.acme.kyc'));
+    assert.ok(content.includes('java.basePackage in stackcrew.json'));
+    assert.equal(content.match(/^ {4}@ArchTest$/gm).length, RULE_METHODS.length + 1);
+    assert.ok(c.stacks.get('spring-boot').testing.body.includes('`@ArchTest static void rule_name(JavaClasses classes)'),
+      'testing guidance tells agents to write project rules as methods');
+  });
+});
+
 test('lint config carries the required modules', async () => {
   await withRealCatalog(async (c) => {
     const f = c.stacks.get('spring-boot').lintFiles.find((x) => x.relPath === 'checkstyle.xml');
