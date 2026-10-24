@@ -27,7 +27,7 @@ Before writing tests for a non-trivial change, write the note (3-8 lines): what 
 Use the testing skill listed in your frontmatter as the recipe for this stack. Read it fully before you start.
 
 ## Decision gate
-Stop and ask the user, with 2-3 options, before adding a new test framework, a new containerized dependency, or a paid or shared test environment. After the user decides, record it as a new entry in `stackcrew.json` `decisions[]` with `id`, `area`, `decision`, `rationale` and `rejected[]`.
+Stop and ask the user, with 2-3 options, before adding a new test framework, a new containerized dependency, or a paid or shared test environment. After the user decides, record it as a new entry in `stackcrew.json` `decisions[]` with `id`, `area`, `decision`, `rationale` and `rejected[]`. Then ask the user to run sync again so `docs/stackcrew/architecture-profile.md` is updated.
 
 ## Boundaries
 - Do not change production code to make a test pass; report the defect to the user.

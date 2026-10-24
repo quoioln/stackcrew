@@ -75,3 +75,19 @@ test('no SDLC-only concepts leak', async () => {
     }
   }
 });
+
+test('recording a decision asks the user to re-sync (always-on and every role); always-on stays within budget', async () => {
+  const files = ['core/always-on.md', 'roles/tech-lead.md', 'roles/developer.md', 'roles/tester.md'];
+  for (const f of files) {
+    const text = await readFile(path.join(ROOT, 'catalog', f), 'utf8');
+    assert.ok(text.includes('ask the user to run sync again so `docs/stackcrew/architecture-profile.md` is updated'), f);
+  }
+  const alwaysOn = await readFile(path.join(ROOT, 'catalog/core/always-on.md'));
+  assert.ok(alwaysOn.length <= 6000, `always-on is ${alwaysOn.length} bytes`);
+});
+
+test('stackcrew-init tells the agent where to find the reference skills on the first run', async () => {
+  const text = await readFile(path.join(ROOT, 'catalog/skills/stackcrew-init/SKILL.md'), 'utf8');
+  assert.ok(text.includes('${CLAUDE_PLUGIN_ROOT}/cli/catalog/skills/'));
+  assert.ok(text.includes('re-check after the first sync'));
+});

@@ -30,7 +30,7 @@ Ask ONE question per message and wait for the answer. Skip any question already 
 Stop interviewing when you can justify every proposal below. Do not ask more than needed.
 
 ## 3. Propose
-Present one proposal with reasons, each tied to an interview answer. Keep it short. Read `references/stack-selection.md` for the stack. Read the files of the `stackcrew-pattern-guide` skill (`architecture-styles.md`, `patterns/*`) and of the `stackcrew-messaging-choice` skill as reference material for architecture, patterns and messaging; do not start those skills. Cover:
+Present one proposal with reasons, each tied to an interview answer. Keep it short. Read `references/stack-selection.md` for the stack. Read the files of the `stackcrew-pattern-guide` skill (`architecture-styles.md`, `patterns/*`) and of the `stackcrew-messaging-choice` skill as reference material for architecture, patterns and messaging; do not start those skills. If those files are not in the project yet (on the first run only the init skill is installed), read them from the plugin bundle if available (`${CLAUDE_PLUGIN_ROOT}/cli/catalog/skills/...`), or run the interview with the general guidance and re-check after the first sync. Cover:
 
 - **Stack** (only if not decided) and **add-ons** (`kafka`, `rabbitmq`, `camel`, `observability`).
 - **Architecture style**: the simplest one that fits scale, timeline, stability and extensibility.

@@ -66,6 +66,22 @@ Sau `init`:
 - Với tool không phải Claude, nhờ agent dùng skill `stackcrew-init` để chạy phỏng vấn.
 - Dự án Java chưa nối ArchUnit sẽ nhận gợi ý chạy `stackcrew sync --wire`.
 
+### Dùng Claude Code mà không cài plugin
+
+Chỉ chạy CLI (`npx stackcrew init --tools claude`) mà không cài plugin thì Claude Code vẫn nhận rule (`.claude/rules/stackcrew/`), skill theo việc và agent. Bạn **mất**: các lệnh `/stackcrew:*`, buổi phỏng vấn kiến trúc `/stackcrew:init` (không có skill phỏng vấn trong dự án) và guard hook lúc ghi (L2). L1 (rule) và L3 (ArchUnit, `check`) vẫn chạy bình thường. Muốn đủ bộ, cài plugin (xem "Cài đặt").
+
+### Commit những gì
+
+Nên commit:
+
+- `stackcrew.json` (profile, nguồn sự thật).
+- `.stackcrew/`: `guard.json` (cần cho `check` trên Jenkins), `manifest.json` (để `sync` biết file nào của stackcrew), `lint/`, `ci/`; kèm `.stackcrew/custom/` nếu bạn có rule riêng.
+- Các thư mục rule, skill, agent đã sinh ra (`.claude/`, `.cursor/`, `.agents/`, `.agent/`, `.codex/` theo tool bạn chọn) cùng `AGENTS.md` / `CLAUDE.md`.
+- `docs/stackcrew/`.
+- `archunit_store/` khi đã `--wire` (bắt buộc, xem "Giới hạn hiện tại"), cùng `StackcrewArchitectureTest.java`.
+
+Lưu ý: nếu repo chưa có `CLAUDE.md`, `.claude/CLAUDE.md` hay `CLAUDE.local.md` mà đã có `AGENTS.md` chứa quy ước của team, việc `init`/`sync` tạo `CLAUDE.md` khiến Claude Code bản mới **ngừng đọc** `AGENTS.md` (mặc định `claude-md-or-agents-md`). `sync` in cảnh báo `claude-md-shadows-agents-md`; stackcrew **không** tự thêm `@AGENTS.md` vào `CLAUDE.md` (tránh nạp rule của chính nó hai lần). Muốn dùng cả hai, tự thêm dòng `@AGENTS.md` vào `CLAUDE.md`.
+
 ## Các lệnh
 
 Mã thoát: `0` thành công, `1` lỗi hoặc có vi phạm, `2` (chỉ riêng `check`) không chạy được.
@@ -101,6 +117,8 @@ stage('stackcrew check') {
   }
 }
 ```
+
+Snippet dùng `sh`: agent Windows dùng `bat` thay cho `sh`. Khi `CHANGE_TARGET` chưa được đặt (build không phải PR), snippet mặc định so với `main`.
 
 Dán stage này vào `Jenkinsfile` của bạn (stackcrew không bao giờ sửa `Jenkinsfile`). Với clone nông (shallow) hoặc multibranch, **phải fetch nhánh đích trước** (`git fetch origin <target-branch>`), nếu không `check` thoát `2` với thông báo rõ ràng.
 
@@ -147,7 +165,9 @@ Chạy `stackcrew sync` để render. Mỗi rule có phần `## Essentials` tố
 ## Giới hạn hiện tại
 
 - Plan 1 chỉ có **Spring Boot**. Các stack khác nằm ở Plan 2.
+- `--wire` chỉ nối được build **một module**. Với Maven nhiều module (root có `<packaging>pom</packaging>` hoặc `<modules>`), stackcrew không sửa pom nào, in đoạn dependency và thoát `1`: hãy thêm ArchUnit vào module chứa class ứng dụng (test sinh ra nằm ở `src/test/java` của root nên sẽ không chạy trong build nhiều module).
 - Khi chọn đồng thời `claude`, `cursor` và `codex`, Cursor đọc cả `.claude/skills` lẫn `.agents/skills` nên skill có thể hiện **hai lần**. `sync` in cảnh báo `cursor-duplicate-skills`.
+- Khi chọn `cursor` cùng `codex`, Cursor còn đọc `.codex/agents` nên agent của stackcrew có thể hiện **hai lần**; `sync` in cảnh báo `cursor-duplicate-agents`. Chưa rõ Cursor có thật sự đọc `.codex/agents/*.toml` không (xem `docs/manual-checklist.md`).
 - Guard hook lúc ghi (L2) **chỉ có trên Claude Code**. Tool khác chỉ có L1 (rule) và L3 (build, CI).
 - `.stackcrew/lint/checkstyle.xml` được sinh nhưng **chưa nối** vào build: thêm `maven-checkstyle-plugin` (hoặc plugin checkstyle của Gradle) trỏ vào file đó.
 - ArchUnit dùng `FreezingArchRule`: lần chạy test đầu tiên ghi vi phạm hiện có vào thư mục `archunit_store/`. **Phải commit `archunit_store/`**; từ đó chỉ vi phạm mới làm test fail.

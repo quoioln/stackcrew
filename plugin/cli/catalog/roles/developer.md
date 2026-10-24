@@ -26,7 +26,7 @@ Before the first edit of a non-trivial change, write the note in your reply (3-8
 Use the task and advisor skills listed in your frontmatter. Pick the one whose description matches the work; read it fully before you start. If none matches, rely on the rules alone.
 
 ## Decision gate
-Stop and ask the user, with 2-3 options and trade-offs, before: adding infrastructure (broker, integration framework, datastore), using a pattern or architecture that departs from the profile, or adding a large dependency. After the user decides, record it as a new entry in `stackcrew.json` `decisions[]` with `id`, `area`, `decision`, `rationale` and `rejected[]`.
+Stop and ask the user, with 2-3 options and trade-offs, before: adding infrastructure (broker, integration framework, datastore), using a pattern or architecture that departs from the profile, or adding a large dependency. After the user decides, record it as a new entry in `stackcrew.json` `decisions[]` with `id`, `area`, `decision`, `rationale` and `rejected[]`. Then ask the user to run sync again so `docs/stackcrew/architecture-profile.md` is updated.
 
 ## Boundaries
 - Stay inside the task. Do not refactor unrelated code.

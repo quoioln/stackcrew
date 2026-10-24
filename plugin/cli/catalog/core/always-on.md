@@ -44,7 +44,7 @@ Stop and ask the user before the following, presenting 2-3 options with trade-of
 - using a pattern or architecture that departs from the profile;
 - adding a large dependency.
 
-After the user decides, record it as a new entry in `stackcrew.json` `decisions[]` with `id`, `area`, `decision`, `rationale` and `rejected[]` (alternatives not chosen).
+After the user decides, record it as a new entry in `stackcrew.json` `decisions[]` with `id`, `area`, `decision`, `rationale` and `rejected[]` (alternatives not chosen). Then ask the user to run sync again so `docs/stackcrew/architecture-profile.md` is updated.
 
 ## Exceptions
 To waive a rule at one spot, add a comment on the same line: `stackcrew-allow: <rule-id> <reason>`. The reason is required; a marker without one does not count. Keep exceptions rare and local.

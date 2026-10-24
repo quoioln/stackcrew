@@ -16,6 +16,9 @@ Mục đích: những thứ test tự động không chứng minh được (hàn
 | C2 | Liệt kê skill trong Settings | Mỗi skill stackcrew hiện **một lần**, hoặc có đúng cảnh báo `cursor-duplicate-skills` (Cursor đọc cả `.claude/skills` và `.agents/skills`) | |
 | C3 | Liệt kê agent | Agent stackcrew được đọc từ `.claude/agents`, hiện đúng một lần | |
 | C4 | Mở một agent có `model: sonnet/opus/haiku` | Cursor chấp nhận trường `model` (spec §9.2 b), không báo lỗi frontmatter | |
+| C3b | Chỉ chọn `--tools cursor` (không claude, codex): liệt kê agent | Agent stackcrew nằm ở `.cursor/agents/stackcrew-*.md` và được Cursor đọc đúng một lần | |
+| C3c | Chọn `--tools cursor,codex` hoặc `claude,cursor,codex`: liệt kê agent | Xác nhận Cursor có đọc `.codex/agents/*.toml` hay không. Nếu có thì agent hiện hai lần (khớp cảnh báo `cursor-duplicate-agents`); nếu không thì ghi lại để Plan 3 quyết định có bỏ cảnh báo hoặc bỏ file hay không | |
+| C3d | Chọn `--tools claude,cursor,antigravity` (§9.2 a): liệt kê skill | Skill hiện từ `.agent/skills` (legacy, Antigravity) và `.cursor/skills`; mỗi skill chỉ một lần, Antigravity đọc được `.agent/skills` | |
 | C5 | Nhờ agent thêm field `Map<String, Object>` vào service | Agent từ chối hoặc dùng record, nhắc rule SC-TYPE | |
 
 ## Codex
@@ -48,6 +51,9 @@ Mục đích: những thứ test tự động không chứng minh được (hàn
 | L5 | Ghi lại dòng đó kèm `// stackcrew-allow: SC-TYPE <lý do>` | Cho qua | |
 | L6 | Chạy superpowers `subagent-driven-development` trên fixture | Subagent implementer **nhận rule** của stack khi đụng file `*.java` (câu hỏi mở spec §12), và stackcrew không kích hoạt quy trình nào | |
 | L7 | Gõ prompt chung chung ("build me a todo app") | Không skill stackcrew nào được gọi, chỉ có rule always-on | |
+| L8 | Cài CLI mà **không** cài plugin (`init --tools claude`) rồi mở Claude Code (§9.2 d) | Rule, skill và agent trong dự án vẫn hoạt động; không có `/stackcrew:*` và không có guard hook; lời nhắc `init` nêu đúng việc cần plugin | |
+| L9 | Repo có `AGENTS.md` với quy ước team, chưa có `CLAUDE.md`; chạy `init --tools claude` rồi hỏi Claude "bạn đang nạp những chỉ dẫn nào" | `sync` in `claude-md-shadows-agents-md`; xác nhận Claude Code bản mới ngừng đọc `AGENTS.md` sau khi `CLAUDE.md` xuất hiện, và thêm `@AGENTS.md` vào `CLAUDE.md` thì đọc lại được | |
+| L10 | Trên Windows, file `.java` kết thúc dòng CRLF: nhờ Claude dùng Edit nhiều dòng thêm `JsonNode x;` | Guard chặn với số dòng chính xác (không có `~`); sửa dòng `import` giữa dòng thì không bị chặn | |
 
 ## Golden task (spec §13)
 

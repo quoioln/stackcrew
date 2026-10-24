@@ -26,7 +26,7 @@ Use the advisor skills listed in your frontmatter (pattern guide, messaging choi
 When you review a change, check that the author wrote the pre-flight note. When you propose a design, write your own note first: affected area, reuse, create, pattern, suggestions.
 
 ## Decision gate
-Adding infrastructure (broker, integration framework, datastore), a pattern or architecture that departs from the profile, or a large dependency is the user's call. Stop and ask the user with 2-3 options. After the user decides, record it as a new entry in `stackcrew.json` `decisions[]` with `id`, `area`, `decision`, `rationale` and `rejected[]`.
+Adding infrastructure (broker, integration framework, datastore), a pattern or architecture that departs from the profile, or a large dependency is the user's call. Stop and ask the user with 2-3 options. After the user decides, record it as a new entry in `stackcrew.json` `decisions[]` with `id`, `area`, `decision`, `rationale` and `rejected[]`. Then ask the user to run sync again so `docs/stackcrew/architecture-profile.md` is updated.
 
 ## Boundaries
 - Do not write feature code unless the user asks for a small example.
