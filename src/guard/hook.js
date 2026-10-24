@@ -1,5 +1,6 @@
-import { readFileSync } from 'node:fs';
-import { pathToFileURL } from 'node:url';
+import { readFileSync, realpathSync } from 'node:fs';
+import { posix } from 'node:path';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { toPosix } from '../util/glob.js';
 import { compileGuardRules, scanLines } from './scan.js';
 
@@ -27,13 +28,39 @@ function diffLines(baseline, content, approx) {
   return out;
 }
 
+/** Apply one Edit to text; null when old_string is empty or not found. */
+function applyEdit(text, e) {
+  const old = e?.old_string;
+  if (typeof old !== 'string' || old === '' || !text.includes(old)) return null;
+  const nu = String(e.new_string ?? '');
+  return e.replace_all === true ? text.split(old).join(nu) : text.replace(old, () => nu);
+}
+
+/** Full-file after-text for Edit/MultiEdit, or null when it cannot be computed exactly. */
+function applyEdits(toolName, t, text) {
+  const edits = toolName === 'Edit' ? [t] : Array.isArray(t.edits) ? t.edits : [];
+  if (edits.length === 0) return null;
+  let cur = text;
+  for (const e of edits) {
+    cur = applyEdit(cur, e);
+    if (cur === null) return null;
+  }
+  return cur;
+}
+
 /**
- * Lines introduced by a tool call (multiset diff).
+ * Lines introduced by a tool call (multiset diff). For Edit/MultiEdit with a readable file the
+ * full before/after text is diffed (exact line numbers); otherwise the old_string/new_string
+ * fragments are diffed (approximate line numbers).
  * @returns {{ line: number, text: string, approx?: boolean }[]}
  */
 export function newLines(toolName, toolInput, currentFileText) {
   const t = toolInput ?? {};
   if (toolName === 'Write') return diffLines(currentFileText ?? null, t.content ?? '', false);
+  if ((toolName === 'Edit' || toolName === 'MultiEdit') && typeof currentFileText === 'string') {
+    const after = applyEdits(toolName, t, currentFileText);
+    if (after !== null) return diffLines(currentFileText, after, false);
+  }
   if (toolName === 'Edit') return diffLines(t.old_string ?? '', t.new_string ?? '', true);
   if (toolName === 'MultiEdit') {
     return (Array.isArray(t.edits) ? t.edits : []).flatMap((e) => diffLines(e?.old_string ?? '', e?.new_string ?? '', true));
@@ -67,8 +94,8 @@ export function runHook(input, { env, readFile }) {
     const filePath = input.tool_input?.file_path;
     if (!root || typeof root !== 'string' || typeof filePath !== 'string') return OK;
 
-    const r = toPosix(root).replace(/\/+$/, '');
-    const a = toPosix(filePath);
+    const r = posix.normalize(toPosix(root)).replace(/\/+$/, '');
+    const a = posix.normalize(toPosix(filePath));
     if (!a.toLowerCase().startsWith(r.toLowerCase() + '/')) return OK;
     const relPath = a.slice(r.length + 1);
 
@@ -78,7 +105,7 @@ export function runHook(input, { env, readFile }) {
     if (!cfg || cfg.enabled === false || !Array.isArray(cfg.rules)) return OK;
 
     const compiled = compileGuardRules(cfg.rules);
-    const current = toolName === 'Write' ? readFile(filePath) : null;
+    const current = readFile(filePath);
     const violations = scanLines(relPath, newLines(toolName, input.tool_input, current), compiled);
     if (violations.length === 0) return OK;
     return { exitCode: 2, stderr: format(violations) };
@@ -103,8 +130,9 @@ function main() {
   const readFile = (p) => {
     try {
       return readFileSync(p, 'utf8');
-    } catch {
-      return null;
+    } catch (e) {
+      if (e?.code === 'ENOENT') return null;
+      throw e;
     }
   };
   const { exitCode, stderr } = runHook(input, { env: process.env, readFile });
@@ -112,4 +140,16 @@ function main() {
   process.exitCode = exitCode;
 }
 
-if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) main();
+function isEntry() {
+  const arg = process.argv[1];
+  if (!arg) return false;
+  if (import.meta.url === pathToFileURL(arg).href) return true;
+  try {
+    const norm = (p) => (process.platform === 'win32' ? p.toLowerCase() : p);
+    return norm(fileURLToPath(import.meta.url)) === norm(realpathSync(arg));
+  } catch {
+    return false;
+  }
+}
+
+if (isEntry()) main();

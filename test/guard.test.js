@@ -1,7 +1,7 @@
 import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync, symlinkSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -276,5 +276,139 @@ describe('scan helpers', () => {
       { line: 1, text: 'c', approx: true },
     ]);
     assert.deepEqual(newLines('Bash', {}, null), []);
+  });
+});
+
+describe('hardening', () => {
+  const javaGuard = (rules) => ({ version: 1, enabled: true, rules });
+  const CONST_RULE = {
+    id: 'SC-CONST',
+    globs: ['**/*.java'],
+    excludeGlobs: [],
+    regex: '^(?!.*\\bstatic\\s+final\\b).*"https?://',
+    flags: '',
+    message: 'Hard-coded URL must be a static final constant',
+  };
+  const MAP_RULE = {
+    id: 'SC-MAP',
+    globs: ['**/*.java'],
+    excludeGlobs: [],
+    regex: 'Map<\\s*String\\s*,\\s*Object\\s*>',
+    flags: '',
+    message: 'No Map<String,Object>',
+  };
+  const run = (rules, files, input) =>
+    runHook(input, {
+      env: { CLAUDE_PROJECT_DIR: '/p' },
+      readFile: (p) => (p === '/p/.stackcrew/guard.json' ? JSON.stringify(javaGuard(rules)) : (files[p] ?? null)),
+    });
+  const edit = (tool_input) => ({ tool_name: 'Edit', tool_input: { file_path: '/p/src/A.java', ...tool_input } });
+  const URL_FILE = { '/p/src/A.java': 'class A {\n  private static final String U = "http://a";\n}\n' };
+
+  test('hook works when launched through a junction/symlink', () => {
+    const dir = makeProject(guardOn);
+    const linkDir = mkdtempSync(join(tmpdir(), 'sc-link-'));
+    try {
+      const link = join(linkDir, 'srclink');
+      symlinkSync(dirname(dirname(HOOK)), link, process.platform === 'win32' ? 'junction' : 'dir');
+      const input = writeInput(dir, 'src/main/java/A.java', 'JsonNode x;');
+      const r = spawnSync(process.execPath, [join(link, 'guard', 'hook.js')], {
+        input: JSON.stringify(input),
+        encoding: 'utf8',
+        env: { ...process.env, CLAUDE_PROJECT_DIR: '' },
+      });
+      assert.equal(r.status, 2);
+    } finally {
+      cleanup(dir);
+      cleanup(linkDir);
+    }
+  });
+
+  test('missing or blank regex fails open and compile rejects it', () => {
+    const dir = makeProject(undefined);
+    try {
+      const { regex, ...noRegex } = RULE;
+      for (const rule of [noRegex, { ...RULE, regex: '' }, { ...RULE, regex: '  ' }]) {
+        mkdirSync(join(dir, '.stackcrew'), { recursive: true });
+        writeFileSync(join(dir, '.stackcrew', 'guard.json'), JSON.stringify(javaGuard([rule])));
+        const input = writeInput(dir, 'src/main/java/A.java', 'class A {}\n');
+        assert.equal(spawnHook(JSON.stringify(input)).status, 0);
+        assert.throws(() => compileGuardRules([rule]), (e) => e.code === 'CATALOG' && /SC-TYPE/.test(e.message));
+      }
+    } finally {
+      cleanup(dir);
+    }
+  });
+
+  test('Edit changing only the URL of a static final constant is not blocked', () => {
+    const r = run([CONST_RULE], URL_FILE, edit({ old_string: '"http://a"', new_string: '"http://b"' }));
+    assert.equal(r.exitCode, 0);
+  });
+
+  test('Edit dropping static final is blocked with exact line number', () => {
+    const r = run([CONST_RULE], URL_FILE, edit({ old_string: 'private static final String U', new_string: 'private String U' }));
+    assert.equal(r.exitCode, 2);
+    assert.match(r.stderr, /\[SC-CONST\] src\/A\.java:2:/);
+  });
+
+  test('Edit changing a Map value type is blocked', () => {
+    const files = { '/p/src/A.java': 'Map<String, String> m;\n' };
+    const r = run([MAP_RULE], files, edit({ old_string: 'String>', new_string: 'Object>' }));
+    assert.equal(r.exitCode, 2);
+    assert.match(r.stderr, /\[SC-MAP\] src\/A\.java:1:/);
+  });
+
+  test('replace_all replaces every occurrence', () => {
+    const files = { '/p/src/A.java': 'Map<String, String> a;\nMap<String, String> b;\n' };
+    const r = run([MAP_RULE], files, edit({ old_string: 'String>', new_string: 'Object>', replace_all: true }));
+    assert.equal(r.exitCode, 2);
+    assert.match(r.stderr, /A\.java:1:[\s\S]*A\.java:2:/);
+  });
+
+  test('MultiEdit whose later edit removes an earlier violation is not blocked', () => {
+    const files = { '/p/src/A.java': 'Map<String, String> m;\n' };
+    const input = {
+      tool_name: 'MultiEdit',
+      tool_input: {
+        file_path: '/p/src/A.java',
+        edits: [
+          { old_string: 'String>', new_string: 'Object>' },
+          { old_string: 'Object>', new_string: 'Integer>' },
+        ],
+      },
+    };
+    assert.equal(run([MAP_RULE], files, input).exitCode, 0);
+  });
+
+  test('Edit falls back to the fragment when old_string is not found', () => {
+    const files = { '/p/src/A.java': 'int a;\n' };
+    const r = run([MAP_RULE], files, edit({ old_string: 'nope', new_string: 'Map<String, Object> m;' }));
+    assert.equal(r.exitCode, 2);
+    assert.match(r.stderr, /A\.java:~1:/);
+  });
+
+  test('unreadable existing file fails open (standalone readFile rethrows non-ENOENT)', () => {
+    const dir = makeProject(guardOn);
+    try {
+      // the target path is a directory: readFileSync throws EISDIR, not ENOENT
+      mkdirSync(join(dir, 'src', 'main', 'java', 'A.java'), { recursive: true });
+      const input = writeInput(dir, 'src/main/java/A.java', 'JsonNode x;');
+      assert.equal(spawnHook(JSON.stringify(input)).status, 0);
+    } finally {
+      cleanup(dir);
+    }
+    const throwing = (p) => {
+      if (p.endsWith('guard.json')) return JSON.stringify(guardOn);
+      throw Object.assign(new Error('EACCES'), { code: 'EACCES' });
+    };
+    const w = { tool_name: 'Write', tool_input: { file_path: '/p/src/A.java', content: 'JsonNode x;' } };
+    assert.equal(runHook(w, { env: { CLAUDE_PROJECT_DIR: '/p' }, readFile: throwing }).exitCode, 0);
+  });
+
+  test('path traversal out of the project is treated as outside', () => {
+    const readFile = (p) => (p.endsWith('guard.json') ? JSON.stringify(guardOn) : null);
+    const w = (file_path) => ({ tool_name: 'Write', tool_input: { file_path, content: 'JsonNode x;' } });
+    assert.equal(runHook(w('/p/../q/src/A.java'), { env: { CLAUDE_PROJECT_DIR: '/p' }, readFile }).exitCode, 0);
+    assert.equal(runHook(w('/p/src/../src/A.java'), { env: { CLAUDE_PROJECT_DIR: '/p' }, readFile }).exitCode, 2);
   });
 });

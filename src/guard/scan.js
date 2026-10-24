@@ -8,6 +8,9 @@ import { StackcrewError } from '../errors.js';
  */
 export function compileGuardRules(rules) {
   return rules.map((rule) => {
+    if (typeof rule.regex !== 'string' || !rule.regex.trim()) {
+      throw new StackcrewError('CATALOG', `Guard rule ${rule.id} has a missing or blank regex`);
+    }
     try {
       const flags = (rule.flags || '').replace(/[gy]/g, '');
       return { rule, re: new RegExp(rule.regex, flags) };
