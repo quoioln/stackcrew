@@ -5,6 +5,7 @@ import { syncCommand } from './commands/sync.js';
 import { addCommand } from './commands/add.js';
 import { listCommand } from './commands/list.js';
 import { detectCommand } from './commands/detect.js';
+import { checkCommand } from './commands/check.js';
 
 const COMMANDS = [
   ['init', 'Set up stackcrew in the current project'],
@@ -24,8 +25,8 @@ export function usage() {
   return `Usage: stackcrew <command> [options]\n\nCommands:\n${lines.join('\n')}\n`;
 }
 
-const HANDLERS = { init: initCommand, sync: syncCommand, add: addCommand, list: listCommand, detect: detectCommand };
-const NOT_BUILT = new Set(['check', 'plugin']);
+const HANDLERS = { init: initCommand, sync: syncCommand, add: addCommand, list: listCommand, detect: detectCommand, check: checkCommand };
+const NOT_BUILT = new Set(['plugin']);
 
 function defaultIo() {
   return {
