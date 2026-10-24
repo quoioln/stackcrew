@@ -53,6 +53,20 @@ test('fillTemplate replaces only {{sc:name}}', () => {
   assert.throws(() => fillTemplate('{{sc:nope}}', {}), (e) => e.code === 'TEMPLATE' && /nope/.test(e.message));
 });
 
+test('fillTemplate rejects malformed placeholders and non-string values', () => {
+  for (const bad of ['{{sc:stack-name}}', '{{sc: stackName}}', '{{sc:stackName }}', '{{sc:}}']) {
+    assert.throws(() => fillTemplate(bad, { stackName: 'X' }), (e) => e.code === 'TEMPLATE', bad);
+  }
+  assert.throws(() => fillTemplate('{{sc:n}}', { n: undefined }), (e) => e.code === 'TEMPLATE' && /n/.test(e.message));
+  assert.throws(() => fillTemplate('{{sc:n}}', { n: 5 }), (e) => e.code === 'TEMPLATE');
+});
+
+test('frontmatter round-trips backslash, double quote and colon values', () => {
+  const entries = [['a', 'x\\y "z"'], ['b', 'k: v'], ['c', ['p\\q', 'r"s', 'u: w']]];
+  const data = parseFrontmatter(stringifyFrontmatter(entries)).data;
+  assert.deepEqual(data, { a: 'x\\y "z"', b: 'k: v', c: ['p\\q', 'r"s', 'u: w'] });
+});
+
 test('glob matching', () => {
   assert.equal(matchesAny('src/main/java/a/B.java', ['**/*.java']), true);
   assert.equal(matchesAny('B.java', ['**/*.java']), true);
