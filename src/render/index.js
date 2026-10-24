@@ -29,9 +29,9 @@ export function renderProject(ctx) {
     ...renderCodex(ctx),
     ...renderAntigravity(ctx),
   ];
-  const agentsBlock = renderAgentsMdBlock(ctx);
+  const { op: agentsBlock, warnings: agentsWarnings } = renderAgentsMdBlock(ctx);
   if (agentsBlock) ops.push(agentsBlock);
   ops.push(...renderShared(ctx));
   assertUniquePaths(ops);
-  return { ops, warnings: [...ctx.skillDirs.warnings] };
+  return { ops, warnings: [...ctx.skillDirs.warnings, ...agentsWarnings] };
 }

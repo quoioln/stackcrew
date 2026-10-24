@@ -184,7 +184,8 @@ test('spring-boot with all addons and all four tools stays inside the AGENTS.md 
   await withRealCatalog(async (c) => {
     const ctx = buildContext(c, profileFor(c, ADDON_IDS), OPTS);
     const { ops } = renderProject(ctx); // throws StackcrewError BUDGET when over a budget
-    const agents = renderAgentsMdBlock(ctx);
+    const { op: agents, warnings } = renderAgentsMdBlock(ctx);
+    assert.ok(!warnings.some((w) => w.includes('agents-md-essentials-reduced')), 'no essentials reduction needed at n = 5');
     const size = Buffer.byteLength(agents.content);
     assert.ok(size <= 16000, `AGENTS block ${size}`);
     t.diagnostic(`AGENTS block with all four addons: ${size} bytes`);
