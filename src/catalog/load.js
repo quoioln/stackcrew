@@ -69,7 +69,7 @@ function parseJson(text, source) {
   }
 }
 
-function extractEssentials(body) {
+export function extractEssentials(body) {
   const lines = body.split('\n');
   const start = lines.findIndex((l) => /^## Essentials\s*$/.test(l));
   if (start === -1) return '';

@@ -4,14 +4,10 @@ import { StackcrewError } from '../errors.js';
 import { fillTemplate } from '../util/template.js';
 import { parseFrontmatter } from '../util/frontmatter.js';
 import { toLf } from '../util/hash.js';
+import { extractEssentials } from '../catalog/load.js';
 import { planSkillDirs } from './writeset.js';
 
 const CUSTOM_DIR = '.stackcrew/custom';
-
-function extractEssentials(body) {
-  const m = /^## Essentials[ \t]*\n([\s\S]*?)(?=^## |(?![\s\S]))/m.exec(body);
-  return m ? m[1].trim() : '';
-}
 
 /** Read `.stackcrew/custom/*.md` as custom rules (sorted by file name). */
 export async function loadCustomRules(projectDir) {
@@ -26,7 +22,7 @@ export async function loadCustomRules(projectDir) {
   for (const file of names.filter((n) => n.endsWith('.md')).sort()) {
     const rel = `${CUSTOM_DIR}/${file}`;
     const raw = await readFile(path.join(projectDir, CUSTOM_DIR, file), 'utf8');
-    const { data, body } = parseFrontmatter(toLf(raw.replace(/^﻿/, '')));
+    const { data, body } = parseFrontmatter(toLf(raw.replace(/^\uFEFF/, '')));
     if (typeof data.title !== 'string' || data.title.trim() === '') {
       throw new StackcrewError('PROFILE', `${rel}: title is required`);
     }
@@ -87,7 +83,13 @@ export function buildContext(catalog, profile, { customRules = [], cli, version 
     ...otherCustom,
   ].map(fillRule);
 
-  const alwaysOn = fill([catalog.alwaysOn, ...alwaysOnCustom.map((r) => r.body)].join(''));
+  const alwaysOn =
+    fill(
+      [catalog.alwaysOn, ...alwaysOnCustom.map((r) => r.body)]
+        .map((s) => s.trimEnd())
+        .filter(Boolean)
+        .join('\n\n'),
+    ) + '\n';
 
   const skills = [
     ...stack.skills.filter((s) => s.requiresAddons.every((a) => profile.addons.includes(a))),

@@ -112,7 +112,7 @@ test('loadCustomRules reads, sorts and validates', async () => {
     assert.deepEqual(await loadCustomRules(dir), []);
     const cdir = path.join(dir, '.stackcrew', 'custom');
     await mkdir(cdir, { recursive: true });
-    await writeFile(path.join(cdir, 'b.md'), '﻿---\r\ntitle: Bee\r\nglobs: ["src/**"]\r\nalwaysOn: true\r\n---\r\n## Essentials\r\n- x\r\n\r\nmore\r\n');
+    await writeFile(path.join(cdir, 'b.md'), '\uFEFF---\r\ntitle: Bee\r\nglobs: ["src/**"]\r\nalwaysOn: true\r\n---\r\n## Essentials\r\n- x\r\n\r\nmore\r\n');
     await writeFile(path.join(cdir, 'a.md'), '---\ntitle: Ay\n---\nbody only\n');
     await writeFile(path.join(cdir, 'skip.txt'), 'nope');
     const rules = await loadCustomRules(dir);
@@ -127,6 +127,33 @@ test('loadCustomRules reads, sorts and validates', async () => {
     assert.ok(!rules[1].body.includes('\r'));
     await writeFile(path.join(cdir, 'c.md'), '---\nfoo: bar\n---\nx\n');
     await assert.rejects(loadCustomRules(dir), (e) => e.code === 'PROFILE' && e.message === '.stackcrew/custom/c.md: title is required');
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test('alwaysOn pieces are separated by a blank line', async () => {
+  const catalog = await loadCatalog(MINI);
+  const profile = createProfile({ stack: 'demo-java', mode: 'greenfield' }, catalog);
+  const mk = (id, body) => ({ id, title: id, categories: [], languages: [], essentials: '', body, source: `.stackcrew/custom/${id}.md`, alwaysOn: true });
+  const one = buildContext(catalog, profile, { ...OPTS, customRules: [mk('custom-a', '# A')] });
+  assert.equal(one.alwaysOn, catalog.alwaysOn.trimEnd() + '\n\n# A\n');
+  const two = buildContext(catalog, profile, { ...OPTS, customRules: [mk('custom-a', '# A\n\n\n'), mk('custom-b', '- B')] });
+  assert.equal(two.alwaysOn, catalog.alwaysOn.trimEnd() + '\n\n# A\n\n- B\n');
+  const none = buildContext(catalog, profile, OPTS);
+  assert.equal(none.alwaysOn, catalog.alwaysOn.trimEnd() + '\n');
+});
+
+test('custom rule essentials use the shared extractor', async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), 'sc-ess-'));
+  try {
+    const cdir = path.join(dir, '.stackcrew', 'custom');
+    await mkdir(cdir, { recursive: true });
+    await writeFile(path.join(cdir, 'last.md'), '---\ntitle: L\n---\nintro\n## Essentials');
+    await writeFile(path.join(cdir, 'mid.md'), '---\ntitle: M\n---\n## Essentials\n- one\n- two\n## Other\n- no\n');
+    const rules = await loadCustomRules(dir);
+    assert.equal(rules.find((r) => r.id === 'custom-last').essentials, '');
+    assert.equal(rules.find((r) => r.id === 'custom-mid').essentials, '- one\n- two');
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
