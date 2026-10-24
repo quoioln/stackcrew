@@ -358,7 +358,7 @@ Mọi quyết định mới đều được cập nhật vào hồ sơ.
   - có Antigravity mà không có Codex → Antigravity dùng thư mục legacy `.agent/skills/` (Cursor không đọc thư mục này);
   - có cả Claude, Cursor **và** Codex → buộc phải có `.claude/skills/` lẫn `.agents/skills/`. Builder kiểm tra xem Cursor có gộp skill trùng `name` không. Nếu không gộp, ghi nhận là giới hạn đã biết và in cảnh báo.
 - **Rule lõi always-on cho Cursor, Codex và Antigravity đặt trong `AGENTS.md`** (cả ba đều đọc). Không tạo thêm `.mdc` `alwaysApply` hay rule `always_on`, để tránh nạp hai lần.
-- Khối stackcrew trong `AGENTS.md` giữ **dưới khoảng 12 KB**, nhằm chừa chỗ cho nội dung của người dùng hoặc SDLC trong giới hạn 24 KB / 32 KiB.
+- Khối stackcrew trong `AGENTS.md` giữ **dưới khoảng 16 KB** (5 Essentials bullets per rule when Codex is selected), nhằm chừa chỗ cho nội dung của người dùng hoặc SDLC trong giới hạn 24 KB / 32 KiB.
 - Skill trong `.agents/skills/` chỉ dùng `name` + `description` (phần chung chắc chắn). Việc giới hạn theo stack thể hiện bằng **câu chữ của description**.
 
 **Nguyên tắc renderer: mỗi tool thấy mỗi skill/agent đúng một lần.** Renderer tính tập file cần ghi dựa trên **tổ hợp tool đã chọn**, không ghi mù theo từng tool. Có test snapshot cho mọi tổ hợp.

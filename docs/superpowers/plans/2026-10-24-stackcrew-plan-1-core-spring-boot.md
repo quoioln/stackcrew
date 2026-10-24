@@ -53,7 +53,7 @@ Các stack còn lại thêm ở Plan 2 bằng cách thêm thư mục vào `catal
   - `src/test/java/**/stackcrew/StackcrewArchitectureTest.java` (only when wired)
 - **Budgets:**
   - The rendered always-on core is ≤ 6,000 bytes.
-  - The stackcrew block in `AGENTS.md` is ≤ 12,000 bytes.
+  - The stackcrew block in `AGENTS.md` is ≤ 16,000 bytes.
   - Each Antigravity rule file is ≤ 24,000 bytes.
   - Each Cursor `.mdc` is ≤ 500 lines.
   - Each rule's `## Essentials` has ≤ 15 bullets.
