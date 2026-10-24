@@ -412,3 +412,43 @@ describe('hardening', () => {
     assert.equal(runHook(w('/p/src/../src/A.java'), { env: { CLAUDE_PROJECT_DIR: '/p' }, readFile }).exitCode, 2);
   });
 });
+
+describe('CRLF files', () => {
+  const IMPORT_RULE = {
+    id: 'SC-TYPE',
+    globs: ['**/*.java'],
+    excludeGlobs: [],
+    regex: String.raw`^(?!\s*(import\s|\*|//|/\*)).*\b(JsonNode|ObjectNode)\b`,
+    flags: '',
+    message: 'm',
+  };
+  const lf = 'package a;\nimport x.Y;\n\nclass A {\n  void f() {}\n  void g() {}\n}\n';
+  const guard = JSON.stringify({ version: 1, enabled: true, rules: [IMPORT_RULE] });
+  const hookOn = (cur, toolInput) =>
+    runHook(
+      { tool_name: 'Edit', tool_input: { file_path: '/p/src/A.java', ...toolInput } },
+      { env: { CLAUDE_PROJECT_DIR: '/p' }, readFile: (p) => (p.endsWith('guard.json') ? guard : p === '/p/src/A.java' ? cur : null) },
+    );
+  const add = { old_string: '  void f() {}\n  void g() {}', new_string: '  void f() {}\n  JsonNode g() { return null; }' };
+  const imp = { old_string: 'x.Y;\n\nclass', new_string: 'com.fasterxml.jackson.databind.JsonNode;\n\nclass' };
+
+  test('LF old_string against a CRLF file yields exact line numbers (no ~)', () => {
+    const crlf = lf.replaceAll('\n', '\r\n');
+    const r = hookOn(crlf, add);
+    assert.equal(r.exitCode, 2);
+    assert.match(r.stderr, /A\.java:6: /);
+    assert.doesNotMatch(r.stderr, /:~/);
+    assert.deepEqual(newLines('Edit', add, crlf), [{ line: 6, text: '  JsonNode g() { return null; }' }]);
+  });
+
+  test('mid-line import edit is allowed on CRLF exactly as on LF', () => {
+    assert.equal(hookOn(lf, imp).exitCode, 0);
+    assert.equal(hookOn(lf.replaceAll('\n', '\r\n'), imp).exitCode, 0);
+  });
+
+  test('CRLF new_string is normalized too', () => {
+    const crlf = lf.replaceAll('\n', '\r\n');
+    const e = { old_string: add.old_string, new_string: add.new_string.replaceAll('\n', '\r\n') };
+    assert.deepEqual(newLines('Edit', e, crlf), [{ line: 6, text: '  JsonNode g() { return null; }' }]);
+  });
+});

@@ -2,6 +2,7 @@ import { readFileSync, realpathSync } from 'node:fs';
 import { posix } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { toPosix } from '../util/glob.js';
+import { toLf } from '../util/hash.js';
 import { compileGuardRules, scanLines } from './scan.js';
 
 const TOOLS = new Set(['Edit', 'Write', 'MultiEdit']);
@@ -25,6 +26,15 @@ function diffLines(baseline, content, approx) {
       out.push(l);
     }
   });
+  return out;
+}
+
+const lf = (v) => (typeof v === 'string' ? toLf(v) : v);
+
+/** LF-normalized copy of a tool input: the file text is LF-normalized too, so CRLF files match. */
+function normalizeInput(t) {
+  const out = { ...t, old_string: lf(t.old_string), new_string: lf(t.new_string), content: lf(t.content) };
+  if (Array.isArray(t.edits)) out.edits = t.edits.map((e) => ({ ...e, old_string: lf(e?.old_string), new_string: lf(e?.new_string) }));
   return out;
 }
 
@@ -55,11 +65,12 @@ function applyEdits(toolName, t, text) {
  * @returns {{ line: number, text: string, approx?: boolean }[]}
  */
 export function newLines(toolName, toolInput, currentFileText) {
-  const t = toolInput ?? {};
-  if (toolName === 'Write') return diffLines(currentFileText ?? null, t.content ?? '', false);
-  if ((toolName === 'Edit' || toolName === 'MultiEdit') && typeof currentFileText === 'string') {
-    const after = applyEdits(toolName, t, currentFileText);
-    if (after !== null) return diffLines(currentFileText, after, false);
+  const t = normalizeInput(toolInput ?? {});
+  const current = typeof currentFileText === 'string' ? toLf(currentFileText) : currentFileText;
+  if (toolName === 'Write') return diffLines(current ?? null, t.content ?? '', false);
+  if ((toolName === 'Edit' || toolName === 'MultiEdit') && typeof current === 'string') {
+    const after = applyEdits(toolName, t, current);
+    if (after !== null) return diffLines(current, after, false);
   }
   if (toolName === 'Edit') return diffLines(t.old_string ?? '', t.new_string ?? '', true);
   if (toolName === 'MultiEdit') {
