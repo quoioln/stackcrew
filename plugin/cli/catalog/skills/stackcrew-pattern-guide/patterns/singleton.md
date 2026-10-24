@@ -27,7 +27,7 @@ One shared instance of a collaborator. Get it from the DI container's scope, nev
 
 - A Spring bean is a singleton by default; do nothing special. Use constructor injection and keep the bean stateless or immutable. Quarkus: `@ApplicationScoped` (or `@Singleton`).
 - No `static getInstance()`, no `static` mutable fields. A per-request value goes in a method parameter or a `@RequestScope` bean, never in a field of a singleton.
-- An `enum` with one constant is acceptable for a pure constant holder outside the container.
+- A pure constant holder outside the container is a `final` class with a private constructor (like `ProviderCodes`), not an enum with one constant.
 
 ### TypeScript (NestJS / Next.js / React / Angular)
 
@@ -38,27 +38,26 @@ One shared instance of a collaborator. Get it from the DI container's scope, nev
 
 ### Go
 
-- A package-level instance is initialized lazily with `sync.Once` when it is truly needed, or built in `main` and passed to constructors (preferred).
-- Pass dependencies explicitly. Avoid package-level `var` that is mutated after startup.
+- Constants and cheap read-only values: a package-level `var x = regexp.MustCompile(...)`, initialized once at program start.
+- Expensive or optional values: `sync.OnceValue` (Go 1.21+) for lazy, once-only initialization, not a hand-written once-flag plus a package-level pointer.
+- Preferred for anything with dependencies: build it in `main` and pass it to constructors. Avoid package-level `var` that is mutated after startup.
 - If it holds state, protect it with a mutex or a channel, or do not share it.
 
 ## Example
 
-Language: Go. A lazily created, read-only compiled expression, shared safely.
+Language: Go. A cheap constant value, and an expensive one initialized lazily and once.
 
 ```go
-var (
-	referencePattern     *regexp.Regexp
-	referencePatternOnce sync.Once
-)
+// Cheap and constant: initialized once at program start.
+var referencePattern = regexp.MustCompile(`^[A-Z]{3}-\d{8}$`)
 
-const referenceExpr = `^[A-Z]{3}-\d{8}$`
+// Expensive or optional: built on first use, exactly once (Go 1.21+).
+var riskModel = sync.OnceValue(func() *RiskModel {
+	return mustLoadRiskModel(riskModelPath)
+})
 
-func ReferencePattern() *regexp.Regexp {
-	referencePatternOnce.Do(func() {
-		referencePattern = regexp.MustCompile(referenceExpr)
-	})
-	return referencePattern
+func Score(ctx context.Context, in Application) (Score, error) {
+	return riskModel().Score(ctx, in)
 }
 ```
 
@@ -69,3 +68,4 @@ func ReferencePattern() *regexp.Regexp {
 - Marking a bean `@Scope("prototype")` or Nest `Scope.REQUEST` without per-request state, or the opposite: storing request data in a singleton field.
 - A singleton used as a service locator (`Registry.get("x")` from anywhere) instead of injection.
 - A package-level `var db *sql.DB` assigned in `init()` and used by every package.
+- An enum with one constant as a constants holder in Java.

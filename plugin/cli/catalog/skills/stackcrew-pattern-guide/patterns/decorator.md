@@ -26,6 +26,7 @@ Add behavior around an object without changing it or subclassing it: retry, logg
 ### Java (Spring Boot / Quarkus)
 
 - Programmatic: a class that implements the port and holds the delegate through the constructor (`TimedProviderPort implements ProviderPort`). Good for resilience keyed by provider code, with no proxy or self-invocation traps (see [resilience.md](resilience.md)).
+- If both the decorator and its delegate are `ProviderPort` beans, `List<ProviderPort>` collects both and the registry fails on a duplicate `code()`. Do not expose the delegate as a `ProviderPort` bean (build it inside the decorator's configuration and pass it in), so the registry sees one bean per code.
 - Declarative: Spring AOP aspects, `@Cacheable`, `@Transactional`, Quarkus interceptors. Remember that calling a method through `this` bypasses the proxy.
 - Servlet filters and `HandlerInterceptor` are chains, see [chain-of-responsibility.md](chain-of-responsibility.md).
 

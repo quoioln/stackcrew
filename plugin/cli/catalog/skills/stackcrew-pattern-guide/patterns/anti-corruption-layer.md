@@ -24,9 +24,10 @@ A translation boundary so that a foreign model (third-party, legacy) never shape
 
 ### Java (Spring Boot / Quarkus)
 
-- Provider DTOs are package-private `record`s next to the adapter. A dedicated mapper (a small class or static methods, or MapStruct) converts to domain records and `enum`s. Unknown provider statuses map to an explicit `UNKNOWN` or throw a typed exception; never fall through.
+- Provider DTOs are package-private `record`s next to the adapter, with boxed types for fields that may be absent. A dedicated mapper (a small class, or MapStruct) converts to domain records and `enum`s. Unknown provider statuses throw a typed `ProviderProtocolException`; never fall through.
+- Be null-safe: check the reply and its fields before mapping, so a malformed response becomes a typed error and not an NPE. A `Map` lookup from provider code to domain enum is simpler than a `switch` on a possibly-null string.
 - Domain code imports nothing from the provider package; enforce it with an ArchUnit rule when wired.
-- Provider error codes become domain exception types in the mapper.
+- Provider error codes and HTTP statuses become domain exception types (`ProviderUnavailableException`, `ProviderRejectedException`, `ProviderProtocolException`).
 
 ### TypeScript (NestJS / Next.js / React / Angular)
 
@@ -38,30 +39,33 @@ A translation boundary so that a foreign model (third-party, legacy) never shape
 
 - Provider structs (with `json` tags) are unexported in the provider package. An unexported `toDomain` function converts to the domain struct. The domain package never imports the provider package.
 - Map provider errors to sentinel or typed errors (`errors.Is` / `errors.As`) in the same place.
-- Unknown enum values map to an explicit constant, not a silent zero value.
+- Unknown enum values map to an explicit constant or an error, not a silent zero value.
 
 ## Example
 
-Language: Java. The mapper is the only place that knows both models.
+Language: Java. The mapper is the only class that knows both vocabularies (the playbook's C06 types). A malformed reply is a typed error, not an NPE.
 
 ```java
 final class C06Mapper {
-    private C06Mapper() {}
+    private static final Map<String, VerificationStatus> STATUS = Map.of(
+        C06Codes.OK, VerificationStatus.APPROVED,
+        C06Codes.NOT_MATCH, VerificationStatus.REJECTED,
+        C06Codes.PROCESSING, VerificationStatus.PENDING);
 
-    static VerifyResult toResult(C06Response response) {
-        return new VerifyResult(toStatus(response.state()), response.ref());
-    }
-
-    private static VerifyStatus toStatus(String state) {
-        return switch (state) {
-            case C06Codes.STATE_OK -> VerifyStatus.APPROVED;
-            case C06Codes.STATE_REJECTED -> VerifyStatus.REJECTED;
-            default -> throw new ProviderProtocolException(C06Codes.PROVIDER, "unknown state: " + state);
-        };
+    VerifyResult toDomain(C06VerifyResponse r) {
+        if (r == null || r.resultCode() == null || r.matchScore() == null) {
+            throw new ProviderProtocolException(ProviderCodes.C06, "missing result code or score", null);
+        }
+        VerificationStatus status = STATUS.get(r.resultCode());
+        if (status == null) {
+            throw new ProviderProtocolException(ProviderCodes.C06, "unknown result code", null);
+        }
+        return new VerifyResult(status, r.matchScore(), r.transactionId());
     }
 }
 
-record C06Response(String state, String ref) {}
+@JsonIgnoreProperties(ignoreUnknown = true)
+record C06VerifyResponse(String resultCode, BigDecimal matchScore, String transactionId) {}
 ```
 
 ## AI anti-patterns
@@ -69,6 +73,7 @@ record C06Response(String state, String ref) {}
 - Returning the provider DTO from the port, or storing provider status strings in the domain.
 - Mapping inline inside controllers or entities, in several places.
 - Silently defaulting an unknown provider status to "success" or to the zero value.
+- A `switch` on a provider string that may be null, so a malformed reply throws an NPE.
 - Using `Map<String, Object>`, `JsonNode`, `any` or `interface{}` as the domain's idea of a provider payload.
 - Sharing one DTO class between the provider call and your public API response.
 - Adding the ACL only for provider two, after provider one has already leaked into the domain.

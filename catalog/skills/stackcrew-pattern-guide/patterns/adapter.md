@@ -27,12 +27,13 @@ Wrap a third-party API, SDK or legacy interface behind a port that the domain ow
 - The port is an interface in the domain package, in domain types only (see `stackcrew-spring-integration-provider`). The adapter is a package-private `@Component` in the infrastructure package.
 - Provider DTOs are package-private `record`s; they never leave the adapter (see [anti-corruption-layer.md](anti-corruption-layer.md)).
 - Constructor injection of the HTTP client factory, properties and resilience objects. Wrap the remote call with [resilience](resilience.md); do not open a transaction around it.
-- Add a `code()` to the port so a registry can select the adapter (see [strategy.md](strategy.md)). Share the skeleton with [Template Method](template-method.md) from the second provider.
+- Add a `code()` to the port so a registry can select the adapter (see [strategy.md](strategy.md)). Share the skeleton with [Template Method](template-method.md) from the second provider, or the first when the profile expects more.
 
 ### TypeScript (NestJS / Next.js / React / Angular)
 
 - The port is an `interface` (or an abstract class used as a DI token, since interfaces vanish at runtime). The adapter is an `@Injectable()` class provided under that token.
-- Validate the provider response with a schema (zod) at the adapter boundary and map to the domain type; do not return the raw JSON.
+- NestJS 10's `HttpService` (from `@nestjs/axios`) returns Observables: use `await firstValueFrom(this.http.post<unknown>(url, body))` and read `data`.
+- Validate the provider response with a schema (zod) at the adapter boundary and map to the domain type; do not return the raw JSON. Keep the provider's status strings in an `as const` object and map them through a lookup, never inline literals.
 - Next.js: keep adapters in server-only modules; never import them from client components.
 - Angular: an adapter service provided via `InjectionToken`; components depend on the port only.
 
@@ -53,7 +54,15 @@ export interface KycPort {
 }
 
 const C06_CODE = 'C06';
-const C06_RESPONSE = z.object({ state: z.enum(['OK', 'REJECTED']), ref: z.string() });
+const C06_STATE = { Ok: 'OK', Rejected: 'REJECTED' } as const;
+const C06_RESPONSE = z.object({
+  state: z.enum([C06_STATE.Ok, C06_STATE.Rejected]),
+  ref: z.string(),
+});
+const STATUS_BY_STATE = {
+  [C06_STATE.Ok]: VerifyStatus.Approved,
+  [C06_STATE.Rejected]: VerifyStatus.Rejected,
+} as const;
 
 @Injectable()
 export class C06Adapter implements KycPort {
@@ -62,9 +71,9 @@ export class C06Adapter implements KycPort {
   constructor(private readonly http: HttpService, private readonly config: C06Config) {}
 
   async verify(command: VerifyCommand): Promise<VerifyResult> {
-    const body = await this.http.post(this.config.verifyUrl, toC06Request(command));
-    const parsed = C06_RESPONSE.parse(body);
-    return { status: parsed.state === 'OK' ? VerifyStatus.Approved : VerifyStatus.Rejected, reference: parsed.ref };
+    const { data } = await firstValueFrom(this.http.post<unknown>(this.config.verifyUrl, toC06Request(command)));
+    const parsed = C06_RESPONSE.parse(data);   // the raw body is parsed once, here
+    return { status: STATUS_BY_STATE[parsed.state], reference: parsed.ref };
   }
 }
 ```
@@ -73,6 +82,7 @@ export class C06Adapter implements KycPort {
 
 - Calling the vendor client straight from a controller or service, then "adding an adapter later".
 - Returning the vendor DTO from the adapter, so it leaks into the domain.
+- Awaiting NestJS `HttpService` calls directly (they are Observables) instead of `firstValueFrom`.
 - One `UniversalProviderAdapter` with a `switch` on the provider code, instead of one adapter per provider.
 - Wrapping a logger or a date library "in case we change it".
 - A port with `Object`, `Map<String, Object>`, `any` or `interface{}` parameters so that it fits every vendor.

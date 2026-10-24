@@ -38,8 +38,8 @@ A Repository gives the domain a collection-like view of persistence. A Unit of W
 
 ### Go
 
-- A small interface defined where it is used: `type OrderStore interface { Load(ctx, id) (Order, error); Save(ctx, Order) error }`, implemented over `database/sql`, `pgx` or `sqlc`.
-- Unit of Work: a function that runs a closure inside a transaction (`WithTx(ctx, func(tx Store) error)`), committing on nil and rolling back on error. Pass `context.Context` always.
+- A small interface defined where it is used: `type OrderStore interface { Load(ctx context.Context, id OrderID) (Order, error); Save(ctx context.Context, order Order) error }`, implemented over `database/sql`, `pgx` or `sqlc`.
+- Unit of Work: a function that runs a closure inside a transaction (`InTx(ctx context.Context, fn func(Store) error) error`), committing on nil and rolling back on error. Pass `context.Context` always.
 
 ## Example
 

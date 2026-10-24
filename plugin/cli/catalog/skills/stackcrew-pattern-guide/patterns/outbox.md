@@ -13,12 +13,13 @@ Write the event to an outbox table in the same database transaction as the busin
 - A broker is in use (Kafka, RabbitMQ, a queue) and a DB write and a published event must agree: any dual write. It is required in that case, not optional.
 - Consumers rely on every committed change producing exactly one event (at-least-once delivery plus idempotent consumers).
 - See `stackcrew-messaging-choice` for choosing the broker; the outbox applies to all of them.
+- Change data capture (Debezium) is the outbox relay, not a replacement: the application still writes the outbox row in the same transaction, and CDC reads the table and publishes it.
 
 ## Do not use when
 
 - Events stay in-process and may be lost on a crash (a UI refresh, a cache eviction).
 - There is no database write, only a pure publish.
-- The store is itself the log (event sourcing writes events as the source of truth) or the change is captured by CDC from the table directly (Debezium); then the outbox table may be redundant.
+- The store is itself the log (event sourcing writes events as the source of truth); then the event table is the outbox.
 - No broker exists yet and none is planned. Do not add infrastructure for it; that is a Decision gate item.
 
 ## Idioms
@@ -26,19 +27,19 @@ Write the event to an outbox table in the same database transaction as the busin
 ### Java (Spring Boot / Quarkus)
 
 - In the service's `@Transactional` method, save the entity and insert an outbox row (typed record: id, aggregate id, event type constant, payload JSON, created at, status). Never publish to the broker inside the transaction.
-- A relay (a scheduled poller with `FOR UPDATE SKIP LOCKED`, or CDC) publishes rows, marks them sent, and retries. Delivery is at-least-once, so consumers dedupe by event id (see `addon-kafka` and `addon-rabbitmq`).
+- A relay (a scheduled poller, or CDC) publishes rows, marks them sent, and retries. When several relay instances run, claim rows with `FOR UPDATE SKIP LOCKED` and set a claimed status with a lease timestamp, so a crashed relay's rows are reclaimed and no row is sent twice at once. Delivery is at-least-once, so consumers dedupe by event id (see `addon-kafka` and `addon-rabbitmq`).
 - `@TransactionalEventListener(phase = AFTER_COMMIT)` is not an outbox: a crash after commit loses the event.
 
 ### TypeScript (NestJS / Next.js / React / Angular)
 
-- Within one DB transaction (the ORM or query-builder transaction callback), write the business row and the outbox row. A relay (a BullMQ repeatable job, a cron worker or CDC) publishes and marks them.
+- Within one DB transaction (the ORM or query-builder transaction callback), write the business row and the outbox row. A relay (a BullMQ job scheduler registered with `upsertJobScheduler`, a cron worker, or CDC) publishes and marks them. BullMQ v6 removed repeatable jobs (`repeat` option, `getRepeatableJobs`); use job schedulers.
 - Define the event payload as a typed interface or zod schema; the outbox payload column is serialized from it, not from `any`.
 - `EventEmitter2` after `save()` is not an outbox; it is an in-process notification.
 
 ### Go
 
-- `tx, err := db.BeginTx(ctx, nil)`; insert the business row and the outbox row with the same `tx`, then commit. A relay goroutine or a separate worker polls the table and publishes (with Watermill, via its `Publisher`).
-- Use `SELECT ... FOR UPDATE SKIP LOCKED` so several relays do not double-send. Idempotent consumers dedupe by event id.
+- Watermill has an outbox built in: publish with the SQL publisher created on the `*sql.Tx` (one publisher per transaction), then run the Forwarder, which reads the outbox table with a SQL subscriber and re-publishes to the real broker. Prefer it over a hand-written relay when Watermill is the messaging library.
+- Hand-written: `tx, err := db.BeginTx(ctx, nil)`, insert the business row and the outbox row with the same `tx`, commit; a relay goroutine claims rows with `SELECT ... FOR UPDATE SKIP LOCKED` plus a claimed status and lease, publishes, and marks them sent. Idempotent consumers dedupe by event id.
 
 ## Example
 
@@ -69,6 +70,8 @@ public class OrderService {
 - Saving, then calling `kafkaTemplate.send` or `emit` in the same method and calling it done (dual write).
 - Publishing inside the transaction, so the event leaves before the commit or after a rollback.
 - Treating `@TransactionalEventListener` or `EventEmitter2` as an outbox.
-- An outbox with no relay, no retry, or no consumer idempotency.
+- Skipping the outbox because "we use Debezium"; CDC still needs the outbox row.
+- An outbox with no relay, no retry, or no consumer idempotency; or `SKIP LOCKED` with no claimed status, so a row is sent twice.
+- Using removed BullMQ repeatable jobs for the relay.
 - Adding an outbox when events never leave the process, or building one with no broker in the profile.
 - Storing the payload as an untyped `Map<String, Object>` or `any` instead of a typed event.

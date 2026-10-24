@@ -24,7 +24,7 @@ Decouple the choice and construction of an implementation from the code that use
 
 ### Java (Spring Boot / Quarkus)
 
-- Selecting a bean by key: inject `List<ProviderPort>` and build a map keyed by `code()` (the registry in `stackcrew-spring-integration-provider`). Do not inject `Map<String, Port>` and use bean name as the key; Spring keys it by bean name.
+- Selecting a bean by key: inject `List<ProviderPort>` and build a map keyed by `code()` (the registry in `stackcrew-spring-integration-provider`). Do not inject `Map<String, Port>` and use its keys as codes: Spring keys an injected map by bean name, not by `code()`.
 - Creating instances on demand, or optional or prototype beans: `ObjectProvider<T>`. Quarkus: `Instance<T>`.
 - Per-provider clients: a `ProviderClientFactory` that builds a `RestClient` from `@ConfigurationProperties` is configuration plumbing and is fine from the first provider.
 - A `static` factory method on a record or class (`Money.of(...)`) is enough for validated construction.
@@ -39,12 +39,12 @@ Decouple the choice and construction of an implementation from the code that use
 ### Go
 
 - Prefer an explicit constructor `NewClient(cfg Config) (*Client, error)`. That is Go's factory and is enough most of the time.
-- Selection by key: a `map[Kind]func(Config) (Port, error)` or a function with a `switch` that returns an interface.
+- Selection by key: a `map[Kind]func(Config) (Port, error)`, returning the constructor's error to the caller, or a function with a `switch` that returns an interface.
 - Return concrete types from constructors and accept interfaces in the consumer; avoid a `Factory` type unless several products must match.
 
 ## Example
 
-Language: Go. A constructor map selects the implementation; unknown keys return a typed error.
+Language: Go. A constructor map selects the implementation; unknown keys and constructor failures return errors.
 
 ```go
 var ErrUnknownChannel = errors.New("unknown notification channel")
@@ -60,14 +60,14 @@ type Sender interface {
 	Send(ctx context.Context, msg Message) error
 }
 
-type Senders map[Channel]func(cfg Config) Sender
+type Senders map[Channel]func(cfg Config) (Sender, error)
 
 func (s Senders) New(ch Channel, cfg Config) (Sender, error) {
 	build, ok := s[ch]
 	if !ok {
 		return nil, fmt.Errorf("%w: %s", ErrUnknownChannel, ch)
 	}
-	return build(cfg), nil
+	return build(cfg)
 }
 ```
 

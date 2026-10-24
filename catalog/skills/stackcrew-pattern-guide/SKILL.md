@@ -20,7 +20,7 @@ This guide backs the SC-PATTERN rule: no pattern without a present signal, and i
 | Signal in the code or the requirement | Pattern |
 |---|---|
 | Several flows share one skeleton and differ in a few steps (authenticate, call, map, audit) | [Template Method](patterns/template-method.md) |
-| Pick an implementation by a runtime key; a growing `if/else` or `switch` on a type or provider code | [Strategy](patterns/strategy.md) with a registry; [Factory](patterns/factory.md) when creation itself varies |
+| Pick an implementation by a runtime key; a growing `if/else` or `switch` on a type or provider code (provider integrations: at the second provider, see the rule of three below) | [Strategy](patterns/strategy.md) with a registry; [Factory](patterns/factory.md) when creation itself varies |
 | Create one of several implementations, or a family of products that must match | [Factory](patterns/factory.md) |
 | Wrap a third-party API or SDK behind an internal port | [Adapter](patterns/adapter.md) |
 | Third-party model or DTO differs from the domain model and must not leak into it | [Anti-Corruption Layer](patterns/anti-corruption-layer.md) |
@@ -40,7 +40,7 @@ This guide backs the SC-PATTERN rule: no pattern without a present signal, and i
 
 - **No pattern without a present signal.** A signal is something in the code or the requirement today: duplication, a changing axis, a second implementation, a testability problem. "It might be needed later" is not a signal. Prefer the simplest direct solution (KISS, YAGNI).
 - **If the signal is present, do not skip the pattern.** A third copy-pasted flow, a `switch` that grows with every provider, or a dual write with no outbox are defects, not style choices.
-- **Rule of three.** Duplicate once, tolerate twice, refactor toward the pattern at the third real case. Exception: the profile already records that more cases are expected (an integration hub with many providers), then introduce the registry or base at the second.
+- **Rule of three.** Duplicate once, tolerate twice, refactor toward the pattern at the third real case. Provider-integration exception: when the profile records that more providers are expected (an integration hub), introduce the Template Method base and the registry at the first provider that has a sibling coming, and in any case at the second; with exactly one provider expected, keep a plain adapter. This matches step 0 of `stackcrew-spring-integration-provider` and applies to the other stacks too.
 - **Prefer the language idiom.** A map of functions beats a Strategy class in TypeScript and Go; the DI container beats a hand-rolled Factory or Singleton; a record beats a Builder for few fields; functional options beat a builder in Go; hooks and composition beat class hierarchies in React. Use the idiom when it expresses the same intent more simply.
 - **Name by intent.** `ProviderRegistry`, `VerifyTemplate`, `PaymentGatewayAdapter`. Do not name things `Manager`, `Helper` or `Util` to hide a pattern.
 - **Patterns serve SOLID.** Use them for SRP, OCP and DIP. If a pattern adds indirection that makes the code harder to read, remove it.

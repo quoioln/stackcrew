@@ -10,13 +10,13 @@ Construct a complex, usually immutable object step by step or by named options.
 
 ## Use when
 
-- There are many optional fields (roughly five or more optional ones) and the result must be immutable.
+- There are many optional fields and the result must be immutable.
 - Construction has rules that belong in one place (defaults, validation, derived fields).
 - Test data needs a readable default object with small overrides.
 
 ## Do not use when
 
-- Few fields (about four or fewer) or all required: use a `record` (Java), an object literal with a type (TypeScript), a plain struct (Go).
+- Few fields or all required: use a `record` (Java), an object literal with a type (TypeScript), a plain struct (Go).
 - The class is a JPA entity: never put Lombok `@Builder` (or `@Data`) on an entity. Use a constructor or a static factory that enforces invariants.
 - A static factory method with a clear name says it better (`Money.of(amount, currency)`).
 - The "builder" would only wrap setters on a mutable object.
@@ -25,8 +25,8 @@ Construct a complex, usually immutable object step by step or by named options.
 
 ### Java (Spring Boot / Quarkus)
 
-- Few fields: a `record`. Optional values with defaults: a compact constructor or a static factory.
-- Many optional fields: Lombok `@Builder` on an immutable value class (`@Value`), or on a large record when it needs one (`@Builder.Default` is for classes, not record components). Add `@Builder.Default` for defaults and `@Singular` for collections; required fields are validated in the constructor or with bean validation.
+- Few fields: a plain `record` with a compact constructor for validation.
+- Many optional fields: a `record` plus a small hand-written builder (default). Lombok `@Builder` only when a record does not fit: inheritance, or 8+ optional fields. On a Lombok class use `@Value` for immutability, `@Builder.Default` for defaults (it applies to classes, not record components) and `@Singular` for collections.
 - Never on JPA entities. Never `@Data` on an entity.
 - Test data builders are fine in test code; keep them in the test source set.
 
@@ -44,31 +44,51 @@ Construct a complex, usually immutable object step by step or by named options.
 
 ## Example
 
-Language: Java. A record for few fields, and Lombok `@Builder` only for a class with many optional fields.
+Language: Java. A record with a small hand-written builder: immutable, defaults in one place, no Lombok needed.
 
 ```java
-// Few fields: a record is enough.
-public record VerifyCommand(String referenceId, String documentNumber, Instant requestedAt) {}
+public record ReportRequest(String title, LocalDate from, LocalDate to, Locale locale,
+                            String department, Integer pageSize) {
 
-// Many optional fields: Lombok @Builder on a value class (never on a JPA entity).
-@Value
-@Builder
-public class ReportRequest {
-    @NonNull String title;
-    @NonNull LocalDate from;
-    @NonNull LocalDate to;
-    @Builder.Default Locale locale = Locale.ENGLISH;
-    String department;
-    String costCenter;
-    boolean includeDrafts;
-    Integer pageSize;
-    String sortField;
+    public ReportRequest {
+        Objects.requireNonNull(title, "title");
+        Objects.requireNonNull(from, "from");
+        Objects.requireNonNull(to, "to");
+    }
+
+    public static Builder builder(String title, LocalDate from, LocalDate to) {
+        return new Builder(title, from, to);
+    }
+
+    public static final class Builder {
+        private final String title;
+        private final LocalDate from;
+        private final LocalDate to;
+        private Locale locale = Locale.ENGLISH;
+        private String department;
+        private Integer pageSize;
+
+        private Builder(String title, LocalDate from, LocalDate to) {
+            this.title = title; this.from = from; this.to = to;
+        }
+
+        public Builder locale(Locale value) { this.locale = value; return this; }
+        public Builder department(String value) { this.department = value; return this; }
+        public Builder pageSize(Integer value) { this.pageSize = value; return this; }
+
+        public ReportRequest build() {
+            return new ReportRequest(title, from, to, locale, department, pageSize);
+        }
+    }
 }
 ```
+
+With 8 or more optional fields, or when the type needs inheritance, replace the hand-written builder with Lombok `@Value @Builder` on a class.
 
 ## AI anti-patterns
 
 - Lombok `@Builder` or `@Data` on a JPA entity.
+- Lombok `@Builder` on a type with a few fields where a record is enough.
 - A builder for a record with three required fields.
 - A hand-written fluent builder class in TypeScript or a `Builder` type in Go where options or a literal work.
 - A builder that exposes setters on a mutable object, so the result is not immutable.

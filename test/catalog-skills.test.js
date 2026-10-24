@@ -198,6 +198,74 @@ test('skill files use LF line endings', async () => {
   }
 });
 
+test('negative checks: no baseline-breaking advice in pattern files', async () => {
+  const skill = await shared(GUIDE);
+  const all = PATTERNS.map((id) => [id, fileOf(skill, `patterns/${id}.md`).content]);
+  const byId = Object.fromEntries(all);
+
+  // Template Method: the skeleton is never final (CGLIB proxies run final methods on a field-less proxy instance).
+  const tm = byId['template-method'];
+  const javaBlock = tm.match(/```java\n([\s\S]*?)```/)[1];
+  assert.doesNotMatch(javaBlock, /\bpublic\s+final\s+\w+\s+verify\s*\(/, 'template method skeleton must not be final');
+  assert.match(javaBlock, /audit\.success/);
+  assert.match(javaBlock, /audit\.failure/);
+  assert.match(javaBlock, /VerifyCommand\b/);
+  assert.match(javaBlock, /requestId\(\)/);
+
+  // Resilience: the breaker is declared last (outermost), the bulkhead first (innermost).
+  const res = byId.resilience.match(/```java\n([\s\S]*?)```/)[1];
+  const at = (s) => res.indexOf(s);
+  assert.ok(at('.withBulkhead(') !== -1 && at('.withBulkhead(') < at('.withRetry(') && at('.withRetry(') < at('.withCircuitBreaker('), 'breaker must be declared last');
+  assert.match(res, /CallNotPermittedException/);
+  assert.match(res, /BulkheadFullException/);
+  assert.match(res, /ProviderUnavailableException/);
+  assert.match(byId.resilience, /gobreaker\/v2/);
+
+  for (const [id, text] of all) {
+    // NestJS has no multi providers.
+    assert.doesNotMatch(text, /multi:\s*true/, `${id}: NestJS has no multi: true`);
+    // Java 17 baseline: a pattern-matching switch needs a Java 21 qualifier.
+    for (const m of text.matchAll(/```java\n([\s\S]*?)```/g)) {
+      assert.doesNotMatch(m[1], /case\s+[A-Z]\w*\s+[a-z]\w*\s*->/, `${id}: Java example uses a Java 21 pattern switch`);
+    }
+    for (const line of text.split('\n')) {
+      if (/sealed/i.test(line) && /switch/.test(line)) assert.match(line, /Java 21/, `${id}: sealed + switch needs a Java 21 qualifier: ${line}`);
+    }
+    // NestJS HttpService returns Observables.
+    for (const m of text.matchAll(/await\s+this\.http\.post\(/g)) assert.fail(`${id}: await on HttpService without firstValueFrom (${m[0]})`);
+    // Debezium or CDC is a relay, never a reason to skip the outbox.
+    assert.doesNotMatch(text, /Do not use when[\s\S]*?Debezium[\s\S]*?##\s+Idioms/, `${id}: CDC must not be listed under Do not use when`);
+  }
+  assert.match(byId.adapter, /firstValueFrom/);
+  assert.match(byId['chain-of-responsibility'], /proxy\.ts/);
+  assert.match(byId.outbox, /upsertJobScheduler/);
+  assert.match(byId.outbox, /Forwarder/);
+  assert.match(byId.outbox, /SKIP LOCKED/);
+  assert.doesNotMatch(byId.singleton, /sync\.Once\b(?!Value)/, 'use sync.OnceValue');
+  assert.match(byId.singleton, /sync\.OnceValue/);
+});
+
+test('provider-integration timing matches playbook step 0', async () => {
+  const skill = await shared(GUIDE);
+  const text = [skill.body, fileOf(skill, 'patterns/strategy.md').content, fileOf(skill, 'patterns/template-method.md').content].join('\n');
+  assert.match(text, /second provider/i);
+  assert.match(text, /step 0/);
+  assert.match(text, /exactly one/i);
+});
+
+test('Redis delivery guarantees are not lumped together', async () => {
+  const c = await catalog();
+  const m = (await shared(MESSAGING)).body;
+  assert.match(m, /Redis Pub\/Sub[^\n]*at-most-once/i);
+  assert.match(m, /Redis Streams[^\n]*(acks?|consumer-group)/i);
+  for (const rel of ['kafka', 'rabbitmq']) {
+    const addon = c.addons.get(rel);
+    assert.ok(addon, `${rel} add-on loaded`);
+    assert.match(addon.rules.body, /Redis Pub\/Sub[^\n]*at-most-once/i, `${rel}: Redis Pub/Sub guarantee`);
+    assert.match(addon.rules.body, /Redis Streams/, `${rel}: Redis Streams`);
+  }
+});
+
 test('backslash escapes survive in example code (Go regex)', async () => {
   const f = fileOf(await shared(GUIDE), 'patterns/singleton.md');
   const backslash = String.fromCharCode(92);

@@ -24,7 +24,7 @@ Applies when the profile lists the `rabbitmq` add-on. Extends the core eventing,
 
 Adding a broker is a Decision gate: record the choice in `stackcrew.json` `decisions[]`.
 
-- RabbitMQ (or another lightweight pub/sub such as Redis or a cloud Pub/Sub): task distribution, rich routing by key, low to medium volume, no replay, per-message ack, TTL and dead-lettering, simple to operate.
+- RabbitMQ (or a cloud Pub/Sub): task distribution, rich routing by key, low to medium volume, no replay, per-message ack, TTL and dead-lettering, simple to operate. Redis is a weaker fit: Redis Pub/Sub is at-most-once with no persistence or ack and is never a work queue; Redis Streams has consumer-group acks but no native dead-letter exchange or per-message TTL, and its durability depends on AOF/RDB.
 - Kafka: replay or long retention, ordering per key, high throughput, several independent consumers at their own pace. Use the `kafka` add-on.
 - In-process event: same service, no durability needed.
 

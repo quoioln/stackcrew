@@ -31,7 +31,7 @@ An ordered pipeline of handlers; each handles the request, passes it on, or stop
 ### TypeScript (NestJS / Next.js / React / Angular)
 
 - NestJS: middleware, guards, pipes and interceptors already form the chain, in a fixed order; choose the right one instead of building your own.
-- Next.js: `middleware.ts` and route handler wrappers; compose with small functions.
+- Next.js 16: `proxy.ts` with an exported `proxy` function (the file convention renamed from `middleware.ts`; the `middleware` export is deprecated), plus route handler wrappers; compose with small functions.
 - Angular: functional interceptors and route guards. Express-style `(req, res, next)` for plain Node.
 - A custom chain: an array of typed functions reduced into one.
 

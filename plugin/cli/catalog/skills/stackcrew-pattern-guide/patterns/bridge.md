@@ -4,30 +4,30 @@ Separate an abstraction from its implementation so the two vary independently. R
 
 ## Signals
 
-- Two independent axes of change: a business kind (invoice, reminder, OTP) times a channel or provider (email, SMS, push; provider A, B).
-- Adding one value on one axis forces new classes for every value of the other (a class explosion: `InvoiceEmail`, `InvoiceSms`, `OtpEmail`, `OtpSms`).
-- Both axes are expected to grow, and the profile or requirement says so.
+- Two independent axes of change: a business kind (invoice, reminder, OTP) times a channel or provider (email, SMS).
+- Adding one value on one axis forces new classes for every value of the other. With 3 kinds x 2 channels you already have six classes (`InvoiceEmail`, `InvoiceSms`, `ReminderEmail`, `ReminderSms`, `OtpEmail`, `OtpSms`), and each new channel adds three more.
+- The abstraction side carries rules (templates, validation, localization) that would be copied per implementation.
 
 ## Use when
 
-- At least two values exist on each axis today, or are committed in the requirement.
-- The abstraction (what we send) holds business logic that must not be duplicated per implementation (how we send).
-- The implementation side is already a port (Adapter) and the abstraction side has its own rules.
+One test: both axes vary independently, and at least one of them is committed to grow (or the cross product is already 3 x 2 or larger), and the abstraction side holds shared rules that must not be duplicated per implementation.
+- You can name each axis in one sentence ("what we send" and "how we send it").
+- The implementation side is already a port (see [adapter.md](adapter.md)).
 
 ## Do not use when
 
 - Only one axis varies. That is Strategy or Adapter.
 - One axis has a single value and no second is committed.
-- The cross product is small and stable (2 x 2); two plain classes are simpler.
+- The cross product is small and stable (2 x 2) and nothing is committed to grow; two plain classes are simpler.
 - You cannot name both axes in one sentence each. If you cannot, there is no bridge.
 
 ## Idioms
 
 ### Java (Spring Boot / Quarkus)
 
-- The implementation axis is a port interface (`NotificationChannel`) with one bean per channel. The abstraction axis is a class or `sealed interface` hierarchy that receives the port by constructor injection (`ReminderNotification(NotificationChannel channel)`).
+- The implementation axis is a port interface (`NotificationChannel`) with one bean per channel. The abstraction axis is a class (or one class per kind) that receives the port by constructor injection (`ReminderNotification(NotificationChannel channel)`).
 - Select the implementation through the registry (`List<NotificationChannel>` keyed by `code()`), see [strategy.md](strategy.md).
-- Prefer a `sealed interface` plus `switch` over an abstract class when the abstraction axis is a closed set of kinds.
+- For a closed set of kinds on Java 17 use an `enum` with a `switch` expression. Sealed hierarchies with pattern-matching `switch` need Java 21 (optional there).
 
 ### TypeScript (NestJS / Next.js / React / Angular)
 
@@ -37,12 +37,12 @@ Separate an abstraction from its implementation so the two vary independently. R
 
 ### Go
 
-- Two small interfaces, one per axis, joined by composition: a struct for the abstraction holds a field of the implementation interface.
+- Two small interfaces or function types, one per axis, joined by composition: a struct for the abstraction holds a field of the implementation interface.
 - No embedding hierarchy. The cross product is built by passing the pair at construction.
 
 ## Example
 
-Language: Go. The message kind and the channel vary independently and are joined by composition.
+Language: Go. Both axes are shown: the message kind (`MessageBuilder`) and the channel (`Channel`) vary independently and are joined by composition.
 
 ```go
 type Message struct {
@@ -50,11 +50,13 @@ type Message struct {
 	Body string
 }
 
+// Axis 1: what we send.
+type MessageBuilder func(data ReminderData) Message
+
+// Axis 2: how we send it.
 type Channel interface {
 	Send(ctx context.Context, msg Message) error
 }
-
-type MessageBuilder func(data ReminderData) Message
 
 type Notifier struct {
 	build   MessageBuilder
@@ -68,13 +70,17 @@ func NewNotifier(build MessageBuilder, channel Channel) *Notifier {
 func (n *Notifier) Notify(ctx context.Context, data ReminderData) error {
 	return n.channel.Send(ctx, n.build(data))
 }
+
+// Wiring: every builder pairs with every channel, no class per combination.
+//   NewNotifier(invoiceMessage, smsChannel)
+//   NewNotifier(otpMessage, emailChannel)
 ```
 
 ## AI anti-patterns
 
 - Using Bridge when only one axis varies; it is just Strategy with more names.
-- Building the full abstraction hierarchy and the implementer hierarchy for one kind and one channel.
+- Building the full abstraction hierarchy and the implementer hierarchy for one kind and one channel, or for a stable 2 x 2.
 - Naming the pieces `Abstraction` and `Implementor` instead of the domain terms.
 - Letting the abstraction reach into channel details (`if (channel instanceof Sms)`), which defeats the split.
 - A class hierarchy in Go or React where composition is the idiom.
-- Skipping the Bridge when a cross-product explosion is already visible (`InvoiceEmail`, `InvoiceSms`, `OtpEmail`, ...).
+- Skipping the Bridge when a cross-product explosion is already visible (three kinds times two channels and a third channel coming).
