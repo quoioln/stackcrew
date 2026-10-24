@@ -6,7 +6,7 @@ Coding standards for this project. Rule ids (SC-*) are cited by hooks, lint and 
 Before any non-trivial change, read `docs/stackcrew/architecture-profile.md` and `stackcrew.json`. They record the chosen stack, addons, mode (greenfield or brownfield) and the decisions already made. Follow them. If code and profile disagree, say so instead of silently picking one.
 
 ## SC-PREFLIGHT
-Before writing code for a non-trivial task, write a short implementation note (3-8 lines):
+The note is required when the change touches more than one function, adds or changes a type, DTO or constant, adds I/O or an integration, or adds a dependency. Write it in your reply, BEFORE the first file edit (3-8 lines):
 1. Affected area and modules, checked against the profile.
 2. Reuse: existing helpers, constants, DTOs. Search the codebase first, then list what you found.
 3. Create: new types, DTOs, constants, shared functions.
@@ -16,11 +16,11 @@ Before writing code for a non-trivial task, write a short implementation note (3
 Then continue to code without waiting, except at the Decision gate.
 - Do: write the note first, keep it short.
 - Don't: write code before the note.
-- Exception: trivial change (one line, no new logic).
+- Exception: a one-line change with no new logic.
 
 ## SC-TYPE
 - Do: model data with a named type (class, record, DTO, struct, interface) and validate at the boundary (schema, bean validation, struct tags).
-- Don't: let untyped values escape (`any`, `unknown`, generic JSON nodes, `Map<String,Object>`, `interface{}`, bare `Object`) or use them as DTOs.
+- Don't: let untyped values escape or serve as DTOs: `any`/`unknown` leaking past the boundary (TS); `JsonNode`, `ObjectNode`, `Map<String, Object>`, `Map<?, ?>`, `Object` (Java); `interface{}`/`any`, `map[string]interface{}` (Go).
 - Exception: right where a dynamic payload is deserialized, then map to a typed model immediately. Mark it with `stackcrew-allow: SC-TYPE <reason>`.
 
 ## SC-CONST
@@ -39,7 +39,7 @@ Then continue to code without waiting, except at the Decision gate.
 - Exception: none. State "no pattern needed" in the note when that is the answer.
 
 ## Decision gate
-Stop and ask the user before:
+Stop and ask the user before the following, presenting 2-3 options with trade-offs:
 - adding new infrastructure (a message broker, integration framework, new datastore);
 - using a pattern or architecture that departs from the profile;
 - adding a large dependency.
@@ -47,4 +47,4 @@ Stop and ask the user before:
 After the user decides, record it as a new entry in `stackcrew.json` `decisions[]` with `id`, `area`, `decision`, `rationale` and `rejected[]` (alternatives not chosen).
 
 ## Exceptions
-To waive a rule at one spot, add a comment on that line or the line above: `stackcrew-allow: <rule-id> <reason>`. The reason is required; a marker without one does not count. Keep exceptions rare and local.
+To waive a rule at one spot, add a comment on the same line: `stackcrew-allow: <rule-id> <reason>`. The reason is required; a marker without one does not count. Keep exceptions rare and local.

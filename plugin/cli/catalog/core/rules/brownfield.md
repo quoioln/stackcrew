@@ -13,4 +13,4 @@ title: Working in existing code (brownfield)
 - Write characterization tests before refactoring untested legacy code.
 - Replace old paths with the strangler-fig approach: wrap, divert incrementally, retire; no big-bang rewrites.
 - Do not rewrite working code just to apply a pattern or to chase coverage on untouched legacy.
-- Record as-is decisions retroactively so future work has context.
+- Record as-is decisions retroactively in `stackcrew.json` `decisions[]` so future work has context.

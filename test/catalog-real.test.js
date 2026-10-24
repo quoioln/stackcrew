@@ -41,6 +41,17 @@ test('always-on has SC headings in order and fits 6000 bytes', async () => {
   }
 });
 
+test('always-on content specifics', async () => {
+  const text = await readFile(path.join(ROOT, 'catalog', 'core', 'always-on.md'), 'utf8');
+  assert.ok(text.includes('JsonNode'));
+  assert.ok(/Map<\?, ?\?>/.test(text));
+  assert.ok(text.includes('stackcrew-allow: SC-TYPE'));
+  const pre = text.split('## SC-PREFLIGHT')[1].split('\n## ')[0];
+  assert.equal(pre.split('\n').filter((l) => /^\d. /.test(l)).length, 5);
+  const ts = await readFile(path.join(ROOT, 'catalog', 'core', 'rules', 'type-safety.md'), 'utf8');
+  assert.ok(ts.includes('stackcrew-allow'));
+});
+
 test('core rules exist with ids and bounded essentials', async () => {
   await withRealCatalog(async () => {
     const c = await loadCatalog();

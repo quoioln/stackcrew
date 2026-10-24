@@ -14,7 +14,7 @@ categories: [backend, fullstack]
 - Call downstreams with a timeout, retry with exponential backoff and jitter, a circuit breaker and a bulkhead.
 - Shut down gracefully (drain in-flight requests, close pools) and expose separate liveness, readiness and health probes.
 - Set explicit transaction boundaries with the right isolation level, and guard races with optimistic or pessimistic locking.
-- Make migrations zero-downtime (expand/contract) and reversible, and never edit an applied migration.
+- Write reversible, zero-downtime (expand/contract) migrations; in prod roll forward only; never edit an applied migration.
 - Store money as integer minor units or decimal (never float) and timestamps in UTC.
 - Add rate limiting and request body size limits; size connection pools and set a query timeout on every query.
 - Cache with an explicit TTL and invalidation strategy; support ETag or conditional requests where useful.
@@ -31,4 +31,4 @@ categories: [backend, fullstack]
 
 ## Data integrity
 
-- Forward-only migrations in prod; test them against a real database.
+- In prod, roll forward only (fix with a new migration); test migrations against a real database.
