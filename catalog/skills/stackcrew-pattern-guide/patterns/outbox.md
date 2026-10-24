@@ -32,13 +32,13 @@ Write the event to an outbox table in the same database transaction as the busin
 
 ### TypeScript (NestJS / Next.js / React / Angular)
 
-- Within one DB transaction (the ORM or query-builder transaction callback), write the business row and the outbox row. A relay (a BullMQ job scheduler registered with `upsertJobScheduler`, a cron worker, or CDC) publishes and marks them. BullMQ v6 removed repeatable jobs (`repeat` option, `getRepeatableJobs`); use job schedulers.
+- Within one DB transaction (the ORM or query-builder transaction callback), write the business row and the outbox row. A relay (a BullMQ job scheduler registered with `upsertJobScheduler` (BullMQ 5.16+), a cron worker, or CDC) publishes and marks them. BullMQ v6 removed repeatable jobs (`repeat` option, `getRepeatableJobs`); use job schedulers.
 - Define the event payload as a typed interface or zod schema; the outbox payload column is serialized from it, not from `any`.
 - `EventEmitter2` after `save()` is not an outbox; it is an in-process notification.
 
 ### Go
 
-- Watermill has an outbox built in: publish with the SQL publisher created on the `*sql.Tx` (one publisher per transaction), then run the Forwarder, which reads the outbox table with a SQL subscriber and re-publishes to the real broker. Prefer it over a hand-written relay when Watermill is the messaging library.
+- Watermill has an outbox built in: create the SQL publisher on the `*sql.Tx` (one publisher per transaction) and wrap it in the Forwarder's decorating publisher from the `components/forwarder` package, which envelopes each message onto the forwarder topic. The Forwarder subscribes to that topic through a SQL subscriber, unwraps the messages and republishes them to the destination topic on the real broker. Without the decorator the rows land under the destination topic and are never forwarded. Check the constructors in the Watermill forwarder docs before wiring. Prefer it over a hand-written relay when Watermill is the messaging library.
 - Hand-written: `tx, err := db.BeginTx(ctx, nil)`, insert the business row and the outbox row with the same `tx`, commit; a relay goroutine claims rows with `SELECT ... FOR UPDATE SKIP LOCKED` plus a claimed status and lease, publishes, and marks them sent. Idempotent consumers dedupe by event id.
 
 ## Example

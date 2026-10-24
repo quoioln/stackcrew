@@ -25,7 +25,7 @@ Applies when the profile lists the `kafka` add-on. Extends the core eventing, lo
 Adding a broker is a Decision gate: record the choice in `stackcrew.json` `decisions[]`.
 
 - In-process event (Spring `ApplicationEvent`, Nest `EventEmitter`, Go channel): same service, no durability needed.
-- Lightweight broker or work queue (RabbitMQ, Redis Streams, a cloud Pub/Sub): task distribution, rich routing, low to medium volume, no replay, per-message ack, TTL and dead-lettering. Use the `rabbitmq` add-on. Redis Pub/Sub is not a work queue: it is at-most-once with no persistence or ack. Redis Streams has consumer-group acks but no native dead-letter exchange or per-message TTL, and its durability depends on AOF/RDB.
+- Lightweight broker or work queue (RabbitMQ or a cloud Pub/Sub): task distribution, rich routing, low to medium volume, no replay, per-message ack, TTL and dead-lettering. Use the `rabbitmq` add-on. Redis is a weaker fit: Redis Pub/Sub is not a work queue (at-most-once, no persistence or ack). Redis Streams has consumer-group acks but no native dead-letter exchange or per-message TTL, and its durability depends on AOF/RDB.
 - Kafka: replay or long retention, ordering per key, high throughput, several independent consumers at their own pace, audit trail, event sourcing or stream processing.
 
 ## Delivery semantics

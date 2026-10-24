@@ -232,7 +232,9 @@ test('negative checks: no baseline-breaking advice in pattern files', async () =
       if (/sealed/i.test(line) && /switch/.test(line)) assert.match(line, /Java 21/, `${id}: sealed + switch needs a Java 21 qualifier: ${line}`);
     }
     // NestJS HttpService returns Observables.
-    for (const m of text.matchAll(/await\s+this\.http\.post\(/g)) assert.fail(`${id}: await on HttpService without firstValueFrom (${m[0]})`);
+    for (const line of text.split('\n')) {
+      if (/await\s+this\.http\.\w+\s*(<[^>]*>)?\(/.test(line) && !line.includes('firstValueFrom')) assert.fail(`${id}: await on HttpService without firstValueFrom: ${line}`);
+    }
     // Debezium or CDC is a relay, never a reason to skip the outbox.
     assert.doesNotMatch(text, /Do not use when[\s\S]*?Debezium[\s\S]*?##\s+Idioms/, `${id}: CDC must not be listed under Do not use when`);
   }

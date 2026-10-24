@@ -40,13 +40,13 @@ A fixed skeleton with variable steps. The caller sees one operation; the order o
 
 ### Go
 
-- No inheritance. Either a function that takes the steps (`Run(ctx, steps Steps, in Command) (Result, error)`) where `Steps` is a struct of function fields, or a struct that holds small step interfaces.
+- No inheritance. Either a function that takes the steps (`func Run(ctx context.Context, steps Steps, in Command) (Result, error)`) where `Steps` is a struct of function fields, or a struct that holds small step interfaces.
 - Keep step interfaces small (one to three methods) and define them where they are used.
 - Shared behavior (audit on success and on failure, metrics) lives in `Run`, so every variant gets it.
 
 ## Example
 
-Language: Java. Domain types are the playbook's `VerifyCommand`, `VerifyResult` and `ProviderPort`. The skeleton is fixed; the subclass fills the steps.
+Language: Java. Domain types are the playbook's `VerifyCommand`, `VerifyResult` and `ProviderPort`. The skeleton is fixed; the subclass fills the steps. This is simplified (no resilience or metrics): Spring provider integrations reuse the full `AbstractProviderAdapter` from playbook step 5.
 
 ```java
 public abstract class AbstractProviderAdapter<REQ, RES> implements ProviderPort {
@@ -69,7 +69,8 @@ public abstract class AbstractProviderAdapter<REQ, RES> implements ProviderPort 
             audit.success(providerCode, command.requestId());
             return result;
         } catch (RuntimeException e) {
-            audit.failure(providerCode, command.requestId(), e.getClass().getSimpleName());
+            String outcome = e instanceof ProviderException pe ? ProviderMetrics.outcomeOf(pe) : ProviderMetrics.OUTCOME_ERROR;
+            audit.failure(providerCode, command.requestId(), outcome);
             throw e;
         }
     }

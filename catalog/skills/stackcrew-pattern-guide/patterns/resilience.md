@@ -36,7 +36,7 @@ Protect the service from slow or failing dependencies that you do not control.
 
 ### TypeScript (NestJS / Next.js / React / Angular)
 
-- `cockatiel` composes policies with `wrap(...)`; the first policy listed is the outermost. `opossum` is a circuit breaker for Node. Create one policy per dependency and reuse it.
+- `cockatiel` composes policies with `wrap(...)`; the first policy listed is the outermost, so use `wrap(circuitBreaker, retry, timeout)` to keep the breaker outermost. `opossum` is a circuit breaker for Node. Create one policy per dependency and reuse it.
 - Use `AbortSignal.timeout(ms)` for `fetch` and pass the signal into the call.
 - Frontend: TanStack Query's `retry` and `retryDelay` for idempotent reads; do not retry mutations automatically.
 

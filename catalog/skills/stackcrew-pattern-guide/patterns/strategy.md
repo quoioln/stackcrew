@@ -11,7 +11,7 @@ Interchangeable algorithms or behaviors behind one contract, chosen by context. 
 ## Use when
 
 - There are at least two real behaviors behind the same contract. Default: refactor at the third `if` branch (rule of three).
-- Provider integrations are the exception: with an integration hub (the profile expects more providers) the registry exists from the second provider, or from the first when more are expected. With exactly one provider expected, inject the port directly. See `stackcrew-spring-integration-provider`, step 0.
+- Provider integrations are the exception: the registry exists from the second provider, or from the first when the profile records that more are expected. With exactly one provider expected, inject the port directly. See `stackcrew-spring-integration-provider`, step 0.
 - The caller should not know which behavior runs.
 - Adding a case should mean adding one unit, not editing a central switch (OCP).
 

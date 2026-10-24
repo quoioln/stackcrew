@@ -39,7 +39,7 @@ One shared instance of a collaborator. Get it from the DI container's scope, nev
 ### Go
 
 - Constants and cheap read-only values: a package-level `var x = regexp.MustCompile(...)`, initialized once at program start.
-- Expensive or optional values: `sync.OnceValue` (Go 1.21+) for lazy, once-only initialization, not a hand-written once-flag plus a package-level pointer.
+- Expensive or optional values: `sync.OnceValues` (Go 1.21+) for lazy, once-only initialization that returns the load error to every caller instead of panicking; `sync.OnceValue` when it cannot fail. Not a hand-written once-flag plus a package-level pointer.
 - Preferred for anything with dependencies: build it in `main` and pass it to constructors. Avoid package-level `var` that is mutated after startup.
 - If it holds state, protect it with a mutex or a channel, or do not share it.
 
@@ -51,13 +51,17 @@ Language: Go. A cheap constant value, and an expensive one initialized lazily an
 // Cheap and constant: initialized once at program start.
 var referencePattern = regexp.MustCompile(`^[A-Z]{3}-\d{8}$`)
 
-// Expensive or optional: built on first use, exactly once (Go 1.21+).
-var riskModel = sync.OnceValue(func() *RiskModel {
-	return mustLoadRiskModel(riskModelPath)
+// Expensive or optional: built on first use, exactly once (Go 1.21+); the error is returned, not panicked.
+var loadModel = sync.OnceValues(func() (*RiskModel, error) {
+	return LoadRiskModel(riskModelPath)
 })
 
-func Score(ctx context.Context, in Application) (Score, error) {
-	return riskModel().Score(ctx, in)
+func ScoreApplication(ctx context.Context, in Application) (RiskScore, error) {
+	model, err := loadModel()
+	if err != nil {
+		return RiskScore{}, fmt.Errorf("load risk model: %w", err)
+	}
+	return model.Score(ctx, in)
 }
 ```
 

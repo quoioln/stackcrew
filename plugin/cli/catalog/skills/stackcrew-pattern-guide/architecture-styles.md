@@ -73,6 +73,6 @@ Applies to React, Next.js and Angular. Decide these three things and record them
 
 **State choice** (use the lowest rung that works)
 1. Local state (`useState`, `signal()`, component fields) for UI state used by one component.
-2. Server-state cache (TanStack Query; on Angular 17 and 18 a query library or RxJS with `shareReplay`, since `resource()` arrives in Angular 19 and is still experimental; Next.js server components with the route cache) for anything that comes from an API. Never copy server data into a global store.
+2. Server-state cache (TanStack Query; on Angular 17 and 18 a query library or RxJS with `shareReplay`, since `resource()` is experimental in Angular 19-21 and stable from 22; Next.js server components with the route cache) for anything that comes from an API. Never copy server data into a global store.
 3. A store (NgRx, signal store, Zustand, Redux Toolkit) for cross-feature client state: wizard progress, auth session, undo history. Add it on a present signal (prop drilling across several levels, shared mutable client state), not by default.
 - URL state (search params) is the source of truth for filters and pagination.

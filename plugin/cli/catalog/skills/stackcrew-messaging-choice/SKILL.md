@@ -30,11 +30,11 @@ If two answers are true, choose the earlier (lighter) step unless a requirement 
 
 | Need | In-process | RabbitMQ or cloud Pub/Sub | Redis Streams | Redis Pub/Sub | Kafka |
 |---|---|---|---|---|---|
-| Survives a crash | No | Yes (durable queues, persistent messages) | Yes, if AOF or RDB persistence is on | No | Yes |
+| Survives a crash | No | Yes (durable queues, persistent messages) | Partly: AOF loses up to the fsync window (~1 s with everysec); RDB alone loses writes since the last snapshot | No | Yes |
 | Delivery guarantee | In memory | At-least-once with ack | At-least-once: consumer-group ack and pending list | At-most-once, fire-and-forget; lost while a subscriber is disconnected | At-least-once; exactly-once only with transactions |
 | Replay old events | No | No | Yes, until trimmed | No | Yes |
 | Per-message TTL and DLX | No | Yes | No native DLX or per-message TTL; build it | No | No; DLQ is built by you |
-| Order | Call order | Per queue | Per stream | None guaranteed | Per partition key |
+| Order | Call order | Per queue | Per stream | Publish order per subscriber; gaps while disconnected | Per partition key |
 | Many independent consumers at their own pace | No | Fan-out exchange | Consumer groups | Live subscribers only | Yes, consumer groups |
 | Throughput | In memory | Low to medium | Medium | Medium | High |
 
