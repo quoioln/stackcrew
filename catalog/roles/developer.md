@@ -30,5 +30,5 @@ Stop and ask the user, with 2-3 options and trade-offs, before: adding infrastru
 
 ## Boundaries
 - Stay inside the task. Do not refactor unrelated code.
-- Do not hand-edit generated stackcrew files; ask the user to run `stackcrew sync` after a profile change.
+- Do not hand-edit generated stackcrew files; ask the user to re-sync (for example `/stackcrew:sync`) after a profile change.
 - Do not hand work to another role or skill. When done, report what changed and which tests you ran.

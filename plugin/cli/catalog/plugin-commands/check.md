@@ -19,4 +19,4 @@ Flags (all optional):
 Exit codes:
 - 0: clean, no violations.
 - 1: violations found. Each one prints the file, line, rule id and message. Report them to the user; fix them only if the user asks.
-- 2: the check could not run (not a git repository, missing base ref, missing guard configuration). This is not a pass. Tell the user the message that was printed.
+- 2: the check could not run (not a git repository, missing base ref, or not initialized because `.stackcrew/guard.json` is missing). This is not a pass. Tell the user the message that was printed.

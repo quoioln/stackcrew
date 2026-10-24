@@ -2,7 +2,7 @@
 
 Use this table when the user has not chosen a stack. Recommend one stack with the reason from their interview answers, and name the runner-up. The stack decides the language, the rules and the skills that get rendered, so ask before changing it later.
 
-Catalog status: only `spring-boot` ships rules and skills today. For any other row, tell the user that stackcrew has no rules for it yet and let them decide whether to go ahead without stack rules or pick a supported stack.
+Catalog status: run `node "${CLAUDE_PLUGIN_ROOT}/cli/bin/stackcrew.js" list` for the stacks stackcrew supports; not every row below has rules yet. For a stack that is not listed, say plainly that stackcrew cannot be set up for it yet, and let the user pick a supported stack or stop.
 
 | Stack | Language and version | Choose when | Avoid when |
 |---|---|---|---|

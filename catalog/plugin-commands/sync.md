@@ -17,4 +17,4 @@ Flags (all optional):
 - `--wire`: also wire the stack's build integration (for Java, the ArchUnit test and the build-file changes). Without it, build files are never edited.
 - `--dry-run`: print what would change and write nothing.
 
-Exit codes: 0 means done (or nothing to change). 1 means it did not finish: a hand-edited file was skipped, `stackcrew.json` is missing or invalid, or an error was printed. Read the output, tell the user what it says, and stop; do not retry with `--force` unless the user asks.
+Exit codes: 0 means done (or nothing to change). 1 means it did not finish: a hand-edited file was skipped, `stackcrew.json` is missing or invalid, or an error was printed. With `--wire`, exit 1 also means: the stack is not a Java stack; `java.basePackage` is empty in `stackcrew.json`; or there is no build file (`pom.xml`, `build.gradle(.kts)`) or it has no dependencies section, in which case a dependency snippet is printed. Show that message and snippet to the user; do not retry blindly. Read the output, tell the user what it says, and stop; do not retry with `--force` unless the user asks.

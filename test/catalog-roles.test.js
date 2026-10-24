@@ -144,3 +144,15 @@ test('real catalog renders for spring-boot without unknown placeholders', async 
     assert.ok(init.some((o) => o.content.includes('npx --yes stackcrew@0.0.0-test detect')));
   });
 });
+
+test('init skill handles base package, explicit add-ons and supported stacks', async () => {
+  await withRealCatalog(async (c) => {
+    const s = initSkill(c);
+    const all = [s.body, ...s.files.map((f) => f.content)].join('\n');
+    for (const needle of ['java.basePackage', '"addons": []', '{{sc:cli}} list', 'ignore it', 'expectedProviders', '{{sc:cli}} add <addon>', 'sync --wire', 'means "use the detected add-ons"']) {
+      assert.ok(all.includes(needle), needle);
+    }
+    assert.ok(!all.toLowerCase().includes('without stack rules'));
+    assert.ok(!c.roles.some((r) => r.body.includes('run `stackcrew sync`')));
+  });
+});
