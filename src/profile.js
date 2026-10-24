@@ -18,7 +18,7 @@ export async function readProfile(projectDir) {
     throw err;
   }
   try {
-    return JSON.parse(raw.replace(/^﻿/, ''));
+    return JSON.parse(raw.replace(/^\uFEFF/, ''));
   } catch (err) {
     throw new StackcrewError('PROFILE', `${PROFILE_FILE} is not valid JSON: ${err.message}`);
   }

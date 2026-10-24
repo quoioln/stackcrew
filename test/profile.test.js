@@ -61,6 +61,8 @@ test('readProfile returns null when missing; throws PROFILE on bad JSON; write r
     const raw = await readFile(path.join(dir, PROFILE_FILE), 'utf8');
     assert.equal(raw, JSON.stringify(p, null, 2) + '\n');
     assert.deepEqual(await readProfile(dir), p);
+    await writeFile(path.join(dir, PROFILE_FILE), '\uFEFF' + JSON.stringify(p));
+    assert.deepEqual(await readProfile(dir), p);
     await writeFile(path.join(dir, PROFILE_FILE), '{nope');
     await assert.rejects(readProfile(dir), (e) => e.code === 'PROFILE');
   } finally {

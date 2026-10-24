@@ -35,13 +35,6 @@ test('detects demo-java from pom with spring boot', async () => {
   });
 });
 
-test('strips a leading BOM before matching', async () => {
-  const c = await loadCatalog(MINI);
-  await withDir({ 'pom.xml': '﻿' + SPRING_POM }, async (dir) => {
-    assert.equal((await detectProject(dir, c)).stack, 'demo-java');
-  });
-});
-
 test('excludeContains rejects quarkus pom', async () => {
   const c = await loadCatalog(MINI);
   await withDir({ 'pom.xml': SPRING_POM + '<x>io.quarkus</x>' }, async (dir) => {
@@ -88,6 +81,17 @@ test('package.json deps match; malformed package.json does not throw', async () 
     const r = await detectProject(dir, c);
     assert.equal(r.stack, null);
     assert.equal(r.mode, 'brownfield');
+  });
+});
+
+test('reads a BOM-prefixed package.json', async () => {
+  const base = await loadCatalog(MINI);
+  const demo = base.stacks.get('demo-java');
+  const web = { ...demo, id: 'web', language: 'ts', detect: { files: [], contains: [], excludeContains: [], packageDeps: ['react'] } };
+  const c = { ...base, stacks: new Map([['web', web]]), addons: new Map() };
+  const json = JSON.stringify({ dependencies: { react: '1' } });
+  await withDir({ 'package.json': '\uFEFF' + json }, async (dir) => {
+    assert.equal((await detectProject(dir, c)).stack, 'web');
   });
 });
 

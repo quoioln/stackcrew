@@ -8,7 +8,7 @@ const DEFAULT_SCAN_FILES = ['pom.xml', 'build.gradle', 'build.gradle.kts', 'pack
 
 async function readText(file) {
   try {
-    return (await readFile(file, 'utf8')).replace(/^﻿/, '');
+    return (await readFile(file, 'utf8')).replace(/^\uFEFF/, '');
   } catch {
     return null;
   }
