@@ -59,10 +59,11 @@ export function renderAgentsMdBlock(ctx) {
 
   const total = bytes(content);
   if (total > AGENTS_BLOCK_BUDGET) {
+    const contributed = (r) => bytes(topEssentials(r.essentials));
     const largest = [...ctx.rules]
-      .sort((a, b) => bytes(b.essentials) - bytes(a.essentials))
+      .sort((a, b) => contributed(b) - contributed(a))
       .slice(0, 3)
-      .map((r) => `${r.title} (${bytes(r.essentials)} bytes)`)
+      .map((r) => `${r.title} (${contributed(r)} bytes)`)
       .join(', ');
     throw new StackcrewError(
       'BUDGET',

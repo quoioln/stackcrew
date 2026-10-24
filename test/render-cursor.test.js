@@ -79,7 +79,7 @@ test('topEssentials: blank line then non-indented text ends the bullet', () => {
   assert.equal(topEssentials('- a\n  cont\n\nstray paragraph\n- b'), '- a\n  cont\n- b');
 });
 
-test('real catalog core rules + codex fit the budget', async () => {
+test('real catalog core rules + codex fit the budget', async (t) => {
   const saved = process.env.STACKCREW_CATALOG_DIR;
   delete process.env.STACKCREW_CATALOG_DIR;
   let ctx;
@@ -99,7 +99,7 @@ test('real catalog core rules + codex fit the budget', async () => {
     else process.env.STACKCREW_CATALOG_DIR = saved;
   }
   const size = Buffer.byteLength(renderAgentsMdBlock(ctx).content, 'utf8');
-  console.log(`real-catalog AGENTS block: ${size} bytes`);
+  t.diagnostic(`real-catalog AGENTS block: ${size} bytes`);
   assert.ok(size <= 16000);
 });
 
