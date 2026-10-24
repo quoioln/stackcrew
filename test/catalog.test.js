@@ -21,6 +21,10 @@ test('loads mini catalog', async () => {
   assert.deepEqual(demo(c).lintFiles.map((f) => f.relPath), ['demo.xml']);
   assert.deepEqual(c.sharedSkills.find((s) => s.name === 'stackcrew-demo-advisor').files.map((f) => f.relPath), ['patterns/x.md']);
   assert.equal(c.languages.get('java').guard[0].id, 'SC-TYPE');
+  const g = c.languages.get('java').guard[0];
+  const re = new RegExp(g.regex, g.flags);
+  assert.ok(re.test('private JsonNode data;'));
+  assert.ok(!re.test('JsonNodes'));
   assert.equal(demo(c).guard.length, 0);
   assert.equal(c.alwaysOn, '# Always\nSC-TYPE\n');
   assert.equal(c.pluginCommands[0].name, 'sync');
