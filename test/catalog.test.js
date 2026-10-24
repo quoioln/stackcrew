@@ -136,6 +136,23 @@ test('rejects bad ids, names, kinds, enums and unknown languages', async () => {
   }
 });
 
+test('add-on languages: missing key is a CATALOG error, [] is valid, unknown language is reported', async () => {
+  const tmp = await mkdtemp(path.join(os.tmpdir(), 'sc-cat-'));
+  try {
+    await cp(MINI, tmp, { recursive: true });
+    const file = path.join(tmp, 'addons', 'demo-addon', 'addon.json');
+    const addon = JSON.parse(await readFile(file, 'utf8'));
+    const { languages, ...withoutLanguages } = addon;
+    assert.deepEqual(languages, ['java']);
+    await writeFile(file, JSON.stringify(withoutLanguages));
+    await assert.rejects(loadCatalog(tmp), (e) => e.code === 'CATALOG' && e.message.includes('addons/demo-addon/addon.json') && e.message.includes('languages'));
+    await writeFile(file, JSON.stringify({ ...addon, languages: [] }));
+    assert.deepEqual(validateCatalog(await loadCatalog(tmp)), []);
+    await writeFile(file, JSON.stringify({ ...addon, languages: ['cobol'] }));
+    assert.ok(validateCatalog(await loadCatalog(tmp)).some((e) => /cobol/.test(e)));
+  } finally { await rm(tmp, { recursive: true, force: true }); }
+});
+
 test('lintSkillDescription checks command prefix and length', () => {
   const base = { name: 'stackcrew-x', kind: 'command', source: 'skills/stackcrew-x/SKILL.md' };
   assert.deepEqual(lintSkillDescription({ ...base, description: 'Use only when asked.' }), []);

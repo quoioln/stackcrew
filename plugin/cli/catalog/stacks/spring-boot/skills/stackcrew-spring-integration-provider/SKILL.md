@@ -451,8 +451,9 @@ Add the new code to `ProviderRegistryTest`, and make sure `StackcrewArchitecture
 
 Skip this section unless `stackcrew.json` has `camel` in `addons`. When it does, route many providers with Apache Camel instead of the hand-written template base:
 
-- One `RouteBuilder` per provider route, `from(CamelEndpoints.VERIFY_C06)` (a constant such as `"direct:verify-c06"`) to the HTTP component, with the error handler (`onException`, redelivery policy, dead letter channel) declared on the route.
-- Keep the same port: a `CamelProviderAdapter implements ProviderPort` calls `ProducerTemplate` with a typed body and maps the typed reply through the same ACL mapper.
+- One `RouteBuilder` per provider for the port entry: `from(CamelEndpoints.VERIFY_C06)` (a constant such as `"direct:verify-c06"`) receives the typed request record, throttles, maps through the ACL mapper and calls the HTTP component (marshal and unmarshal JSON in a separate `direct:` route). It declares no `handled(true)` and no dead letter channel: typed exceptions propagate to the caller.
+- Keep the same port: a `CamelProviderAdapter implements ProviderPort` calls `ProducerTemplate.requestBody` with the typed record, unwraps `CamelExecutionException` and rethrows the typed provider exception (`ProviderRejectedException`, `ProviderUnavailableException`), then maps the typed reply through the same ACL mapper.
+- Retry, redelivery and the dead letter channel belong to a separate async ingress route in its own `RouteBuilder` (broker in, unmarshal, validate, idempotent consumer, then `to(CamelEndpoints.VERIFY_C06)`); see the `camel` add-on rules.
 - Typed beans only at route edges; no `Map<String, Object>` exchange bodies.
 - Retry, throttling and DLQ come from Camel EIPs. Do not also wrap the same call in Resilience4j retry.
 

@@ -8,11 +8,11 @@ Applies when the profile lists the `kafka` add-on. Extends the core eventing, lo
 
 ## Essentials
 
-- Consumers are idempotent: delivery is at-least-once. Dedupe on the event id from the payload (never the offset) with a processed-events table and one atomic insert, in the same transaction as the business effect. On Spring Boot use skill `stackcrew-spring-kafka-consumer`.
-- Commit offsets only after the work succeeded: auto-commit off, `AckMode.RECORD` (or manual ack). A failure goes to a retry with backoff, then a dead-letter topic; one bad record never blocks the partition forever.
-- Classify errors: non-retryable (invalid payload, unknown schema, rule violation) go straight to the dead-letter topic; retry only transient ones, with a bounded attempt count and backoff.
-- Events are typed records (or Avro/Protobuf classes) with an event id, type, version and `occurredAt`. Never `Map`, `JsonNode` or `any` past the deserialization point. Schema changes are backward compatible; a breaking change is a new topic version.
-- Producers: `enable.idempotence=true`, `acks=all`. Write to Kafka through the Outbox pattern when the event follows a database change: never a dual write.
+- Consumers are idempotent (at-least-once): dedupe on the payload event id, never the offset, with a processed-events table and one atomic insert in the business transaction. Spring Boot: skill `stackcrew-spring-kafka-consumer`.
+- Commit offsets only after the work succeeded: auto-commit off, `AckMode.RECORD`. Failures retry with backoff, then go to a dead-letter topic; one bad record never blocks a partition.
+- Classify errors: non-retryable (invalid payload, rule violation) go straight to the dead-letter topic; only transient ones retry, with a cap and backoff.
+- Events are typed records (or Avro/Protobuf classes) with event id, type, version, `occurredAt`; never `Map`, `JsonNode` or `any` past deserialization. Schema changes stay backward compatible.
+- Producers: `enable.idempotence=true`, `acks=all`; Outbox pattern when the event follows a database change, never a dual write.
 - Topic names, consumer group ids, header names and partition keys are constants. Document the key wherever per-entity ordering matters (key by aggregate id).
 - Carry `traceparent` and the correlation id in message headers. Enable Micrometer observation on the template and the listener container; restore both ids into MDC in the consumer so logs correlate across services.
 - Alert on consumer lag, processing latency and dead-letter topic depth. A dead-letter record has an owner and a replay procedure.
@@ -70,7 +70,7 @@ spring:
       observation-enabled: true          # restores the trace into MDC (traceId, spanId)
 ```
 
-- Failure path: a `DefaultErrorHandler` bean with a `DeadLetterPublishingRecoverer` and an exponential backoff with a retry cap. Spring Boot attaches a `CommonErrorHandler` bean to the default listener container factory. A custom factory calls `setCommonErrorHandler(...)`. The dead-letter topic defaults to `<topic>-dlt` with the same partition number, so it needs at least as many partitions as the source.
+- Failure path: a `DefaultErrorHandler` bean with a `DeadLetterPublishingRecoverer` and an exponential backoff with a retry cap. Spring Boot attaches a `CommonErrorHandler` bean to the default listener container factory. A custom factory calls `setCommonErrorHandler(...)`. Set the dead-letter topic name explicitly with a destination resolver built from a constant suffix: the default is `<topic>.DLT` in spring-kafka 3.1 and 3.2 and `<topic>-dlt` from 3.3, so never rely on it. The default resolver keeps the partition number, so the dead-letter topic needs at least as many partitions as the source.
 - `DefaultErrorHandler` already treats `DeserializationException`, `MessageConversionException`, `ConversionException`, `MethodArgumentResolutionException`, `NoSuchMethodException` and `ClassCastException` as not retryable. Add your own with `addNotRetryableExceptions(...)`.
 - Retries in `DefaultErrorHandler` block the partition while they back off. For long outages use non-blocking retry topics (`@RetryableTopic`) instead of a long blocking backoff.
 - Parse the payload into the typed record at the first line of the listener, validate it, and throw a non-retryable exception that does not echo the payload.

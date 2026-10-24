@@ -8,15 +8,12 @@ Opt-in add-on: it is never detected, so list `observability` in the profile `add
 
 ## Essentials
 
-- Write JSON logs to stdout, one event per line, no log files. Spring Boot 3.4+: `logging.structured.format.console=logstash` (or `ecs`); older Boot: `logstash-logback-encoder`. Text format is for local development only.
+- Write JSON logs to stdout, one event per line, no log files (`core-logging` has the fields, MDC and redaction rules). Spring Boot 3.4+: `logging.structured.format.console=logstash` (or `ecs`); older Boot: `logstash-logback-encoder`. Text format is for local development only.
 - Loki labels are low-cardinality: `service`, `env`, `level` and nothing else. `traceId`, `requestId`, `userId` and order ids go in the log line, never as a label.
-- Every line carries MDC fields: `traceId`, `spanId`, `correlationId`, `requestId`, and `userId` when authenticated. Set at request or message entry, cleared at exit.
-- Deep redaction in the logging layer, deny by default: no secrets, tokens, PII or full bodies in logs. It is a release gate.
 - Grafana RED dashboards (rate, errors, duration) per service and per third-party provider; tag metrics with `provider`. Alert on error rate, p95 and p99 latency, consumer lag and DLQ depth.
 - Ship logs with Grafana Alloy (Promtail is the older agent: same role, deprecated in favour of Alloy). The agent adds the three labels and nothing high-cardinality.
 - Metrics default to Micrometer, then Prometheus; traces default to OpenTelemetry (Micrometer Tracing bridge), then Tempo. These are defaults the profile can override.
 - Metric tags are bounded too: templated route, status class, provider code, outcome. Never a user id, order id, raw path or exception message.
-- One request-logging middleware per service (method, templated route, status, duration, ids) and one log line per outbound third-party call (provider, sanitized URL, status, duration, retries).
 - Link the signals: a Grafana derived field turns `traceId` in a Loki line into a Tempo trace, and exemplars link a latency panel to a trace.
 - Every alert has a severity, an owner and a runbook link. No alert without an action.
 - Define retention and sampling: always keep ERROR, sample DEBUG, keep DEBUG off in prod.
@@ -36,13 +33,18 @@ logging:
   structured:
     format:
       console: logstash                  # one JSON object per line on stdout
+    json:
+      add:
+        service: ${spring.application.name}
+        env: ${app.environment}
+        version: ${app.version}
 management:
   tracing:
     sampling:
       probability: 0.1                   # default is 10%; raise in lower environments
 ```
 
-- The `logstash` format writes MDC entries as top-level JSON members (`traceId`, `spanId`, `correlationId`). With `ecs` check the member names in one real log line before you build queries. `logging.structured.json.add.*`, `.rename.*` and `.exclude` adjust the members.
+- The `logstash` format emits no `service`, `env` or `version` by itself: add them with `logging.structured.json.add.*` as above (`app.environment` and `app.version` are your own properties fed from the deployment). The `logstash` format writes MDC entries as top-level JSON members (`traceId`, `spanId`, `correlationId`). With `ecs` check the member names in one real log line before you build queries. `logging.structured.json.add.*`, `.rename.*` and `.exclude` adjust the members.
 - With Micrometer Tracing on the classpath (OpenTelemetry or Brave bridge) `traceId` and `spanId` are in MDC. Put `correlationId`, `requestId` and `userId` in MDC from one filter (HTTP) or listener wrapper (messaging), and clear them in `finally`.
 
 Spring Boot 3.0 to 3.3 uses `logstash-logback-encoder` in `logback-spring.xml`:
@@ -110,6 +112,9 @@ loki.process "json" {
   stage.labels {
     values = { level = "" }
   }
+  stage.label_drop {
+    values = ["instance", "job"]       // Alloy adds these defaults; pod identity is per-pod cardinality
+  }
   forward_to = [loki.write.default.receiver]
 }
 
@@ -121,6 +126,7 @@ loki.write "default" {
 ```
 
 - `loki.source.kubernetes` tails logs through the Kubernetes API: no privileged DaemonSet, no node filesystem. On plain Docker or VMs use `loki.source.docker` or `loki.source.file` with the same `loki.process` stage. An existing Promtail setup keeps working with the same label set; plan the move to Alloy.
+- `loki.source.kubernetes` adds default labels such as `instance` (namespace/pod:container) and `job`: drop them as above, so the stream set stays `service`, `env`, `level`. If you need to find a pod, add it as structured metadata (`stage.structured_metadata`), never as a label.
 - Set `env` per cluster or namespace, not per line. Do not add a stage that turns a JSON field other than `level` into a label.
 
 ## Metrics: RED per service and per provider

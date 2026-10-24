@@ -21,7 +21,8 @@ Delivery is at-least-once, so every consumer is idempotent. The handler in step 
 ```java
 public final class KafkaTopics {
     public static final String ORDER_PAID = "payments.order-paid.v1";
-    public static final String ORDER_PAID_DLT = ORDER_PAID + "-dlt";        // spring-kafka default: <topic>-dlt
+    public static final String DLT_SUFFIX = "-dlt";                          // set explicitly: see step 4
+    public static final String ORDER_PAID_DLT = ORDER_PAID + DLT_SUFFIX;
     public static final String GROUP_FULFILMENT = "fulfilment-service";
     private KafkaTopics() {}
 }
@@ -32,7 +33,7 @@ public final class KafkaHeaderNames {
 }
 ```
 
-Annotation attributes accept these because they are compile-time constants. Add `CORRELATION_ID` to the existing `MdcKeys` if it is missing. Create the topic and its dead-letter topic (same or more partitions) through your infrastructure code, not by hand.
+Annotation attributes accept these because they are compile-time constants. Add `CORRELATION_ID` to the existing `MdcKeys` if it is missing. Create the topic and its dead-letter topic (same or more partitions) through your infrastructure code, not by hand. The dead-letter topic name always comes from `DLT_SUFFIX`: spring-kafka 3.1 and 3.2 (Boot 3.2 and 3.3) default to `<topic>.DLT` while 3.3 and later default to `<topic>-dlt`, so relying on the default breaks on a Boot upgrade.
 
 ## 2. The typed event and the codec: parse once, at the edge
 
@@ -53,11 +54,12 @@ The consumers use `StringDeserializer` (see step 5) and map the JSON to the reco
 @Component
 public class EventCodec {
     private final ObjectMapper mapper;
-    private final Validator validator;
+    private final jakarta.validation.Validator validator;    // Bean Validation, not Spring's org.springframework.validation.Validator
 
-    public EventCodec(ObjectMapper mapper, Validator validator) { this.mapper = mapper; this.validator = validator; }
+    public EventCodec(ObjectMapper mapper, jakarta.validation.Validator validator) { this.mapper = mapper; this.validator = validator; }
 
     public <T> T read(String json, Class<T> type) {
+        if (json == null) { throw new InvalidEventException(type); }     // tombstone (null value): not retryable, never an IllegalArgumentException
         T event;
         try {
             event = mapper.readValue(json, type);
@@ -83,7 +85,7 @@ public class InvalidEventException extends RuntimeException {      // never retr
 }
 ```
 
-The Boot `ObjectMapper` ignores unknown properties, so adding a field to an event is a compatible change. With Avro or Protobuf and a Schema Registry use the registry deserializer and generated classes instead of this codec; the rest of the steps are unchanged.
+A record with a `null` value (a tombstone, normally only on compacted topics) is treated as invalid and goes to the dead-letter topic. If your topic legitimately carries deletions, handle `record.value() == null` in the listener before calling the codec. The Boot `ObjectMapper` ignores unknown properties, so adding a field to an event is a compatible change. With Avro or Protobuf and a Schema Registry use the registry deserializer and generated classes instead of this codec; the rest of the steps are unchanged.
 
 ## 3. Idempotent handler: processed-events table and an atomic insert
 
@@ -167,7 +169,8 @@ class KafkaErrorHandlingConfig {
 
     @Bean
     DefaultErrorHandler kafkaErrorHandler(KafkaTemplate<Object, Object> template, KafkaRetryProperties retry) {
-        var recoverer = new DeadLetterPublishingRecoverer(template);      // <topic>-dlt, same partition
+        var recoverer = new DeadLetterPublishingRecoverer(template,       // explicit destination: same partition, suffix from the constant
+            (failed, ex) -> new TopicPartition(failed.topic() + KafkaTopics.DLT_SUFFIX, failed.partition()));
         var backOff = new ExponentialBackOffWithMaxRetries(retry.maxRetries());
         backOff.setInitialInterval(retry.initialInterval().toMillis());
         backOff.setMultiplier(retry.multiplier());
@@ -181,7 +184,7 @@ class KafkaErrorHandlingConfig {
 
 - Non-retryable (go to the dead-letter topic on the first failure): invalid or unparseable payload, a business rule violation that a retry cannot fix. `DefaultErrorHandler` already classifies `DeserializationException`, `MessageConversionException`, `ConversionException`, `MethodArgumentResolutionException`, `NoSuchMethodException` and `ClassCastException` that way. Add your own with `addNotRetryableExceptions`.
 - Retryable: transient failures (database unavailable, a dependency timeout). The backoff is bounded by `maxRetries`; the total backoff must stay well under `max.poll.interval.ms`, or the consumer leaves the group. For long outages use non-blocking retry topics (`@RetryableTopic`) instead of a long blocking backoff.
-- The dead-letter record keeps the original headers and adds exception class, message and stack trace headers. Never put payload data or PII in an exception message. Alert on dead-letter topic depth.
+- The recoverer needs the dead-letter topic to have at least as many partitions as the source (it publishes to the same partition). The dead-letter record keeps the original headers and adds exception class, message and stack trace headers. Never put payload data or PII in an exception message. Alert on dead-letter topic depth.
 - Offsets: the record is committed after the listener returns (`AckMode.RECORD`). Use a manual `Acknowledgment` only if the handler must hand off to another thread, and then acknowledge after the work completes.
 
 ## 5. Configuration
@@ -273,6 +276,7 @@ class OrderPaidPublisher {
 ```
 
 - The relay calls `publish(...)` outside any database transaction, waits for the broker ack, then marks the outbox row published. A send failure leaves the row unpublished for the next run. Consumers dedupe, so a repeat is safe.
+- Trace continuity: store the current `traceparent` (`Propagator.inject` from Micrometer Tracing) in a column of the outbox row when it is written, and in the relay restore it (`Propagator.extract` into a span that wraps the send) so the template observation continues the original trace. Without it the relay starts a new trace and the consumer's trace is cut from the request that caused the event.
 - The event id is generated once, when the outbox row is created, never at send time.
 
 ## 8. Tests
@@ -294,11 +298,17 @@ class OrderPaidListenerIT {
 
     @Test
     void duplicate_event_is_applied_once() {
-        String json = codec.write(new OrderPaid("evt-1", "ord-1", new BigDecimal("10.00"), "VND", Instant.now()));
-        template.send(KafkaTopics.ORDER_PAID, "ord-1", json);
-        template.send(KafkaTopics.ORDER_PAID, "ord-1", json);
-        await().atMost(Duration.ofSeconds(15)).untilAsserted(() ->
-            assertThat(jdbc.sql("SELECT COUNT(*) FROM fulfilment WHERE order_id = 'ord-1'").query(Integer.class).single()).isEqualTo(1));
+        String original = codec.write(new OrderPaid("evt-1", "ord-1", new BigDecimal("10.00"), "VND", Instant.now()));
+        String sentinel = codec.write(new OrderPaid("evt-2", "ord-sentinel", new BigDecimal("1.00"), "VND", Instant.now()));
+        template.send(KafkaTopics.ORDER_PAID, "ord-1", original);
+        template.send(KafkaTopics.ORDER_PAID, "ord-1", original);      // the duplicate
+        template.send(KafkaTopics.ORDER_PAID, "ord-1", sentinel);      // same key, so same partition: processed after the duplicate
+        await().atMost(Duration.ofSeconds(15)).untilAsserted(() -> assertThat(fulfilments("ord-sentinel")).isEqualTo(1));
+        assertThat(fulfilments("ord-1")).isEqualTo(1);                 // only now can the duplicate have been processed and skipped
+    }
+
+    private int fulfilments(String orderId) {
+        return jdbc.sql("SELECT COUNT(*) FROM fulfilment WHERE order_id = :orderId").param("orderId", orderId).query(Integer.class).single();
     }
 }
 ```
@@ -307,7 +317,7 @@ class OrderPaidListenerIT {
 
 Cover each of these:
 
-- the same event delivered twice changes state once;
+- the same event delivered twice changes state once (always wait for a later sentinel event on the same key before asserting, or the test passes before the duplicate is consumed);
 - an unparseable or invalid payload reaches `KafkaTopics.ORDER_PAID_DLT` after one attempt (assert one delivery, no backoff);
 - a transient failure retries and then succeeds, and the offset is committed only after success;
 - retries are exhausted and the record lands on the dead-letter topic with the original payload;

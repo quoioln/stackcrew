@@ -173,14 +173,14 @@ test('kafka consumer skill carries the consumer playbook', async () => {
   });
 });
 
-test('spring-boot with all addons and all four tools stays inside the AGENTS.md budget', async () => {
+test('spring-boot with all addons and all four tools stays inside the AGENTS.md budget', async (t) => {
   await withRealCatalog(async (c) => {
     const ctx = buildContext(c, profileFor(c, ADDON_IDS), OPTS);
     const { ops } = renderProject(ctx); // throws StackcrewError BUDGET when over a budget
     const agents = renderAgentsMdBlock(ctx);
     const size = Buffer.byteLength(agents.content);
     assert.ok(size <= 16000, `AGENTS block ${size}`);
-    console.log(`# AGENTS block with all four addons: ${size} bytes`);
+    t.diagnostic(`AGENTS block with all four addons: ${size} bytes`);
     for (const id of ADDON_IDS) assert.ok(agents.content.includes(c.addons.get(id).rules.title), `${id} essentials in AGENTS block`);
     for (const o of ops.filter((x) => x.path.startsWith('.cursor/rules/stackcrew/'))) assert.ok(o.content.split('\n').length <= 500, o.path);
     for (const o of ops.filter((x) => x.path.startsWith('.agents/rules/stackcrew-'))) assert.ok(Buffer.byteLength(o.content) <= 24000, o.path);
