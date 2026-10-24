@@ -18,3 +18,10 @@ test('npm pack ships bin/src only, no tests', () => {
     }
   }
 });
+
+test('npm pack ships catalog', () => {
+  const r = spawnSync('npm pack --dry-run --json', { cwd: root, encoding: 'utf8', shell: true });
+  assert.equal(r.status, 0, r.stderr);
+  const paths = JSON.parse(r.stdout)[0].files.map((f) => f.path.split(String.fromCharCode(92)).join('/'));
+  assert.ok(paths.includes('catalog/core/always-on.md'));
+});
