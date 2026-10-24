@@ -212,6 +212,130 @@ test('default mode scans untracked files and working-tree changes', async () => 
   }
 });
 
+test('parseUnifiedDiff: quoted path with trailing TAB and octal escapes (real git form)', () => {
+  const diff = [
+    'diff --git "a/q\\357\\200\\242s p.java" "b/q\\357\\200\\242s p.java"',
+    '--- "a/q\\357\\200\\242s p.java"\t',
+    '+++ "b/q\\357\\200\\242s p.java"\t',
+    '@@ -0,0 +1 @@',
+    '+JsonNode x;',
+    'diff --git "a/c\\303\\240 p\\303\\252.java" "b/c\\303\\240 p\\303\\252.java"',
+    '+++ "b/c\\303\\240 p\\303\\252.java"\t',
+    '@@ -0,0 +1 @@',
+    '+y',
+    'diff --git a/s p.java b/s p.java',
+    '+++ b/s p.java\t',
+    '@@ -0,0 +1 @@',
+    '+z',
+    'diff --git "a/t\\\\a\\tb.java" "b/t\\\\a\\tb.java"',
+    '+++ "b/t\\\\a\\tb.java"',
+    '@@ -0,0 +1 @@',
+    '+w',
+    '',
+  ].join('\n');
+  assert.deepEqual(parseUnifiedDiff(diff).map((f) => f.file), [
+    'qs p.java',
+    'cà pê.java',
+    's p.java',
+    't\\a\tb.java',
+  ]);
+});
+
+test('check reports violations in files with spaces and non-ASCII names (real git)', async () => {
+  const dir = initRepo();
+  try {
+    sh(dir, 'checkout', '-b', 'feature');
+    write(dir, 'src/main/java/s p.java', 'class S {\n  JsonNode a;\n}\n');
+    write(dir, 'src/main/java/cà phê.java', 'class C {\n  JsonNode b;\n}\n');
+    sh(dir, 'add', '-A');
+    sh(dir, 'commit', '-m', 'names');
+    const r = await check(dir, ['--base', 'main']);
+    assert.equal(r.code, 1, r.stdout + r.stderr);
+    assert.ok(r.stdout.includes('src/main/java/s p.java:2 [SC-TYPE]'), r.stdout);
+    assert.ok(r.stdout.includes('src/main/java/cà phê.java:2 [SC-TYPE]'), r.stdout);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('check is immune to diff.mnemonicPrefix and diff.noprefix config', async () => {
+  const dir = initRepo();
+  try {
+    sh(dir, 'config', 'diff.mnemonicPrefix', 'true');
+    sh(dir, 'config', 'diff.noprefix', 'true');
+    write(dir, 'src/main/java/A.java', 'class A {\n  int x;\n  JsonNode n;\n}\n');
+    const r = await check(dir, []);
+    assert.equal(r.code, 1, r.stdout + r.stderr);
+    assert.ok(r.stdout.includes('src/main/java/A.java:3 [SC-TYPE]'), r.stdout);
+    sh(dir, 'add', '-A');
+    sh(dir, 'commit', '-m', 'v');
+    const r2 = await check(dir, ['--base', 'HEAD~1']);
+    assert.equal(r2.code, 1);
+    assert.ok(r2.stdout.includes('src/main/java/A.java:3 [SC-TYPE]'), r2.stdout);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('check fails loudly on unrelated history (no merge base)', async () => {
+  const dir = initRepo();
+  try {
+    sh(dir, 'checkout', '--orphan', 'other');
+    write(dir, 'src/main/java/Z.java', 'class Z { JsonNode n; }\n');
+    sh(dir, 'add', '-A');
+    sh(dir, 'commit', '-m', 'orphan');
+    const r = await check(dir, ['--base', 'main']);
+    assert.equal(r.code, 2);
+    assert.match(r.stderr, /failed/);
+    assert.doesNotMatch(r.stdout, /0 violations/);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('check works on a detached HEAD', async () => {
+  const dir = initRepo();
+  try {
+    sh(dir, 'checkout', '--detach');
+    write(dir, 'src/main/java/A.java', 'class A {\n  int x;\n  JsonNode n;\n}\n');
+    sh(dir, 'add', '-A');
+    sh(dir, 'commit', '-m', 'detached');
+    const r = await check(dir, ['--base', 'main']);
+    assert.equal(r.code, 1, r.stdout + r.stderr);
+    assert.ok(r.stdout.includes('src/main/java/A.java:3 [SC-TYPE]'), r.stdout);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('check reports an added violating line in a renamed file at the new path', async () => {
+  const dir = initRepo();
+  try {
+    sh(dir, 'checkout', '-b', 'feature');
+    sh(dir, 'mv', 'src/main/java/A.java', 'src/main/java/Renamed.java');
+    write(dir, 'src/main/java/Renamed.java', 'class A {\n  int x;\n  JsonNode n;\n}\n');
+    sh(dir, 'add', '-A');
+    sh(dir, 'commit', '-m', 'rename');
+    const r = await check(dir, ['--base', 'main']);
+    assert.equal(r.code, 1, r.stdout + r.stderr);
+    assert.ok(r.stdout.includes('src/main/java/Renamed.java:3 [SC-TYPE]'), r.stdout);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('check argument errors exit 2 with usage on stderr', async () => {
+  const dir = initRepo();
+  try {
+    const r = await check(dir, ['--bas', 'main']);
+    assert.equal(r.code, 2);
+    assert.match(r.stderr, /stackcrew check \[--base <ref>\] \[--staged\]/);
+    assert.equal(r.stdout, '');
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test('default mode skips binary untracked files and --staged scans the index', async () => {
   const dir = initRepo();
   try {

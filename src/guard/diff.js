@@ -1,12 +1,37 @@
 /** Parse `git diff --unified=0` output into added lines per file (new-side, 1-based line numbers). */
 
-function unquotePath(raw) {
-  let p = raw;
-  if (p.startsWith('"') && p.endsWith('"') && p.length >= 2) {
-    p = p.slice(1, -1).replace(/\\([\\"])/g, '$1');
-  } else {
-    p = p.replace(/\t.*$/, '');
+const SIMPLE_ESC = { t: 9, n: 10, r: 13, a: 7, b: 8, f: 12, v: 11, '\\': 92, '"': 34 };
+
+/** Decode a git C-style quoted path body: \ \" \t \n and \NNN octal bytes, then UTF-8 decode. */
+function decodeQuoted(body) {
+  const bytes = [];
+  for (let i = 0; i < body.length; i++) {
+    const ch = body[i];
+    if (ch !== '\\') {
+      bytes.push(...Buffer.from(ch, 'utf8'));
+      continue;
+    }
+    const next = body[i + 1];
+    if (next !== undefined && next >= '0' && next <= '7') {
+      let j = i + 1;
+      let oct = '';
+      while (j < body.length && oct.length < 3 && body[j] >= '0' && body[j] <= '7') oct += body[j++];
+      bytes.push(parseInt(oct, 8) & 0xff);
+      i = j - 1;
+    } else if (next !== undefined && Object.hasOwn(SIMPLE_ESC, next)) {
+      bytes.push(SIMPLE_ESC[next]);
+      i++;
+    } else {
+      bytes.push(92);
+    }
   }
+  return Buffer.from(bytes).toString('utf8');
+}
+
+function unquotePath(raw) {
+  // git appends a TAB after the path when it contains spaces; a real TAB is never inside quotes (it is \t).
+  const p = raw.replace(/\t.*$/, '');
+  if (p.length >= 2 && p.startsWith('"') && p.endsWith('"')) return decodeQuoted(p.slice(1, -1));
   return p;
 }
 

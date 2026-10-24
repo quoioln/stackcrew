@@ -7,7 +7,7 @@ import { compileGuardRules, scanLines } from '../guard/scan.js';
 import { StackcrewError } from '../errors.js';
 
 const USAGE = 'stackcrew check [--base <ref>] [--staged]';
-const DIFF_BASE = ['-c', 'core.quotepath=false', 'diff', '--unified=0', '--no-color', '--no-ext-diff'];
+const DIFF_BASE = ['-c', 'core.quotepath=false', 'diff', '--unified=0', '--no-color', '--no-ext-diff', '--no-textconv', '--src-prefix=a/', '--dst-prefix=b/'];
 
 /** Raised internally for "cannot run" conditions; reported on stderr with exit code 2. */
 class CannotRun extends Error {}
@@ -80,13 +80,17 @@ function clip(text) {
 
 /** @returns {Promise<number>} 0 clean, 1 violations, 2 cannot run */
 export async function checkCommand(args, io) {
-  const { values } = parseCommandArgs(args, {
-    base: { type: 'string' },
-    staged: { type: 'boolean' },
-  }, USAGE);
   try {
+    const { values } = parseCommandArgs(args, {
+      base: { type: 'string' },
+      staged: { type: 'boolean' },
+    }, USAGE);
     return run(values, io);
   } catch (e) {
+    if (e instanceof StackcrewError && e.code === 'CLI') {
+      io.stderr.write(`stackcrew check: ${e.message}\n`);
+      return 2;
+    }
     if (!(e instanceof CannotRun)) throw e;
     io.stderr.write(`stackcrew check: ${e.message}\n`);
     return 2;
