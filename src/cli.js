@@ -1,4 +1,10 @@
 import { readPackageVersion } from './paths.js';
+import { StackcrewError } from './errors.js';
+import { initCommand } from './commands/init.js';
+import { syncCommand } from './commands/sync.js';
+import { addCommand } from './commands/add.js';
+import { listCommand } from './commands/list.js';
+import { detectCommand } from './commands/detect.js';
 
 const COMMANDS = [
   ['init', 'Set up stackcrew in the current project'],
@@ -18,7 +24,8 @@ export function usage() {
   return `Usage: stackcrew <command> [options]\n\nCommands:\n${lines.join('\n')}\n`;
 }
 
-const NOT_BUILT = new Set(['init', 'sync', 'add', 'list', 'detect', 'check', 'plugin']);
+const HANDLERS = { init: initCommand, sync: syncCommand, add: addCommand, list: listCommand, detect: detectCommand };
+const NOT_BUILT = new Set(['check', 'plugin']);
 
 function defaultIo() {
   return {
@@ -30,6 +37,18 @@ function defaultIo() {
 }
 
 export async function main(argv, io = defaultIo()) {
+  try {
+    return await dispatch(argv, io);
+  } catch (err) {
+    if (err instanceof StackcrewError) {
+      io.stderr.write(`stackcrew: ${err.message}\n`);
+      return 1;
+    }
+    throw err;
+  }
+}
+
+async function dispatch(argv, io) {
   const [command] = argv;
   if (command === 'help' || command === '--help' || command === '-h') {
     io.stdout.write(usage());
@@ -39,6 +58,7 @@ export async function main(argv, io = defaultIo()) {
     io.stdout.write(`${await readPackageVersion()}\n`);
     return 0;
   }
+  if (Object.hasOwn(HANDLERS, command)) return HANDLERS[command](argv.slice(1), io);
   if (NOT_BUILT.has(command)) {
     io.stderr.write(`stackcrew ${command}: not implemented\n`);
     return 1;
