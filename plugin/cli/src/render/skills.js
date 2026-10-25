@@ -1,21 +1,23 @@
 import { stringifyFrontmatter } from '../util/frontmatter.js';
 import { withNotice } from './notice.js';
 
-function skillMd(skill, format) {
+// Only name + description, for every tool. No `paths`: Claude Code hides a path-scoped skill until a
+// matching file is touched, so it would have no slash command at session start and role agents
+// could not preload it. One stack per repo plus stack-named descriptions keep skills from misfiring.
+function skillMd(skill) {
   const entries = [
     ['name', skill.name],
     ['description', skill.description],
   ];
-  if (format === 'claude' && skill.paths.length > 0) entries.push(['paths', skill.paths]);
   return withNotice(stringifyFrontmatter(entries), skill.body);
 }
 
 function emit(dirs, skills) {
   const ops = [];
-  for (const { dir, format } of dirs) {
+  for (const { dir } of dirs) {
     for (const skill of skills) {
       const base = `${dir}/${skill.name}`;
-      ops.push({ path: `${base}/SKILL.md`, kind: 'owned', content: skillMd(skill, format) });
+      ops.push({ path: `${base}/SKILL.md`, kind: 'owned', content: skillMd(skill) });
       for (const f of skill.files) ops.push({ path: `${base}/${f.relPath}`, kind: 'owned', content: f.content });
     }
   }

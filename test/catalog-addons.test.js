@@ -146,7 +146,7 @@ test('kafka skill only rendered with kafka addon', async () => {
     const skill = c.stacks.get('spring-boot').skills.find((k) => k.name === KAFKA_SKILL);
     assert.ok(skill, 'skill exists');
     assert.equal(skill.kind, 'task');
-    assert.deepEqual(skill.paths, ['**/*.java']);
+    assert.deepEqual(skill.paths, []);
     assert.deepEqual(skill.requiresAddons, ['kafka']);
     assert.ok(skill.description.startsWith('Use when'));
     assert.ok(skill.description.includes('Spring Boot'));

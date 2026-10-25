@@ -2,7 +2,6 @@
 name: stackcrew-spring-rest-endpoint
 description: Use when adding or changing a REST endpoint in a Spring Boot service: controller, request and response DTO records, Bean Validation, ProblemDetail errors, service layering and pagination.
 kind: task
-paths: ["**/*.java"]
 ---
 # Add a REST endpoint (Spring Boot 3)
 

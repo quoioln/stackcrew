@@ -39,12 +39,15 @@ test('stack rule frontmatter paths equal stack globs', async () => {
   assert.ok(op.content.includes('---\n' + GENERATED_NOTICE + '\n\n'));
 });
 
-test('claude skill keeps paths; generic skill drops it', async () => {
+test('claude and generic skills carry only name and description, never paths', async () => {
+  // Claude Code hides a path-scoped skill until a matching file is touched: no slash command
+  // at session start and no preload into role agents. So paths must never reach the output.
   const ctx = await miniCtx(['claude', 'codex']);
+  for (const s of ctx.skills) s.paths = ['**/*.java'];
   const ops = renderSkills(ctx);
   const c = byPath(ops, '.claude/skills/stackcrew-demo-task/SKILL.md');
   const g = byPath(ops, '.agents/skills/stackcrew-demo-task/SKILL.md');
-  assert.deepEqual(parseFrontmatter(c.content).data.paths, ['**/*.java']);
+  assert.deepEqual(Object.keys(parseFrontmatter(c.content).data), ['name', 'description']);
   assert.equal(parseFrontmatter(g.content).data.paths, undefined);
   assert.deepEqual(Object.keys(parseFrontmatter(g.content).data), ['name', 'description']);
   assert.ok(c.content.includes('---\n' + GENERATED_NOTICE + '\n\n'));

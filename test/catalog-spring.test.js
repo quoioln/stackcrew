@@ -61,7 +61,7 @@ test('spring-boot stack loads with 4 skills (kafka one gated by its add-on) and 
     assert.equal(byName['stackcrew-spring-boot-testing'].kind, 'testing');
     assert.equal(byName['stackcrew-spring-integration-provider'].kind, 'task');
     for (const k of s.skills) {
-      assert.deepEqual(k.paths, ['**/*.java']);
+      assert.deepEqual(k.paths, []);
       assert.ok(k.description.includes('Spring Boot'));
     }
     assert.ok(c.languages.has('java'));

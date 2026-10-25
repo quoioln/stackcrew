@@ -2,7 +2,6 @@
 name: stackcrew-spring-integration-provider
 description: Use when adding or changing a third-party provider integration (eKYC, payment, bank, KYC callback) in a Spring Boot service, such as adding provider C06. Gives the port, adapter, ACL mapper, registry, resilience and test steps.
 kind: task
-paths: ["**/*.java"]
 ---
 # Add a provider integration (Spring Boot 3.2+, Java 17+)
 

@@ -2,7 +2,6 @@
 name: stackcrew-spring-kafka-consumer
 description: Use when adding or changing a Kafka consumer or producer in a Spring Boot service, such as consuming an OrderPaid event. Gives the typed event, idempotent handler, offset commit, dead-letter topic, header and MDC propagation, outbox and test steps.
 kind: task
-paths: ["**/*.java"]
 requiresAddons: [kafka]
 ---
 # Add a Kafka consumer (Spring Boot 3.2+, spring-kafka 3.x, Java 17+)

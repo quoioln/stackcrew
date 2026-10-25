@@ -254,7 +254,7 @@ Sau đó **code tiếp luôn**. Agent chỉ **dừng lại hỏi** khi có quy�
 
 Mọi quyết định mới đều được cập nhật vào hồ sơ.
 
-### 7.3 Skill theo việc: mô tả hẹp, gắn `paths`
+### 7.3 Skill theo việc: mô tả hẹp, không gắn `paths`
 - Mỗi skill ứng với **một loại việc cụ thể** và gắn với stack. Ví dụ:
   - `spring-integration-provider`: thêm provider bên thứ ba;
   - `spring-kafka-consumer`;
@@ -267,9 +267,12 @@ Mọi quyết định mới đều được cập nhật vào hồ sơ.
   - Mở đầu bằng loại việc ("Use when adding a new third-party provider adapter in a Spring Boot service…").
   - Không có từ chung chung kiểu "any code", "always", "whenever the user…".
   - Không gọi skill khác như một bước tiếp theo.
-- Mỗi repo một stack, và `init` chỉ sinh skill của stack đó, nên **không có chuyện skill của stack khác fire nhầm**. Việc còn lại là giới hạn trong cùng stack:
-  - Claude Code: dùng `paths` để thu hẹp theo thư mục hoặc loại file (ví dụ skill provider chỉ fire trong `**/integration/**`).
-  - Cursor, Codex, Antigravity: dựa vào câu chữ của description (§9.1, chỉ `name` + `description` là chắc chắn được chấp nhận).
+- Mỗi repo một stack, và `init` chỉ sinh skill của stack đó, nên **không có chuyện skill của stack khác fire nhầm**. Việc giới hạn trong cùng stack dựa vào câu chữ của description, ở **cả 4 tool**. Skill chỉ mang `name` + `description`.
+- **Không dùng `paths` cho skill** (đổi ngày 2026-10-25, bản 0.1.1; trước đó Claude Code dùng `paths`). Lý do, đã kiểm chứng trên Claude Code: skill có `paths` bị **ẩn** cho tới khi Claude đọc hoặc sửa một file khớp glob. Hệ quả:
+  - lúc mở phiên không gọi được `/<tên-skill>`;
+  - vai (agent) **không** preload được skill qua `skills:` (§7.4);
+  - khi nhận task, agent không thấy playbook trong danh sách skill.
+  `validateCatalog` từ chối `paths` trong skill của catalog. Rule vẫn dùng `paths` như cũ (§9.2).
 
 ### 7.4 Vai (team) [User: build team; Claude: chi tiết]
 | Vai | Trách nhiệm | Model gợi ý (Claude Code) |
@@ -346,7 +349,7 @@ Mọi quyết định mới đều được cập nhật vào hồ sơ.
 |---|---|---|---|---|
 | **Rule lõi always-on** | `.claude/rules/stackcrew/core.md` (không `paths`) | khối stackcrew trong `AGENTS.md` gốc | khối stackcrew trong `AGENTS.md` gốc | khối stackcrew trong `AGENTS.md` gốc |
 | **Rule theo stack (glob)** | `.claude/rules/stackcrew/<stack>.md` + `paths:` | `.cursor/rules/stackcrew/<stack>.mdc` + `globs`, `alwaysApply: false` | **Không có glob** → trong khối `AGENTS.md` có mục "luật bắt buộc rút gọn" cho từng stack + skill `stackcrew-<stack>-rules` có description nêu rõ stack | `.agents/rules/stackcrew-<stack>.md` + `trigger: glob` (file phẳng, không thư mục con) |
-| **Skill theo việc** (chỉ stack của repo) | `.claude/skills/stackcrew-*/` (có `paths`) | đọc `.claude/skills` hoặc `.agents/skills` (xem lưu ý trùng) | `.agents/skills/stackcrew-*/` | `.agents/skills/stackcrew-*/` |
+| **Skill theo việc** (chỉ stack của repo) | `.claude/skills/stackcrew-*/` (không `paths`, xem §7.3) | đọc `.claude/skills` hoặc `.agents/skills` (xem lưu ý trùng) | `.agents/skills/stackcrew-*/` | `.agents/skills/stackcrew-*/` |
 | **Skill lệnh** (init/sync/check/add-stack) | plugin `skills/` (`/stackcrew:*`) | `.agents/skills/stackcrew-init` (phỏng vấn) | như Cursor | như Cursor |
 | **Vai/agent** | `.claude/agents/stackcrew-*.md` + `skills:` | dùng lại `.claude/agents` nếu đã chọn Claude, không thì `.cursor/agents/` | `.codex/agents/stackcrew-*.toml` | `.agents/agents/stackcrew-*.md` + `skills` |
 | **Chặn lúc ghi (L2)** | PreToolUse hook trong plugin | bản đầu không có, dựa vào L1 + L3 | bản đầu không có | bản đầu không có |

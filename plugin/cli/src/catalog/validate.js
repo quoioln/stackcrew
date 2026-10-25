@@ -117,6 +117,9 @@ function checkSkill(skill, allowedKinds, where, stackName, addons, errs) {
   if (!allowedKinds.includes(skill.kind)) err(`kind "${skill.kind}" is invalid for ${where} skills (allowed: ${allowedKinds.join(', ')})`);
   errs.push(...lintSkillDescription(skill, stackName));
   if (!isStrArray(skill.paths)) err('paths must be a string array');
+  else if (skill.paths.length > 0) {
+    err('paths is not allowed: Claude Code hides a path-scoped skill until a matching file is touched, so it has no slash command at session start and role agents cannot preload it');
+  }
   if (!isStrArray(skill.requiresAddons)) err('requiresAddons must be a string array');
   for (const a of skill.requiresAddons) if (!addons.has(a)) err(`requiresAddons references unknown add-on "${a}"`);
   checkOrchestration(`${skill.description}\n${skill.body}`, skill.source, errs);

@@ -88,6 +88,12 @@ test('rejects task skill description missing stack name', async () => {
   assert.ok(validateCatalog(c).some((e) => e.includes('Demo Java')));
 });
 
+test('rejects paths on a catalog skill', async () => {
+  const c = await loadCatalog(MINI);
+  task(c).paths = ['**/*.java'];
+  assert.ok(validateCatalog(c).some((e) => e.includes('stackcrew-demo-task') && /paths/.test(e)));
+});
+
 test('rejects banned orchestration phrase in body', async () => {
   const c = await loadCatalog(MINI);
   task(c).body = 'Do it, then invoke the next phase.';

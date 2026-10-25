@@ -2,7 +2,6 @@
 name: stackcrew-spring-boot-testing
 description: Use when writing or fixing tests for a Spring Boot service: JUnit 5 and AssertJ unit tests, WebMvcTest and DataJpaTest slices, Testcontainers for the database, WireMock for third-party providers.
 kind: testing
-paths: ["**/*.java"]
 ---
 # Write tests (Spring Boot 3)
 
