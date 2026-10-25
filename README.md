@@ -206,7 +206,7 @@ Plugin chỉ có hiệu lực trong phiên đó. Nếu máy đã cài `stackcrew
 
 ## Các lệnh
 
-Đây là lệnh của CLI (`stackcrew <lệnh>`, xem "Cài đặt"). Trong Claude Code, `init`, `sync`, `add` và `check` có lệnh `/stackcrew:*` tương ứng (xem "Dùng với Claude Code").
+Đây là lệnh của CLI (`stackcrew <lệnh>`, xem "Cài đặt"). Trong Claude Code, `init`, `sync`, `add` và `check` có lệnh `/stackcrew:*` tương ứng (xem "Dùng với Claude Code"). Ví dụ chạy từng lệnh kèm output: xem "Ví dụ dùng CLI".
 
 Mã thoát: `0` thành công, `1` lỗi hoặc có vi phạm, `2` (chỉ riêng `check`) không chạy được.
 
@@ -229,6 +229,176 @@ Chi tiết:
 
   Test sinh ra có 5 test: 4 rule (khai báo dạng method `@ArchTest`) và `base_package_contains_classes`. Test cuối fail khi `java.basePackage` không khớp class nào, vì khi đó 4 rule sẽ pass mà không kiểm gì. Sau `mvn test` / `gradle test`, log phải có `Tests run: 5`. Đã kiểm với Maven 3.9.12 trên Spring Boot 3.2.12, 3.3.13, 3.4.9, 3.5.4, 3.5.11 (surefire 3.1.2, 3.2.5, 3.5.3, 3.5.4) và Gradle 8.14.4 trên Spring Boot 3.4.9 (xem "Giới hạn hiện tại").
 - `check` thoát `0` khi sạch, `1` khi có vi phạm, `2` khi không chạy được (ngoài git repo, thiếu base ref, thiếu `.stackcrew/guard.json`). Nó không bao giờ in "0 violations" khi không chạy được. Không có cờ nào thì quét thay đổi so với `HEAD` kèm file chưa theo dõi.
+
+## Ví dụ dùng CLI
+
+Các ví dụ chạy trên dự án mẫu `fixtures/spring-boot-minimal` (package `com.example.kyc`). Output chép từ lần chạy thật; phần dài được cắt bằng `…`.
+
+### Cài lệnh `stackcrew` một lần
+
+```bash
+npm i -g github:quoioln/stackcrew   # tạo lệnh stackcrew trên Windows, Linux, macOS; chạy lại để lấy bản mới
+stackcrew version                   # 0.1.0
+```
+
+Không muốn cài global thì thay `stackcrew` bằng `npx --yes github:quoioln/stackcrew` trong mọi ví dụ dưới đây.
+
+### Xem trước: stack hỗ trợ và stack của dự án
+
+```console
+$ stackcrew list
+Stacks:
+  spring-boot  Spring Boot  backend  min 3.0
+Addons:
+  camel  Apache Camel  languages: java
+  kafka  Apache Kafka  languages: all
+  observability  Observability (Loki, Grafana)  languages: all
+  rabbitmq  RabbitMQ  languages: all
+
+$ stackcrew detect
+stack: spring-boot
+candidates: spring-boot
+addons: none
+mode: brownfield
+basePackage: com.example.kyc
+```
+
+`mode: brownfield` nghĩa là dự án đã có code: rule chỉ áp cho code mới và code sửa.
+
+### Init dự án có sẵn, rồi nối ArchUnit
+
+```console
+$ stackcrew init --stack spring-boot --addons kafka,observability --tools claude,cursor
+stackcrew sync: 59 written, 0 unchanged, 0 deleted, 2 block(s) updated
+hint: run `stackcrew sync --wire` to add ArchUnit (test scope) and generate StackcrewArchitectureTest
+…
+
+$ stackcrew sync --wire
+wired: pom.xml
+stackcrew sync: 1 written, 59 unchanged, 0 deleted, 0 block(s) updated
+note: .stackcrew/lint/checkstyle.xml is generated but not wired; …
+
+$ mvn test
+```
+
+- `mvn test` phải in `Tests run: 5` cho `StackcrewArchitectureTest`. Sau lần chạy đầu, commit cả thư mục `archunit_store/`.
+- Bỏ `--addons` thì `init` dùng add-on detect được. Bỏ `--tools` thì sinh cho cả 4 tool (`claude,cursor,codex,antigravity`).
+
+### Thêm add-on
+
+```console
+$ stackcrew add rabbitmq
+stackcrew sync: 3 written, 59 unchanged, 0 deleted, 0 block(s) updated
+
+$ stackcrew add mongo
+stackcrew.json: addons[3]: unknown addon "mongo"
+Available addons: camel, kafka, observability, rabbitmq
+```
+
+Add-on sai tên thì lệnh thoát `1` và không ghi gì.
+
+### Sửa profile rồi render lại
+
+Sửa `stackcrew.json`, ví dụ thêm `"antigravity"` vào `tools`, rồi xem trước và áp dụng:
+
+```console
+$ stackcrew sync --dry-run
+stackcrew sync: 41 written, 62 unchanged, 0 deleted, 0 block(s) updated
+
+$ stackcrew sync
+stackcrew sync: 41 written, 62 unchanged, 0 deleted, 0 block(s) updated
+```
+
+Với `--dry-run`, các con số là số file **sẽ** ghi hoặc xóa; lệnh không ghi gì.
+
+### Khi file sinh ra bị sửa tay
+
+```console
+$ stackcrew sync
+stackcrew sync: …
+skipped (edited by hand): .claude/rules/stackcrew/core.md
+re-run with --force (your edits will be lost) or move them to .stackcrew/custom/
+```
+
+Lệnh thoát `1`. Chuyển phần bạn sửa sang rule riêng trong `.stackcrew/custom/` (xem "Rule riêng"), rồi chạy `stackcrew sync --force` để đưa file về bản sinh ra.
+
+### Quét dòng mới bằng `check`
+
+Giả sử nhánh `feature/hyperverge` thêm file:
+
+```java
+public class HyperVergeClient {
+    private JsonNode lastResponse;
+    private Map<String, Object> payload;
+    private final String baseUrl = "https://ind-docs.hyperverge.co/v2.0";
+}
+```
+
+```console
+$ stackcrew check
+src/main/java/com/example/kyc/provider/HyperVergeClient.java:7 [SC-TYPE] JsonNode/ObjectNode is an untyped payload (SC-TYPE). Define a record/DTO …
+    > private JsonNode lastResponse;
+src/main/java/com/example/kyc/provider/HyperVergeClient.java:8 [SC-TYPE] Map<String, Object> is an untyped bag (SC-TYPE). …
+    > private Map<String, Object> payload;
+src/main/java/com/example/kyc/provider/HyperVergeClient.java:9 [SC-CONST] Hardcoded URL (SC-CONST). Environment URLs belong in @ConfigurationProperties / application.yml; …
+    > private final String baseUrl = "https://ind-docs.hyperverge.co/v2.0";
+stackcrew check: 3 violation(s)
+
+$ stackcrew check --base origin/develop
+stackcrew check: base ref not found: origin/develop (fetch it first, e.g. `git fetch origin <branch>`)
+```
+
+Chọn phạm vi quét:
+
+| Lệnh | Quét | Dùng khi |
+| --- | --- | --- |
+| `stackcrew check` | Thay đổi chưa commit so với `HEAD`, gồm cả file chưa track | Tự kiểm trong lúc code |
+| `stackcrew check --staged` | Phần đã `git add` | Git hook pre-commit |
+| `stackcrew check --base origin/main` | Mọi commit của nhánh so với `origin/main` | Review PR, Jenkins |
+
+Sau khi đã commit hết, `stackcrew check` không cờ in `0 violations in 0 added line(s) across 0 file(s)`: muốn quét các commit của nhánh thì phải dùng `--base`.
+
+Mã thoát: `0` sạch, `1` có vi phạm, `2` không chạy được (như ví dụ `origin/develop` ở trên).
+
+Ngoại lệ có lý do, viết trên cùng dòng:
+
+```java
+private Map<String, Object> body; // stackcrew-allow: SC-TYPE GPay callback có field động, map sang GpayCallback ngay sau khi parse
+```
+
+```console
+$ stackcrew check --staged
+stackcrew check: 0 violations in 7 added line(s) across 1 file(s)
+```
+
+### Chặn commit bằng git hook
+
+`.git/hooks/pre-commit` (cần lệnh `stackcrew` trên PATH, xem "Cài lệnh `stackcrew` một lần"):
+
+```sh
+#!/bin/sh
+# stackcrew: chặn commit khi dòng mới vi phạm luật guard
+stackcrew check --staged
+```
+
+- Trên Linux/macOS, chạy thêm `chmod +x .git/hooks/pre-commit`.
+- Commit có vi phạm sẽ bị dừng và in danh sách vi phạm như ví dụ trên.
+- `.git/hooks` không được commit. Muốn cả team dùng chung: commit hook vào thư mục `.githooks/`, rồi mỗi người chạy `git config core.hooksPath .githooks`.
+
+### Init lại, hoặc tắt guard hook
+
+```console
+$ stackcrew init --stack spring-boot
+stackcrew: already initialized (stackcrew.json exists); use `stackcrew sync`
+
+$ stackcrew init --force --stack spring-boot --addons kafka,observability --tools claude
+overwriting existing stackcrew.json (kept: decisions, context, java settings)
+…
+```
+
+- `--force` giữ `decisions`, `context` và `java` (kể cả trạng thái đã wire).
+- `addons` và `tools` lấy lại từ cờ. Bỏ `--addons` thì quay về add-on detect được, nên nhớ truyền lại. File của tool bị bỏ khỏi `--tools` sẽ bị xóa.
+- Thêm `--no-guard` để tắt guard hook lúc ghi của Claude Code (`.stackcrew/guard.json` có `"enabled": false`). `stackcrew check` (pre-commit, Jenkins) **vẫn quét** như thường.
 
 ## Jenkins
 
