@@ -169,6 +169,8 @@ claude plugin uninstall stackcrew@stackcrew    # gỡ; thêm --scope tương ứ
 
 Sau khi cập nhật, gõ `/reload-plugins` trong phiên đang mở hoặc mở phiên mới. Plugin khai `version` cố định, nên `update` chỉ lấy bản mới khi `version` đã tăng (xem "Phát triển"); nếu chưa tăng, nó báo `already at the latest version`.
 
+Rule, skill và agent nằm trong từng dự án, nên sau khi cập nhật plugin, chạy `/stackcrew:sync` trong mỗi dự án đã init để render lại theo bản mới. Ví dụ bản 0.1.1 bỏ `paths` khỏi skill: trước bản này, skill theo stack chỉ hiện ra sau khi Claude đụng tới một file của stack, và vai không nạp sẵn được skill.
+
 ### Lệnh trong phiên
 
 Các lệnh này chỉ chạy khi bạn gõ; agent không tự gọi chúng.
@@ -191,10 +193,130 @@ Với tool `claude`, `init`/`sync` sinh ra:
 - **Agent (vai)** trong `.claude/agents/`: `stackcrew-tech-lead` (model opus, chỉ đề xuất và review, không viết code), `stackcrew-<stack>-developer` và `stackcrew-<stack>-tester` (với Spring Boot: `stackcrew-spring-boot-developer`, `stackcrew-spring-boot-tester`). Đây là agent của dự án nên không có tiền tố `stackcrew:` như lệnh plugin. Agent chỉ chạy khi được gọi đích danh:
   - gõ `@`, chọn agent trong danh sách gợi ý, rồi viết việc cần làm, ví dụ `@"stackcrew-spring-boot-developer (agent)" thêm provider eKYC HyperVerge theo playbook tích hợp`;
   - hoặc nêu tên trong câu lệnh, ví dụ "Dùng agent stackcrew-tech-lead review thiết kế tích hợp C06";
-  - hoặc chạy cả phiên dưới một vai: `claude --agent stackcrew-spring-boot-developer`.
+  - hoặc chạy cả phiên dưới một vai: `claude --agent stackcrew-spring-boot-developer`. Cách này **không** nạp sẵn skill của vai (trường `skills:` chỉ có tác dụng khi vai chạy như subagent), nên ưu tiên gọi bằng `@`.
 
   Gõ `/agents` để xem danh sách agent.
 - **Guard hook** chạy mỗi lần Claude gọi `Write`, `Edit` hoặc `MultiEdit`. Khi bị chặn, Claude nhận thông báo vi phạm và phải sửa lại (xem "Guard hook và `stackcrew-allow`").
+
+### Ví dụ prompt
+
+Các ví dụ dùng bài toán eKYC trên dự án mẫu Spring Boot. Phần "agent trả về" lấy từ lần chạy thử với Sonnet, đã rút gọn; câu chữ thực tế sẽ khác.
+
+#### Setup bằng `/stackcrew:init`
+
+Cách nhanh nhất là viết bối cảnh ngay sau lệnh. Agent chạy `detect`; nếu đủ thông tin, nó bỏ qua phần hỏi và đưa đề xuất luôn:
+
+```text
+/stackcrew:init Hệ thống eKYC cho ví điện tử: tích hợp HyperVerge (OCR + liveness), C06 (tra cứu CCCD), FINOS và GPay (thanh toán, có callback). Khoảng 200 nghìn user, peak 50 TPS. Go-live sau 3 tháng. Sai kết quả eKYC là rủi ro pháp lý. Năm nay sẽ thêm 2-3 provider eKYC nữa. Team mạnh Java/Spring. Dùng Claude Code và Cursor.
+```
+
+Nên nêu đủ các ý:
+
+- bài toán và domain;
+- các hệ thống tích hợp và kiểu kết nối (REST, callback, file, queue);
+- quy mô (số user, TPS);
+- tiến độ;
+- mức ổn định cần có và cái giá khi sai;
+- hướng mở rộng, ví dụ sẽ thêm bao nhiêu provider;
+- kỹ năng của team;
+- stack, nếu repo chưa có code;
+- các AI tool đang dùng.
+
+Thiếu ý nào thì agent hỏi ý đó, mỗi lần một câu. Gõ `/stackcrew:init` không kèm gì thì agent phỏng vấn từ đầu.
+
+Agent trả về một đề xuất, mỗi mục kèm lý do gắn với bối cảnh:
+
+- stack `spring-boot` (detect được) và add-on `observability`;
+- kiến trúc hexagonal trong một modular monolith; loại microservices vì 50 TPS, một team và hạn 3 tháng;
+- mỗi provider có port, adapter và ACL mapper; registry chọn provider; khung Template Method dựng từ provider đầu tiên, vì sẽ có 3-5 provider; Resilience4j theo từng provider;
+- fail closed: provider lỗi thì hồ sơ thành `PENDING` hoặc `MANUAL_REVIEW`, không bao giờ `APPROVED`;
+- messaging: event trong process cộng outbox, chưa cần broker;
+- cuối cùng hỏi bạn có duyệt không và có wire ArchUnit không.
+
+Duyệt và sửa trong cùng một câu trả lời:
+
+```text
+Duyệt, sửa một chỗ: thêm Kafka vì core banking và CRM cần nhận sự kiện kyc.completed, cần replay khi họ deploy lại. Wire ArchUnit: có.
+```
+
+Agent ghi `stackcrew.json` (`context` cùng các quyết định D-001 … D-008, mỗi quyết định có lý do và các phương án đã loại), thêm add-on `kafka`, wire ArchUnit vào `pom.xml`, rồi sync. Đọc lại hồ sơ ở `docs/stackcrew/architecture-profile.md`.
+
+Khi bối cảnh đổi, chạy lại `/stackcrew:init` kèm phần thay đổi. Agent chỉ hỏi về phần đó và giữ id của các quyết định cũ:
+
+```text
+/stackcrew:init Từ quý sau thêm eKYC qua video call; số user dự kiến tăng lên 1 triệu.
+```
+
+#### Giao task
+
+Rule của stackcrew luôn có trong ngữ cảnh, nên prompt bình thường là đủ. Trước khi code, agent viết ghi chú pre-flight: vùng ảnh hưởng, những gì tái sử dụng, những gì tạo mới, pattern định dùng và lý do. Prompt nên nêu việc cần làm, dữ liệu vào và ra, và ràng buộc nghiệp vụ.
+
+```text
+Thêm provider C06 (tra cứu CCCD qua REST, trả về họ tên, ngày sinh, trạng thái CCCD) theo hồ sơ kiến trúc.
+```
+
+Muốn duyệt hướng làm trước khi agent viết code:
+
+```text
+Thêm provider C06 (tra cứu CCCD qua REST, trả về họ tên, ngày sinh, trạng thái CCCD) theo hồ sơ kiến trúc. Bước này chỉ viết ghi chú pre-flight và danh sách file sẽ tạo, chưa viết code.
+```
+
+Ở lần chạy thử, agent làm như sau:
+
+- đọc `architecture-profile.md`, `stackcrew.json` và playbook tích hợp provider;
+- trả về ghi chú pre-flight bám theo D-001 … D-008, kèm danh sách file: port, record domain, adapter C06, ACL mapper, registry, lớp template base, constant, WireMock test;
+- dừng lại hỏi những điểm nó không tự đoán: hợp đồng API của C06 và version của dependency mới.
+
+Trả lời các điểm đó, hoặc gõ "theo đề xuất", thì agent bắt đầu code.
+
+Gọi đích danh skill (playbook) khi muốn chắc chắn agent làm theo nó:
+
+| Việc | Prompt mẫu |
+| --- | --- |
+| REST endpoint | `/stackcrew-spring-rest-endpoint Thêm POST /api/v1/kyc-sessions nhận userId, documentType và trả sessionId, status; thêm GET có phân trang lọc theo status.` |
+| Provider bên thứ ba | `/stackcrew-spring-integration-provider Thêm provider C06 tra cứu CCCD qua REST, trả họ tên, ngày sinh, trạng thái.` |
+| Kafka (cần add-on `kafka`) | `/stackcrew-spring-kafka-consumer Consumer cho kyc.completed: cập nhật trạng thái hồ sơ, idempotent theo eventId, có dead-letter topic.` |
+| Test | `/stackcrew-spring-boot-testing Viết WireMock test cho C06LookupAdapter: 200, 4xx không retry, 5xx có retry, timeout, body sai định dạng.` |
+| Chọn pattern | `/stackcrew-pattern-guide Có loại giấy tờ (CCCD, hộ chiếu) và nhiều provider (HyperVerge, VNPT): có cần Bridge không?` |
+| Chọn messaging | `/stackcrew-messaging-choice Callback GPay cần báo cho 2 service nội bộ, khoảng 10 message/giây: event trong process, RabbitMQ hay Kafka?` |
+
+Skill cũng nằm ở `.claude/skills/<tên-skill>/SKILL.md` (với Cursor, Codex, Antigravity: `.agents/skills/` hoặc `.agent/skills/`), nên ở tool nào cũng có thể viết: "Đọc `.claude/skills/stackcrew-spring-integration-provider/SKILL.md` rồi thêm provider C06 …".
+
+#### Giao việc cho vai
+
+```text
+@"stackcrew-spring-boot-developer (agent)" Thêm provider C06 theo ghi chú pre-flight đã duyệt ở trên.
+@"stackcrew-spring-boot-tester (agent)" Viết WireMock contract test cho C06LookupAdapter: 200, 4xx không retry, 5xx có retry, timeout, body sai định dạng.
+@"stackcrew-tech-lead (agent)" Review thiết kế: callback GPay đang xử lý đồng bộ trong controller; có nên chuyển sang inbox và xử lý bất đồng bộ không?
+```
+
+Mỗi dòng là một lần gọi riêng. Claude chính viết lại prompt cho vai từ cuộc trò chuyện, nên được phép nhắc tới "ghi chú pre-flight ở trên". Vai nạp sẵn skill theo loại: developer có skill theo việc cùng pattern guide và messaging choice; tester có skill test; tech lead có pattern guide và messaging choice.
+
+#### Kiểm tra và xử lý vi phạm
+
+```text
+/stackcrew:check --base origin/main
+```
+
+```text
+Sửa các vi phạm mà check vừa báo, giữ nguyên hành vi.
+```
+
+Khi có ngoại lệ chính đáng, yêu cầu agent ghi lý do ngay trên dòng đó:
+
+```text
+Field này phải là Map<String, Object> vì Kafka client config yêu cầu. Thêm stackcrew-allow SC-TYPE kèm lý do trên cùng dòng.
+```
+
+#### Khi agent dừng lại hỏi
+
+Agent dừng và đưa 2-3 phương án khi việc cần hạ tầng mới, pattern hay kiến trúc lệch khỏi hồ sơ, hoặc một dependency lớn. Trả lời bằng quyết định cùng lý do:
+
+```text
+Chọn phương án Redis để giới hạn tốc độ gọi HyperVerge, vì đã có Redis cho session. Ghi quyết định vào stackcrew.json.
+```
+
+Agent ghi quyết định rồi nhắc bạn gõ `/stackcrew:sync` để cập nhật `docs/stackcrew/architecture-profile.md`.
 
 ### Thử plugin mà không cài (khi sửa stackcrew)
 
