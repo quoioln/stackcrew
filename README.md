@@ -28,35 +28,37 @@ Plan 1 chỉ hỗ trợ stack **Spring Boot 3.x (Java 17+)** với add-on `kafka
 
 ## Cài đặt
 
-**npm** (không cần cài global):
+**CLI**: stackcrew **chưa publish lên npm** (việc của Plan 3), nên `npx stackcrew` hiện báo 404. Trong lúc chờ, chạy CLI thẳng từ repo GitHub (máy cần quyền đọc repo `quoioln/stackcrew`):
 
 ```bash
-npx stackcrew init --stack spring-boot
+npx --yes github:quoioln/stackcrew init --stack spring-boot
 ```
 
-**Plugin Claude Code**:
+Hoặc từ bản clone: `node <đường-dẫn-repo-stackcrew>/bin/stackcrew.js <lệnh>`. Sau khi publish, dùng `npx stackcrew <lệnh>`. Trong README, `stackcrew <lệnh>` là cách viết tắt cho các cách chạy này.
 
-```text
-/plugin marketplace add <đường-dẫn-repo-hoặc-url>
-/plugin install stackcrew@stackcrew
+**Plugin Claude Code**: gồm các lệnh `/stackcrew:init`, `/stackcrew:sync`, `/stackcrew:add`, `/stackcrew:check`, guard hook và bản CLI đi kèm (`plugin/cli`), nên không cần npm.
+
+```bash
+claude plugin marketplace add quoioln/stackcrew
+claude plugin install stackcrew@stackcrew
 ```
 
-Plugin có sẵn bản CLI đi kèm (`plugin/cli`), các lệnh `/stackcrew:init`, `/stackcrew:sync`, `/stackcrew:add`, `/stackcrew:check` và guard hook.
+Scope, cài cho cả team, cập nhật và các lệnh trong phiên: xem "Dùng với Claude Code".
 
 ## Bắt đầu nhanh
 
-Trong Claude Code, chạy `/stackcrew:init`: agent phỏng vấn kiến trúc (bối cảnh, quyết định), rồi ghi `stackcrew.json` và render file.
+Với Claude Code đã cài plugin: mở Claude Code ở thư mục gốc dự án (`claude`) rồi gõ `/stackcrew:init`. Agent phỏng vấn kiến trúc từng câu một (bối cảnh, quyết định), đề xuất, chờ bạn duyệt, rồi ghi `stackcrew.json` và render file.
 
 Hoặc dùng CLI trực tiếp:
 
 ```bash
-npx stackcrew init --stack spring-boot --tools claude,cursor,codex,antigravity
+npx --yes github:quoioln/stackcrew init --stack spring-boot --tools claude,cursor,codex,antigravity
 ```
 
 Thêm add-on:
 
 ```bash
-npx stackcrew init --stack spring-boot --addons kafka,camel,observability --tools claude
+npx --yes github:quoioln/stackcrew init --stack spring-boot --addons kafka,camel,observability --tools claude
 ```
 
 Sau `init`:
@@ -68,7 +70,7 @@ Sau `init`:
 
 ### Dùng Claude Code mà không cài plugin
 
-Chỉ chạy CLI (`npx stackcrew init --tools claude`) mà không cài plugin thì Claude Code vẫn nhận rule (`.claude/rules/stackcrew/`), skill theo việc và agent. Bạn **mất**: các lệnh `/stackcrew:*`, buổi phỏng vấn kiến trúc `/stackcrew:init` (không có skill phỏng vấn trong dự án) và guard hook lúc ghi (L2). L1 (rule) và L3 (ArchUnit, `check`) vẫn chạy bình thường. Muốn đủ bộ, cài plugin (xem "Cài đặt").
+Chỉ chạy CLI (`stackcrew init --tools claude`) mà không cài plugin thì Claude Code vẫn nhận rule (`.claude/rules/stackcrew/`), skill theo việc và agent. Bạn **mất**: các lệnh `/stackcrew:*`, buổi phỏng vấn kiến trúc `/stackcrew:init` (không có skill phỏng vấn trong dự án) và guard hook lúc ghi (L2). L1 (rule) và L3 (ArchUnit, `check`) vẫn chạy bình thường. Muốn đủ bộ, cài plugin (xem "Dùng với Claude Code").
 
 ### Commit những gì
 
@@ -79,10 +81,132 @@ Nên commit:
 - Các thư mục rule, skill, agent đã sinh ra (`.claude/`, `.cursor/`, `.agents/`, `.agent/`, `.codex/` theo tool bạn chọn) cùng `AGENTS.md` / `CLAUDE.md`.
 - `docs/stackcrew/`.
 - `archunit_store/` khi đã `--wire` (bắt buộc, xem "Giới hạn hiện tại"), cùng `StackcrewArchitectureTest.java`.
+- `.claude/settings.json` nếu bật plugin ở project scope (xem "Cài cho cả team").
 
 Lưu ý: nếu repo chưa có `CLAUDE.md`, `.claude/CLAUDE.md` hay `CLAUDE.local.md` mà đã có `AGENTS.md` chứa quy ước của team, việc `init`/`sync` tạo `CLAUDE.md` khiến Claude Code bản mới **ngừng đọc** `AGENTS.md` (mặc định `claude-md-or-agents-md`). `sync` in cảnh báo `claude-md-shadows-agents-md`; stackcrew **không** tự thêm `@AGENTS.md` vào `CLAUDE.md` (tránh nạp rule của chính nó hai lần). Muốn dùng cả hai, tự thêm dòng `@AGENTS.md` vào `CLAUDE.md`.
 
+## Dùng với Claude Code
+
+Plugin `stackcrew@stackcrew` nằm trong marketplace `stackcrew` của repo `quoioln/stackcrew` (file `.claude-plugin/marketplace.json`).
+
+### Cài từ terminal (Claude CLI)
+
+```bash
+# 1. Thêm marketplace. Claude Code clone repo bằng git của máy bạn: repo private thì cần quyền đọc (SSH hoặc HTTPS).
+claude plugin marketplace add quoioln/stackcrew
+
+# 2. Cài plugin. Mặc định là user scope: dùng được ở mọi dự án trên máy bạn.
+claude plugin install stackcrew@stackcrew
+
+# 3. Kiểm tra
+claude plugin list
+claude plugin details stackcrew@stackcrew
+```
+
+`details` phải in `Skills (4)  add, check, init, sync` và `Hooks (1)  PreToolUse`. Nếu đang mở sẵn một phiên Claude Code, gõ `/reload-plugins` để nạp plugin mà không cần khởi động lại.
+
+Mỗi tên marketplace chỉ có một nguồn: chạy `claude plugin marketplace add` với nguồn khác (đường dẫn local, URL git) sẽ **thay** nguồn của marketplace `stackcrew` cho mọi plugin đã cài từ nó. Muốn quay lại thì chạy lại `claude plugin marketplace add quoioln/stackcrew`.
+
+### Cài ngay trong phiên Claude Code
+
+```text
+/plugin marketplace add quoioln/stackcrew
+/plugin install stackcrew@stackcrew
+/reload-plugins
+```
+
+Hoặc gõ `/plugin` để chọn trong giao diện.
+
+### Chọn scope
+
+| Scope | Cờ | Ghi vào | Khi nào dùng |
+| --- | --- | --- | --- |
+| user (mặc định) | không có | `~/.claude/settings.json` | Bạn dùng stackcrew ở mọi dự án. Dự án chưa init không bị ảnh hưởng: không có `.stackcrew/guard.json` thì hook cho qua, còn các lệnh `/stackcrew:*` chỉ chạy khi bạn gõ. |
+| project | `--scope project` | `.claude/settings.json` (commit vào repo) | Cả team cùng dùng trong repo này. |
+| local | `--scope local` | `.claude/settings.local.json` | Chỉ bạn, chỉ trong repo này. |
+
+### Cài cho cả team
+
+Một người chạy trong repo dự án rồi commit:
+
+```bash
+claude plugin marketplace add quoioln/stackcrew --scope project
+claude plugin install stackcrew@stackcrew --scope project
+git add .claude/settings.json
+```
+
+`.claude/settings.json` khi đó có:
+
+```json
+{
+  "extraKnownMarketplaces": {
+    "stackcrew": {
+      "source": { "source": "github", "repo": "quoioln/stackcrew" }
+    }
+  },
+  "enabledPlugins": {
+    "stackcrew@stackcrew": true
+  }
+}
+```
+
+Dùng nguồn GitHub, **không** dùng đường dẫn local: `claude plugin marketplace add <đường-dẫn> --scope project` ghi đường dẫn trên máy bạn (`C:\...`) vào file này, và file sẽ hỏng trên máy người khác.
+
+Mỗi thành viên còn phải:
+
+- chấp nhận hộp thoại tin cậy thư mục (workspace trust) khi mở repo lần đầu. Chưa tin cậy thì Claude Code lặng lẽ bỏ qua `extraKnownMarketplaces`;
+- chạy một lần `claude plugin install stackcrew@stackcrew --scope project`. File settings chỉ bật plugin, không tải plugin về máy họ;
+- có quyền đọc repo `quoioln/stackcrew` nếu repo private.
+
+### Cập nhật, tắt, gỡ
+
+```bash
+claude plugin marketplace update stackcrew     # kéo bản mới của marketplace
+claude plugin update stackcrew@stackcrew       # cập nhật plugin; thêm --scope project nếu cài ở project scope
+claude plugin disable stackcrew@stackcrew      # tắt tạm; bật lại bằng enable
+claude plugin uninstall stackcrew@stackcrew    # gỡ; thêm --scope tương ứng
+```
+
+Sau khi cập nhật, gõ `/reload-plugins` trong phiên đang mở hoặc mở phiên mới. Plugin khai `version` cố định, nên `update` chỉ lấy bản mới khi `version` đã tăng (xem "Phát triển"); nếu chưa tăng, nó báo `already at the latest version`.
+
+### Lệnh trong phiên
+
+Các lệnh này chỉ chạy khi bạn gõ; agent không tự gọi chúng.
+
+| Lệnh | Việc làm | Ví dụ |
+| --- | --- | --- |
+| `/stackcrew:init` | Phỏng vấn kiến trúc từng câu một. Đề xuất stack, add-on, kiến trúc, pattern và messaging kèm lý do, chờ bạn duyệt, rồi ghi `stackcrew.json` (`context`, `decisions`) và chạy `sync`. Khi đã có `stackcrew.json`, chỉ hỏi phần thay đổi và cập nhật `context`/`decisions`. | `/stackcrew:init` |
+| `/stackcrew:sync` | Render lại từ `stackcrew.json`. Cờ: `--force`, `--wire`, `--dry-run`. | `/stackcrew:sync --dry-run` |
+| `/stackcrew:add <addon...>` | Thêm add-on vào profile rồi sync. | `/stackcrew:add kafka observability` |
+| `/stackcrew:check` | Quét các dòng mới thêm theo luật guard. Cờ: `--base <ref>`, `--staged`. | `/stackcrew:check --base origin/main` |
+
+`list`, `detect`, `version` không có lệnh trong phiên; `/stackcrew:init` tự chạy `detect` và `list`. Muốn chạy tay, dùng tiền tố `!` của Claude Code, ví dụ `! npx --yes github:quoioln/stackcrew detect`.
+
+### Gọi skill và agent sau khi init
+
+Với tool `claude`, `init`/`sync` sinh ra:
+
+- **Rule** trong `.claude/rules/stackcrew/`. Claude Code tự nạp: rule always-on nạp mọi lúc, rule theo glob nạp khi agent đụng file khớp (ví dụ `*.java`).
+- **Skill theo việc** trong `.claude/skills/stackcrew-*/`. Agent tự dùng khi việc khớp mô tả, hoặc bạn gọi thẳng bằng `/<tên-skill>`. Với Spring Boot có `/stackcrew-spring-rest-endpoint`, `/stackcrew-spring-integration-provider`, `/stackcrew-spring-boot-testing`, `/stackcrew-spring-kafka-consumer` (khi có add-on `kafka`), cùng `/stackcrew-pattern-guide` và `/stackcrew-messaging-choice`.
+- **Agent (vai)** trong `.claude/agents/`: `stackcrew-tech-lead` (model opus, chỉ đề xuất và review, không viết code), `stackcrew-<stack>-developer` và `stackcrew-<stack>-tester` (với Spring Boot: `stackcrew-spring-boot-developer`, `stackcrew-spring-boot-tester`). Đây là agent của dự án nên không có tiền tố `stackcrew:` như lệnh plugin. Agent chỉ chạy khi được gọi đích danh:
+  - gõ `@`, chọn agent trong danh sách gợi ý, rồi viết việc cần làm, ví dụ `@"stackcrew-spring-boot-developer (agent)" thêm provider eKYC HyperVerge theo playbook tích hợp`;
+  - hoặc nêu tên trong câu lệnh, ví dụ "Dùng agent stackcrew-tech-lead review thiết kế tích hợp C06";
+  - hoặc chạy cả phiên dưới một vai: `claude --agent stackcrew-spring-boot-developer`.
+
+  Gõ `/agents` để xem danh sách agent.
+- **Guard hook** chạy mỗi lần Claude gọi `Write`, `Edit` hoặc `MultiEdit`. Khi bị chặn, Claude nhận thông báo vi phạm và phải sửa lại (xem "Guard hook và `stackcrew-allow`").
+
+### Thử plugin mà không cài (khi sửa stackcrew)
+
+```bash
+claude --plugin-dir <đường-dẫn-repo-stackcrew>/plugin
+```
+
+Plugin chỉ có hiệu lực trong phiên đó. Nếu máy đã cài `stackcrew@stackcrew`, nên tắt bản đó trước (`claude plugin disable stackcrew@stackcrew`) để tránh nạp hai bản plugin và hai guard hook.
+
 ## Các lệnh
+
+Đây là lệnh của CLI (`stackcrew <lệnh>`, xem "Cài đặt"). Trong Claude Code, `init`, `sync`, `add` và `check` có lệnh `/stackcrew:*` tương ứng (xem "Dùng với Claude Code").
 
 Mã thoát: `0` thành công, `1` lỗi hoặc có vi phạm, `2` (chỉ riêng `check`) không chạy được.
 
@@ -119,6 +243,8 @@ stage('stackcrew check') {
 ```
 
 Snippet dùng `sh`: agent Windows dùng `bat` thay cho `sh`. Khi `CHANGE_TARGET` chưa được đặt (build không phải PR), snippet mặc định so với `main`.
+
+Snippet gọi gói `stackcrew@<version>` trên npm, mà gói này chưa được publish (Plan 3). Trước khi publish, thay bằng `npx --yes github:quoioln/stackcrew#<tag-hoặc-commit> check --base ...` (agent Jenkins cần quyền đọc repo) hoặc `node <đường-dẫn-repo-stackcrew>/bin/stackcrew.js check --base ...`.
 
 Dán stage này vào `Jenkinsfile` của bạn (stackcrew không bao giờ sửa `Jenkinsfile`). Với clone nông (shallow) hoặc multibranch, **phải fetch nhánh đích trước** (`git fetch origin <target-branch>`), nếu không `check` thoát `2` với thông báo rõ ràng.
 
@@ -183,5 +309,14 @@ node bin/stackcrew.js plugin # sinh lại plugin/ và .claude-plugin/ sau khi đ
 ```
 
 - `test/plugin-drift.test.js` sẽ fail nếu quên chạy `plugin` sau khi sửa.
+
+Phát hành bản plugin mới:
+
+1. Tăng `version` trong `package.json`.
+2. Chạy `node bin/stackcrew.js plugin`. Lệnh này ghi version mới vào `plugin/.claude-plugin/plugin.json` và `.claude-plugin/marketplace.json`.
+3. Chạy `npm test`, rồi commit và push lên `main`.
+4. Người dùng chạy `claude plugin marketplace update stackcrew`, rồi `claude plugin update stackcrew@stackcrew`.
+
+Push mà không tăng `version` thì người đã cài vẫn giữ bản cũ.
 - `fixtures/spring-boot-minimal/` là dự án mẫu cho `test/e2e.test.js` (có vi phạm cài sẵn trong `BadService`). Nó không nằm trong gói npm.
 - Danh sách kiểm thử tay trên Cursor, Codex, Antigravity: xem `docs/manual-checklist.md`.
