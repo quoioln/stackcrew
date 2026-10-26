@@ -68,14 +68,14 @@ describe('customer profiles (e2e)', () => {
     expect(second.body.items.map((item: { reference: string }) => item.reference)).toEqual(['ref-c3']);
   });
 
-  it('answers 400 with field errors for an invalid body, an unknown field, a bad page or sort key, and a bad id', async () => {
+  it('answers 400 with field errors for an invalid body, an unknown field, a page or size out of range, a bad sort key, and a bad id', async () => {
     const auth = bearer('alice', 'tenant-a');
     const missing = await request(app.getHttpServer()).post(PROFILES).set('authorization', auth).send({ fullName: 'Nguyen Van A' }).expect(400);
     expect(missing.body).toMatchObject({ status: 400, detail: 'The request is invalid.', errors: [{ field: 'reference' }] });
     const extra = await request(app.getHttpServer()).post(PROFILES).set('authorization', auth)
       .send({ reference: 'r', fullName: 'n', {{sc:tenantColumn}}: 'tenant-b' }).expect(400);
     expect(extra.body.errors).toEqual([{ field: '{{sc:tenantColumn}}', messages: ['property {{sc:tenantColumn}} should not exist'] }]);
-    for (const query of [{ size: 101 }, { page: 0 }, { sort: 'fullName' }, { size: 'ten' }]) {
+    for (const query of [{ size: 101 }, { page: 0 }, { page: 1001 }, { sort: 'fullName' }, { size: 'ten' }]) {
       await request(app.getHttpServer()).get(PROFILES).query(query).set('authorization', auth).expect(400);
     }
     await request(app.getHttpServer()).get(`${PROFILES}/not-a-uuid`).set('authorization', auth).expect(400);

@@ -11,6 +11,7 @@ import { RabbitMqConnection } from './rabbitmq.connection';
 
 const JSON_CONTENT_TYPE = 'application/json';
 const PUBLISH_TIMEOUT_MS = 10_000;
+const PUBLISHER_CHANNEL = 'publisher';
 
 /** The three context headers of a context: what a consumer rebuilds its own context from. */
 export function contextHeaders(ctx: RequestContext | undefined): ContextHeaders {
@@ -35,7 +36,7 @@ export class MessagePublisher implements OnModuleDestroy {
   private readonly channel: ChannelWrapper;
 
   constructor(rabbit: RabbitMqConnection) {
-    this.channel = rabbit.createChannel();
+    this.channel = rabbit.createChannel(PUBLISHER_CHANNEL);
   }
 
   async publish(exchange: string, routingKey: string, message: MessageEnvelope, ctx: RequestContext | undefined = currentContext()): Promise<void> {

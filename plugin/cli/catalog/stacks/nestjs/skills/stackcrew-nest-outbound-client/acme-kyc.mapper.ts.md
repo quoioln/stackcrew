@@ -16,7 +16,7 @@ const DECISION_BY_RESULT: ReadonlyMap<AcmeResultCode, KycDecision> = new Map([
 
 /** The anti-corruption layer: the only code that knows both Acme's vocabulary and the domain's. */
 export function toAcmeRequest(command: VerifyIdentityCommand): AcmeVerifyRequest {
-  return { idNumber: command.documentNumber, faceImageBase64: command.selfie.toString('base64'), traceRef: command.requestId };
+  return { idNumber: command.documentNumber, faceImageBase64: command.selfie.toString('base64'), traceRef: command.traceRef };
 }
 
 /** Parses the reply at the edge: anything but a valid AcmeVerifyResponse is a ProviderProtocolError, never a partial result. */

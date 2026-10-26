@@ -56,7 +56,7 @@ After `runMigrations()`, `dataSource.driver.createSchemaBuilder().log()` returns
 ## 6. Third-party providers: local fakes only
 
 - Start a `node:http` server on port 0, point the provider base URL at it, and script one reply per request: success, 4xx, 5xx, 429, a slow reply past the client timeout, a body that is not JSON, a missing field.
-- Assert the typed result or typed error, the number of requests that reached the stub (a 4xx is not retried; a 5xx is retried up to the limit), the same idempotency key on each attempt, and one `http_out` line per attempt with masked bodies.
+- Assert the typed result or typed error, the number of requests that reached the stub (a 4xx is not retried; a 5xx is retried up to the limit), the same idempotency key on each attempt (the stored key, not the request id of the context), and one `http_out` line per attempt with masked bodies. Cover a reply that trickles past the timeout after its headers: the attempt bound must cut it.
 - Shorten timeouts and backoff through config and the policy token (`overrideProvider`), never by changing production defaults. Example: `acme-kyc.client.spec.ts` in `stackcrew-nest-outbound-client`.
 - Code that calls a provider port gets a fake port. Never call the real provider, even a sandbox, in the default test run.
 

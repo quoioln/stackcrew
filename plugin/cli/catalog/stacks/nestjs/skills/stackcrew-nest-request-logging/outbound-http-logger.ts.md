@@ -8,13 +8,12 @@ import { AxiosHeaders, isAxiosError, type AxiosResponse, type InternalAxiosReque
 import { Readable } from 'node:stream';
 import { contextLogFields } from '../context/request-context';
 import {
-  bodyPlaceholder, isMaskable, jsonByteLength, loadLogBodies, loadMaskOptions, maskBody, placeholderFor, serializeMasked, type MaskOptions,
+  bodyPlaceholder, CAPTURE_LIMIT_BYTES, isMaskable, jsonByteLength, loadLogBodies, loadMaskOptions, maskBody, placeholderFor, serializeMasked,
+  type MaskOptions,
 } from './body-masker';
 import { elapsedMs, LogEvent, writeCallLine, type CallLogLine } from './log-fields';
 
 export const OUTBOUND_TARGET = Symbol('OUTBOUND_TARGET');
-/** Request and response bodies up to this size are masked whole; larger ones log only their size, as on the inbound line. */
-const CAPTURE_LIMIT_BYTES = 2_097_152; // 2 MiB
 
 /**
  * Providers for a module that imports HttpModule.register(...). Each importing module gets its own HttpService and

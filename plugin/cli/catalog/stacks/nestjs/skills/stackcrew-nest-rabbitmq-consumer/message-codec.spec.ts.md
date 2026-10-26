@@ -3,7 +3,7 @@ Goes to `src/common/messaging/message-codec.spec.ts`.
 ```ts
 // Default location: src/common/messaging/message-codec.spec.ts
 import { Equals, IsISO8601, IsString, IsUUID } from 'class-validator';
-import { MissingTenantError } from '../context/request-context';
+import { CrossTenantDeniedError, MissingTenantError } from '../context/request-context';
 import { decodeMessage } from './message-codec';
 import { InvalidMessageError, ParkReason, parkReasonOf } from './message-errors';
 import type { MessageEnvelope } from './messaging.types';
@@ -56,6 +56,7 @@ describe('parkReasonOf', () => {
   it('parks invalid messages and missing tenants, and retries everything else', () => {
     expect(parkReasonOf(new InvalidMessageError(ParkReason.INVALID))).toBe(ParkReason.INVALID);
     expect(parkReasonOf(new MissingTenantError())).toBe(ParkReason.NO_TENANT);
+    expect(parkReasonOf(new CrossTenantDeniedError('probe'))).toBe(ParkReason.CROSS_TENANT);
     expect(parkReasonOf(new Error('connection terminated'))).toBeUndefined();
   });
 });

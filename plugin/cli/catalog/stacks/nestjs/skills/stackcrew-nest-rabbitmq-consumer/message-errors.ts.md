@@ -10,6 +10,7 @@ export const ParkReason = {
   NOT_JSON: 'not_json',
   INVALID: 'invalid_message',
   NO_TENANT: 'missing_tenant',
+  CROSS_TENANT: 'cross_tenant_denied',
   BUSINESS_RULE: 'business_rule',
   ATTEMPTS: 'attempts_exhausted',
 } as const;
@@ -31,8 +32,11 @@ export function parkReasonOf(failure: unknown): ParkReason | undefined {
   if (failure instanceof NonRetryableMessageError) {
     return failure.reason;
   }
-  if (failure instanceof MissingTenantError || failure instanceof CrossTenantDeniedError) {
+  if (failure instanceof MissingTenantError) {
     return ParkReason.NO_TENANT; // the headers carry no usable tenant: a retry sees the same headers
+  }
+  if (failure instanceof CrossTenantDeniedError) {
+    return ParkReason.CROSS_TENANT; // the handler tried to reach another tenant: a retry is denied the same way
   }
   return undefined;
 }

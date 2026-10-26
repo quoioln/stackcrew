@@ -40,7 +40,7 @@ Each `<file>.md` next to this skill holds one source file: its first line says w
 
 ## 4. Configuration
 
-Add a section to `src/config/env.ts`, then add `parseEnvSection(KycProviderEnv, raw)` to `validateEnv`, `KycProviderEnv` to the `Env` type, and its variables to the `raw` of the `validateEnv` test in `env.spec.ts`:
+Add a section to `src/config/env.ts` (and `IsNotEmpty` to its class-validator import), then add `parseEnvSection(KycProviderEnv, raw)` to `validateEnv`, `KycProviderEnv` to the `Env` type, and its variables to the `raw` of the `validateEnv` test in `env.spec.ts`:
 
 ```ts
 // src/config/env.ts (add)
@@ -48,19 +48,20 @@ export class KycProviderEnv {
   @IsUrl({ require_tld: false, require_protocol: true, protocols: ['http', 'https'] })
   KYC_PROVIDER_BASE_URL!: string;
 
-  /** Per attempt; with retries, the caller waits up to (maxRetries + 1) timeouts plus the backoff. */
+  /** The bound on one attempt, from connect to the last byte of the reply (section 7). */
   @Type(() => Number)
   @IsInt()
   @Min(1)
   KYC_PROVIDER_TIMEOUT_MS = 5000;
 
   @IsString()
+  @IsNotEmpty()
   KYC_PROVIDER_API_KEY!: string;
 }
 ```
 
 - The base URL is `https` outside local development; credentials come from the environment or a vault, never from code, a test fixture shared with production, or a log line.
-- The module builds its own `HttpService` with `HttpModule.registerAsync`: `baseURL`, `timeout`, `maxRedirects: 0` and the API key header. Each module that imports `HttpModule` has its own axios instance, so `...outboundHttpLogging(target)` goes in that module's providers, once.
+- The module builds its own `HttpService` with `HttpModule.registerAsync`: `baseURL`, `timeout`, `maxRedirects: 0`, `maxContentLength` and `maxBodyLength` (axios defaults to no limit) and the API key header. Each module that imports `HttpModule` has its own axios instance, so `...outboundHttpLogging(target)` goes in that module's providers, once.
 - The resilience numbers are constants per provider (`KYC_PROVIDER_POLICY_DEFAULTS`) behind an injection token, so a test can shorten the delays with `overrideProvider`.
 
 ## 5. Port, DTOs and the ACL mapper
@@ -72,9 +73,15 @@ export class KycProviderEnv {
 
 ## 6. The adapter
 
-- Call with `await firstValueFrom(this.http.post<unknown>(PATH, body, { headers }))`. The path is a constant relative to `baseURL`; never build a URL from a request value.
-- Classify each failed attempt once: no response (timeout `ECONNABORTED`, connection refused or reset), 5xx and 429 are `ProviderUnavailableError`; any other status is `ProviderRejectedError`; the mapper's `ProviderProtocolError` passes through.
-- Send an idempotency key (`Idempotency-Key`, from the business request id) on every call that changes something, the same key on every attempt. Retry only idempotent calls, or calls the provider deduplicates by that key. A charge without a provider idempotency key is not retried.
+- Call with `await firstValueFrom(this.http.post<unknown>(PATH, body, { headers, signal: AbortSignal.timeout(attemptTimeoutMs) }))`. The path is a constant relative to `baseURL`; never build a URL from a request value.
+- Bound each attempt as a whole with `AbortSignal.timeout(KYC_PROVIDER_TIMEOUT_MS)`. In axios 1.x the `timeout` option stops counting once the response headers arrive; after that only the socket idle timeout applies, so a reply that trickles in byte by byte would hold the call indefinitely.
+- Classify each failed attempt once:
+  - no reply (timeout `ECONNABORTED`, the attempt bound `ERR_CANCELED`, connection refused or reset), 5xx and 429: `ProviderUnavailableError`;
+  - a reply over `maxContentLength` (`ERR_BAD_RESPONSE` without a status): `ProviderProtocolError`;
+  - any other status, or a request over `maxBodyLength`: `ProviderRejectedError`;
+  - the mapper's `ProviderProtocolError` passes through.
+- Send an idempotency key (`Idempotency-Key`) on every call that changes something. The service generates it once per business operation, stored before the call: for example, it inserts the verification row first and uses its id. Every attempt, and every later retry of the same operation, sends that stored key. It is never the inbound `x-request-id` and never a client's raw `Idempotency-Key` header, since either can repeat across different operations or change between retries of one. A separate `traceRef` carries the request id for correlation only.
+- Retry only idempotent calls, or calls the provider deduplicates by that key. A charge without a provider idempotency key is not retried.
 - Token-based providers: cache the token until shortly before it expires; never fetch one per call, and never log it.
 - The adapter logs no body and no command (a document number or a selfie). Log ids and outcomes only: `this.logger.warn({ event: 'provider_failed', provider, requestId, error: error.name }, 'provider_failed')`.
 
@@ -86,13 +93,13 @@ export class KycProviderEnv {
 2. **Retry:** up to `maxRetries` more attempts with exponential backoff and jitter, for `ProviderUnavailableError` only. A rejection or an invalid reply is never retried and never opens the circuit.
 3. **Bulkhead:** at most `maxConcurrent` attempts in flight and `maxQueued` waiting; beyond that the call fails fast.
 
-- The timeout is the `HttpService` `timeout`, per attempt. Keep the worst case, `(maxRetries + 1) * timeout` plus backoff, well inside the caller's own deadline (an HTTP request or a message's processing time).
+- Each attempt is bounded by `AbortSignal.timeout(KYC_PROVIDER_TIMEOUT_MS)` (section 6). One call can therefore take up to `maxRetries + 1` attempts of at most that bound each, plus the backoff between them (at most `maxDelayMs` each), plus any wait for a bulkhead slot. Keep that sum well inside the caller's own deadline: an HTTP request, or a message's processing time.
 - An open circuit or a full bulkhead becomes `ProviderUnavailableError`, so the API answers 503 with a constant detail.
 - Create the policy once per client (in its constructor): a policy created per call never opens its circuit.
 
 ## 8. Logging
 
-- `OutboundHttpLogger` on the module's `HttpService` writes one `http_out` line per attempt: `target`, `method`, `url` without the query string, `status`, `durationMs`, `error` (the axios code) and both bodies after the shared masker. A retried call gives one line per attempt; a timeout gives a line with `error` and no `status`.
+- `OutboundHttpLogger` on the module's `HttpService` writes one `http_out` line per attempt: `target`, `method`, `url` without the query string, `status`, `durationMs`, `error` (the axios code) and both bodies after the shared masker. A retried call gives one line per attempt; a timeout gives a line with `error` (`ECONNABORTED`, or `ERR_CANCELED` for the attempt bound) and no `status`.
 - PII and secret keys become `"***"`, base64 images over 1 KB become `<base64 N bytes>`, XML or text replies and bodies over 2 MiB log only their size.
 - Nothing else logs a provider body: no `logger.log(response.data)`, no body in an exception message.
 
@@ -104,7 +111,7 @@ export class KycProviderEnv {
 
 ## 10. Tests
 
-- **The adapter, against a local provider fake:** `acme-kyc.client.spec.ts` starts a `node:http` server on port 0, points `KYC_PROVIDER_BASE_URL` at it and scripts one reply per request. The real `HttpService`, timeout, policy, mapper and `OutboundHttpLogger` run. Cover: success mapped to the domain result; 5xx and 429 retried with the same idempotency key; retries exhausted; a timeout retried; a 4xx not retried; a reply that is not JSON, misses a field or has an unknown code; the circuit opening. Assert the stub's hit count and one `http_out` line per attempt with masked bodies.
+- **The adapter, against a local provider fake:** `acme-kyc.client.spec.ts` starts a `node:http` server on port 0, points `KYC_PROVIDER_BASE_URL` at it and scripts one reply per request. The real `HttpService`, timeout, policy, mapper and `OutboundHttpLogger` run. Cover: success mapped to the domain result; 5xx and 429 retried with the same stored idempotency key, which is not the request id of the context; retries exhausted; a timeout retried; a reply that trickles past the bound after its headers cut and retried; a reply over `maxContentLength` refused without a retry; a 4xx not retried; a reply that is not JSON, misses a field or has an unknown code; the circuit opening. Assert the stub's hit count and one `http_out` line per attempt with masked bodies.
 - **Code that calls the port:** a unit test binds a fake, `{ provide: KycProvider, useValue: { verify: jest.fn() } }`, and covers each typed error the port can throw.
 - Never call the real provider from a test, not even a sandbox, in the default test run. More in `stackcrew-nestjs-testing`.
 

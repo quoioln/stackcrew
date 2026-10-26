@@ -9,8 +9,10 @@ import { connect, type ConfirmChannel, type GetMessage } from 'amqplib';
 import { randomUUID } from 'node:crypto';
 import { DataSource } from 'typeorm';
 import { currentContext, runCrossTenant, runWithRequestContext, type RequestContext } from '../src/common/context/request-context';
+import { CAPTURE_LIMIT_BYTES } from '../src/common/logging/body-masker';
 import { MessagePublisher } from '../src/common/messaging/message-publisher';
 import { ProcessedMessage } from '../src/common/messaging/processed-message.entity';
+import { RabbitMqConnection } from '../src/common/messaging/rabbitmq.connection';
 import { parkingQueue } from '../src/common/messaging/work-queue';
 import { CustomerProfileRepository } from '../src/modules/customer-profiles/customer-profile.repository';
 import { CustomerProfileStatus } from '../src/modules/customer-profiles/entities/customer-profile.entity';
@@ -27,6 +29,7 @@ const CONTAINERS_MS = 180_000;
 const RETRY_TEST_MS = 60_000; // retryDelayMs is 5 s per wait-queue cycle
 const WAIT_MS = 30_000;
 const POLL_MS = 50;
+const IN_FLIGHT_MS = 500;
 const { exchange, routingKey } = KYC_COMPLETED_QUEUE;
 
 describe('kyc.completed consumer (e2e: RabbitMQ and Postgres in Testcontainers)', () => {
@@ -106,6 +109,7 @@ describe('kyc.completed consumer (e2e: RabbitMQ and Postgres in Testcontainers)'
   const profileOf = (tenantId: string, id: string): Promise<unknown> => asUser(tenantId, () => app.get(CustomerProfileRepository).findOneBy({ id }));
 
   it('applies kyc.completed in the tenant of x-tenant-id, as the user of x-user-id, with one masked message_in line', async () => {
+    expect(app.get(KycCompletedConsumer).isConsuming()).toBe(true); // what the readiness probe reads
     const profileId = await seedProfile('tenant-a');
     const handler = app.get(KycCompletedHandler);
     const original = handler.handle.bind(handler);
@@ -221,5 +225,53 @@ describe('kyc.completed consumer (e2e: RabbitMQ and Postgres in Testcontainers)'
       spy.mockRestore();
     }
   }, RETRY_TEST_MS);
+
+  it('logs only the size of a payload over 2 MiB in message_in, and still applies the message', async () => {
+    const message = kycCompleted(await seedProfile('tenant-a'));
+    const big = payload({ ...message, note: 'x'.repeat(CAPTURE_LIMIT_BYTES + 1) }); // a field the codec drops
+    await publishRaw(big, message.messageId, { 'x-request-id': 'req-big', 'x-tenant-id': 'tenant-a', 'x-user-id': 'kyc-service' });
+    expect(await eventually(() => outcomes(message.messageId), (found) => found.length > 0)).toEqual([expect.objectContaining({ outcome: 'applied' })]);
+    expect(messageIns('req-big')[0].reqBody).toBe(`<application/json ${big.length} bytes>`); // never parsed for the line
+  });
+
+  it('on shutdown stops new deliveries, lets the delivery in flight finish and ack, then closes', async () => {
+    const consumer = app.get(KycCompletedConsumer);
+    const handler = app.get(KycCompletedHandler);
+    const original = handler.handle.bind(handler);
+    let started = false;
+    const spy = jest.spyOn(handler, 'handle').mockImplementation(async (message) => {
+      started = true;
+      await new Promise((resolve) => setTimeout(resolve, IN_FLIGHT_MS)); // still running when the shutdown starts
+      return original(message);
+    });
+    try {
+      const inFlight = kycCompleted(await seedProfile('tenant-a'));
+      await publishRaw(payload(inFlight), inFlight.messageId, { 'x-tenant-id': 'tenant-a', 'x-user-id': 'kyc-service' });
+      await eventually(() => started, (yes) => yes);
+      await consumer.onModuleDestroy(); // what app.close() calls
+      expect(outcomes(inFlight.messageId)).toEqual([expect.objectContaining({ outcome: 'applied' })]); // acked before the close
+      expect(consumer.isConsuming()).toBe(false);
+      const later = kycCompleted(await seedProfile('tenant-a'));
+      await publishRaw(payload(later), later.messageId, { 'x-tenant-id': 'tenant-a', 'x-user-id': 'kyc-service' });
+      const queue = await eventually(() => channel.checkQueue(KYC_COMPLETED_QUEUE.queue), (state) => state.messageCount === 1);
+      expect(queue).toMatchObject({ messageCount: 1, consumerCount: 0 }); // waits in the queue for the next consumer
+      expect(outcomes(later.messageId)).toEqual([]);
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  it('logs a failed setup (PRECONDITION_FAILED), keeps the process alive and reports the consumer not ready', async () => {
+    // the queue now exists with other arguments than assertWorkQueue declares, as after a changed retryDelayMs
+    await channel.deleteQueue(KYC_COMPLETED_QUEUE.queue);
+    await channel.assertQueue(KYC_COMPLETED_QUEUE.queue, { durable: true, arguments: { 'x-queue-type': 'quorum' } });
+    const restarted = new KycCompletedConsumer(app.get(RabbitMqConnection), app.get(KycCompletedHandler));
+    restarted.onApplicationBootstrap();
+    const errors = await eventually(() => lines('rabbitmq_channel_error', 'channel', 'kyc-completed'), (found) => found.length > 0);
+    expect(errors).toEqual([expect.objectContaining({ code: 406, error: expect.any(String) })]); // 406 = PRECONDITION_FAILED
+    expect(Object.keys(errors[0])).not.toContain('message'); // the AMQP reply text is never logged
+    expect(restarted.isConsuming()).toBe(false); // the readiness probe reports it; the process is still here to say so
+    await restarted.onModuleDestroy();
+  });
 });
 ```

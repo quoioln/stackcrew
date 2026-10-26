@@ -14,7 +14,9 @@ export type KycOutcome = (typeof KycOutcome)[keyof typeof KycOutcome];
 /**
  * kyc.completed, version 1: the KYC service finished a verification. The schema of the payload, checked once by the
  * codec; nothing past the codec sees unparsed data. messageId is the dedupe key. A breaking change is a new version
- * with its own class, consumed side by side until producers have moved.
+ * with its own class and handler. To consume two versions side by side, the consumer reads `version` first and
+ * dispatches to that version's class and handler; an unknown version is parked as invalid. Drop the old one when no
+ * producer sends it.
  */
 export class KycCompletedMessage implements MessageEnvelope {
   @IsUUID()

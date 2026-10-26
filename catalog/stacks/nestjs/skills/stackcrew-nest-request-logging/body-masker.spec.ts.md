@@ -3,7 +3,8 @@ Goes to `src/common/logging/body-masker.spec.ts`.
 ```ts
 // Default location: src/common/logging/body-masker.spec.ts
 import {
-  DEFAULT_PII_FIELDS, loadLogBodies, loadMaskOptions, maskBody, maskValue, placeholderFor, serializeMasked, type MaskOptions,
+  CAPTURE_LIMIT_BYTES, DEFAULT_PII_FIELDS, loadLogBodies, loadMaskOptions, maskBody, maskCapturedBody, maskValue, placeholderFor, serializeMasked,
+  type MaskOptions,
 } from './body-masker';
 
 const JSON_TYPE = 'application/json';
@@ -165,6 +166,15 @@ describe('maskBody (core-logging masker contract)', () => {
     const hostile = { get email(): string { throw new Error('boom'); } };
     expect(serializeMasked(hostile, DEFAULTS)).toBe('<application/json 16384+ bytes>');
     expect(maskValue(hostile, DEFAULTS)).toBe('<application/json 16384+ bytes>');
+  });
+
+  it('logs only the size of a body over CAPTURE_LIMIT_BYTES, unparsed; at the cap the body is masked', () => {
+    expect(maskCapturedBody(Buffer.alloc(CAPTURE_LIMIT_BYTES + 1, 'a'), JSON_TYPE, DEFAULTS)).toBe(`<application/json ${CAPTURE_LIMIT_BYTES + 1} bytes>`);
+    const atCap = `{"password":"${'p'.repeat(CAPTURE_LIMIT_BYTES - '{"password":""}'.length)}"}`;
+    expect(Buffer.byteLength(atCap)).toBe(CAPTURE_LIMIT_BYTES);
+    expect(maskCapturedBody(atCap, JSON_TYPE, DEFAULTS)).toBe('{"password":"***"}');
+    expect(maskCapturedBody(undefined, JSON_TYPE, DEFAULTS)).toBeUndefined();
+    expect(maskCapturedBody(Buffer.alloc(0), JSON_TYPE, DEFAULTS)).toBeUndefined();
   });
 });
 ```

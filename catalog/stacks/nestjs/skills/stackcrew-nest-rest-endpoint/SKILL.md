@@ -64,7 +64,7 @@ Add the module to `AppModule` `imports`. Shared types of the feature go in `dto/
 
 ## 6. Pagination
 
-- Every list takes `page` and `size` with a default and a maximum (`MAX_PAGE_SIZE`), and returns a page DTO with `items` and `total`. Never return an unbounded list.
+- Every list takes `page` and `size` with a default and a maximum (`MAX_PAGE`, `MAX_PAGE_SIZE`), and returns a page DTO with `items` and `total`. Never return an unbounded list.
 - Sort only by an allowlist of keys mapped to columns in code, never a column name from the request, and add the id as the last sort key so the order is stable and pages never overlap.
 - `find` with `skip`/`take` plus `count` with the same `where`, both through the tenant repository. For deep pages on large tables use keyset pagination (`where: { createdAt: LessThan(cursor) }`) instead of a large `skip`.
 
@@ -93,7 +93,7 @@ Add the module to `AppModule` `imports`. Shared types of the feature go in `dto/
   - 201 with exactly the response DTO keys;
   - 200 for the owner tenant, 404 problem details for another tenant;
   - a page of the caller's tenant only, with `total`, and the next page;
-  - 400 with field errors for a missing field, an unknown field such as `{{sc:tenantColumn}}`, a page size over the cap, a sort key outside the allowlist, a non-numeric size and a bad UUID;
+  - 400 with field errors for a missing field, an unknown field such as `{{sc:tenantColumn}}`, a page or page size over its cap, a sort key outside the allowlist, a non-numeric size and a bad UUID;
   - 401 without a token;
   - one `http_in` line per call with the PII masked in `reqBody` and `resBody`.
 

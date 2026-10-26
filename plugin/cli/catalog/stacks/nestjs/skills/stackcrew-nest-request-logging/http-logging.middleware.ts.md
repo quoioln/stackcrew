@@ -6,11 +6,9 @@ import { Logger, type RawBodyRequest } from '@nestjs/common';
 import type { NextFunction, Request, RequestHandler, Response } from 'express';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { activeTraceFields, bindRequestContext, requestContextOf, REQUEST_ID_HEADER, safeRequestIdOrNew } from '../context/request-context';
-import { bodyPlaceholder, isMaskable, loadLogBodies, loadMaskOptions, maskBody, type MaskOptions } from './body-masker';
+import { bodyPlaceholder, CAPTURE_LIMIT_BYTES, isMaskable, loadLogBodies, loadMaskOptions, maskBody, type MaskOptions } from './body-masker';
 import { elapsedMs, LogEvent, writeCallLine, type CallLogLine } from './log-fields';
 
-/** JSON and form bodies up to this size are masked whole (so a base64 image shrinks to its size); larger ones log their size. */
-const CAPTURE_LIMIT_BYTES = 2_097_152; // 2 MiB
 const UNMATCHED_ROUTE = 'UNMATCHED';
 const CLIENT_ABORT = 'ClientAbort';
 /** The client closed the connection before the response finished (the nginx convention); logged at WARN. */

@@ -266,7 +266,7 @@ test('nest request logging writes one line per request from a middleware ahead o
       assert.ok(setup.includes(needle), `logging.setup.ts missing ${needle}`);
     }
     const mw = s.file('http-logging.middleware.ts');
-    for (const needle of ["res.once('finish', writeLine)", "res.once('close', writeLine)", 'if (written) {', 'req.rawBody', 'CAPTURE_LIMIT_BYTES = 2_097_152; // 2 MiB',
+    for (const needle of ["res.once('finish', writeLine)", "res.once('close', writeLine)", 'if (written) {', 'req.rawBody', 'size <= CAPTURE_LIMIT_BYTES',
       'tee.streamed = true', "isMaskable(headerText(this.getHeader('content-type')))", 'userId: ctx?.userId', "UNMATCHED_ROUTE = 'UNMATCHED'",
       'route: routeTemplates.get(req) ?? UNMATCHED_ROUTE', 'req.path === skipped || req.path.startsWith(`${skipped}/`)']) {
       assert.ok(mw.includes(needle), `middleware missing ${needle}`);
@@ -656,7 +656,7 @@ test('nest rabbitmq-consumer skill: typed message, idempotency store, DLX with w
       assert.ok(s.body.includes(needle), `SKILL.md missing ${needle}`);
     }
     const consumer = s.file('kyc-completed.consumer.ts');
-    for (const needle of ['contextFromMessageHeaders(headers)', 'runWithRequestContext(', 'writeCallLine(this.logger,', 'event: LogEvent.MESSAGE_IN', 'maskBody(payload, type, this.maskOptions)',
+    for (const needle of ['contextFromMessageHeaders(headers)', 'runWithRequestContext(', 'writeCallLine(this.logger,', 'event: LogEvent.MESSAGE_IN', 'maskCapturedBody(payload, type, this.maskOptions)',
       'payload !== undefined && payload.length > 0 ? bodyPlaceholder(type, payload.length)', "'log')", 'noAck: false', 'channel.ack(msg)', 'channel.nack(msg, false, false)', 'prefetch(']) {
       assert.ok(consumer.includes(needle), `consumer missing ${needle}`);
     }
@@ -718,5 +718,66 @@ test('nest skill code passes the stackcrew ESLint rules the guard cannot see: no
         assert.ok(!/\d\s*\*\s*\d/.test(uncommented.join('\n')), `${name}: a product of numeric literals where one literal belongs`);
       }
     }
+  });
+});
+
+test('nest task 8 fix round 1: channel error listener and consumer health, server-side idempotency key, bounded attempts, capped message_in, drained shutdown', async () => {
+  await withRealCatalog(async (c) => {
+    const consumerSkill = nestSkill(c, CONSUMER);
+    // 1. every ChannelWrapper gets a structured error listener; the consumer exposes its health
+    const connection = consumerSkill.file('rabbitmq.connection.ts');
+    assert.match(connection, /channel\.on\('error', \(err: Error & \{ code\?: number \}/, 'createChannel attaches an error listener');
+    assert.ok(connection.includes('code: err.code') && !/err\.message/.test(connection), 'the listener logs the name and code, never the message');
+    assert.ok(connection.includes('reconnectTimeInSeconds: RECONNECT_SECONDS'), 'a closed channel comes back through a short reconnect');
+    const consumer = consumerSkill.file('kyc-completed.consumer.ts');
+    assert.ok(!consumer.includes(".on('error'"), 'no error listener on the raw channel: it would stop the reconnect that re-creates the channel');
+    for (const needle of ['isConsuming(): boolean', 'if (msg === null) {', "channel.once('close'", 'SHUTDOWN_GRACE_MS', '.cancel(', 'this.inFlight']) {
+      assert.ok(consumer.includes(needle), `consumer missing ${needle}`);
+    }
+    // 7. ack outside the try that classifies handler failures; a failed ack is logged on its own
+    assert.ok(consumer.includes('this.settle(msg, () => channel.ack(msg)') && consumer.includes('Outcome.UNSETTLED'), 'ack goes through settle');
+    assert.ok(!/try \{\n\s+const applied = await this\.onMessage[^]*?channel\.ack\(msg\);[^]*?\} catch/.test(consumer), 'ack is not inside the handler try');
+    // 6. message_in is capped like http_in and http_out
+    assert.ok(consumer.includes('maskCapturedBody(payload, type, this.maskOptions)'), 'consumer message_in uses the capped masker');
+    const masker = nestSkill(c, LOGGING).file('body-masker.ts');
+    assert.ok(masker.includes('export const CAPTURE_LIMIT_BYTES = 2_097_152; // 2 MiB') && masker.includes('export function maskCapturedBody('), 'one capture cap in the masker');
+    for (const file of ['http-logging.middleware.ts', 'outbound-http-logger.ts']) {
+      const code = nestSkill(c, LOGGING).file(file);
+      assert.ok(!code.includes('const CAPTURE_LIMIT_BYTES') && code.includes('CAPTURE_LIMIT_BYTES'), `${file} uses the masker's cap`);
+    }
+    assert.ok(nestSkill(c, LOGGING).body.includes('maskCapturedBody(payload, type, this.maskOptions)'), 'the §8 message_in template is capped');
+    assert.ok(nestSkill(c, LOGGING).file('body-masker.spec.ts').includes('maskCapturedBody(Buffer.alloc(CAPTURE_LIMIT_BYTES + 1'), 'masker spec row for the cap');
+    // 8. a distinct park reason for a cross-tenant denial; versions dispatch
+    const errors = consumerSkill.file('message-errors.ts');
+    assert.ok(errors.includes("CROSS_TENANT: 'cross_tenant_denied'") && errors.includes('return ParkReason.CROSS_TENANT'), 'cross-tenant denial has its own reason');
+    assert.ok(/dispatch/i.test(consumerSkill.file('kyc-completed.message.ts')), 'side-by-side versions need a dispatch by version');
+    const e2e = consumerSkill.file('kyc-completed.consumer.e2e.spec.ts');
+    for (const needle of ['channel_error', 'isConsuming()', 'onModuleDestroy()', 'CAPTURE_LIMIT_BYTES + 1', 'PRECONDITION_FAILED']) {
+      assert.ok(e2e.includes(needle), `consumer e2e missing ${needle}`);
+    }
+    assert.ok(/isConsuming\(\)/.test(consumerSkill.body) && /readiness/i.test(consumerSkill.body), 'SKILL.md wires the health flag into readiness');
+
+    // 2. the provider idempotency key is generated server-side and stored; traceRef is only correlation
+    const outbound = nestSkill(c, OUTBOUND);
+    const types = outbound.file('kyc-verification.ts');
+    assert.ok(types.includes('readonly idempotencyKey: string;') && types.includes('readonly traceRef: string;') && !types.includes('requestId'), 'command carries idempotencyKey and traceRef');
+    assert.ok(outbound.file('acme-kyc.client.ts').includes('[IDEMPOTENCY_KEY_HEADER]: command.idempotencyKey'), 'the header is the stored key');
+    assert.ok(outbound.file('acme-kyc.mapper.ts').includes('traceRef: command.traceRef'), 'traceRef is correlation only');
+    assert.ok(/never the inbound `x-request-id`/i.test(outbound.body) && /stored before the call/i.test(outbound.body), 'SKILL.md states where the key comes from');
+    const clientSpec = outbound.file('acme-kyc.client.spec.ts');
+    assert.ok(clientSpec.includes('.not.toBe(CONTEXT_REQUEST_ID)') && clientSpec.includes('runWithRequestContext('), 'the spec shows the key is not the request id');
+    // 3. a bound on the whole attempt and on the body sizes
+    assert.ok(outbound.file('acme-kyc.client.ts').includes('signal: AbortSignal.timeout('), 'each attempt has a total bound');
+    const mod = outbound.file('kyc.module.ts');
+    assert.ok(mod.includes('maxContentLength:') && mod.includes('maxBodyLength:'), 'body size limits on the HttpService');
+    assert.ok(clientSpec.includes('trickle') && clientSpec.includes('ERR_CANCELED'), 'the spec cuts a reply that trickles past the bound');
+    assert.ok(!outbound.body.includes('(maxRetries + 1) timeouts plus the backoff') && !outbound.body.includes('`(maxRetries + 1) * timeout` plus backoff'), 'worst case wording matches the code');
+    assert.ok(/```ts\n\/\/ src\/config\/env\.ts \(add\)[^`]*@IsNotEmpty\(\)\n\s+KYC_PROVIDER_API_KEY/.test(outbound.body), 'the API key must not be empty');
+    assert.ok(/stored key, not the request id/i.test(nestSkill(c, TESTING).body), 'the testing skill names the key source');
+
+    // 4. page has an upper bound
+    const rest = nestSkill(c, REST);
+    assert.ok(rest.file('list-customer-profiles.query.ts').includes('@Max(MAX_PAGE)'), 'page is capped');
+    assert.ok(rest.file('customer-profiles.e2e.spec.ts').includes('{ page: 1001 }'), 'e2e covers a page over the cap');
   });
 });

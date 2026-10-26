@@ -14,7 +14,7 @@ Search the codebase and the shared libraries ({{sc:sharedLibraries}}) for `maskB
 | File | What it does |
 |---|---|
 | `env.ts.md` | `LOG_MASK_FIELDS`, `LOG_MAX_BODY_BYTES`, `LOG_BODIES`, `LOG_LEVEL`, `CROSS_TENANT_ROLES`, the JWKS settings; `validateEnv` for `ConfigModule`, lazy `loggingEnv()` and `tenancyEnv()` for code outside the injector. |
-| `body-masker.ts.md` | The masker: `maskBody`, `maskValue`, `serializeMasked`, `loadMaskOptions`, `loadLogBodies`, `bodyPlaceholder`, `placeholderFor`, `jsonByteLength`. |
+| `body-masker.ts.md` | The masker: `maskBody`, `maskValue`, `serializeMasked`, `loadMaskOptions`, `loadLogBodies`, `bodyPlaceholder`, `placeholderFor`, `jsonByteLength`, `maskCapturedBody` and `CAPTURE_LIMIT_BYTES` (2 MiB). |
 | `request-context.ts.md` | `RequestContext`, `runWithRequestContext`, `runAsSystem`, `runCrossTenant`, `requireTenantId`, `currentActor`, `contextFromMessageHeaders`, the two errors. |
 | `request-context.interceptor.ts.md` | Global interceptor: the handler runs inside the request's context. |
 | `log-fields.ts.md` | Event and field names, `levelFor(status)`, and `writeCallLine`, the line writer that never throws. |
@@ -123,9 +123,13 @@ import { KycProvider } from './kyc-provider.port';
 import { KYC_PROVIDER_POLICY, KYC_PROVIDER_POLICY_DEFAULTS, KYC_PROVIDER_TARGET } from './kyc.constants';
 
 const API_KEY_HEADER = 'X-Api-Key';
+/** Provider replies are small JSON; a larger one is refused before it is buffered. */
+const MAX_RESPONSE_BYTES = 1_048_576; // 1 MiB
+/** The request carries a base64 selfie. */
+const MAX_REQUEST_BYTES = 10_485_760; // 10 MiB
 
 /**
- * The KYC provider: its own HttpService (base URL, per-attempt timeout and the API key from config, no redirects),
+ * The KYC provider: its own HttpService (base URL, timeout and the API key from config, no redirects, body limits),
  * OutboundHttpLogger on that HttpService, the resilience settings, and the adapter bound to the KycProvider port.
  * Other modules import KycModule and inject KycProvider only.
  */
@@ -137,6 +141,8 @@ const API_KEY_HEADER = 'X-Api-Key';
         baseURL: config.get('KYC_PROVIDER_BASE_URL', { infer: true }),
         timeout: config.get('KYC_PROVIDER_TIMEOUT_MS', { infer: true }),
         maxRedirects: 0,
+        maxContentLength: MAX_RESPONSE_BYTES,
+        maxBodyLength: MAX_REQUEST_BYTES,
         headers: { [API_KEY_HEADER]: config.get('KYC_PROVIDER_API_KEY', { infer: true }) },
       }),
     }),
@@ -158,7 +164,7 @@ export class KycModule {}
 
 ## 8. Message consumers
 
-Producers send the headers `x-request-id`, `x-tenant-id` and `x-user-id`. A consumer builds its context from them with `contextFromMessageHeaders` (unsafe values count as absent), logs one `message_in` line with the payload through the same masker, and runs the handler inside `runWithRequestContext`. The context never becomes the system identity from a header. The RabbitMQ version is `stackcrew-nest-rabbitmq-consumer`; any broker follows this shape:
+Producers send the headers `x-request-id`, `x-tenant-id` and `x-user-id`. A consumer builds its context from them with `contextFromMessageHeaders` (unsafe values count as absent), logs one `message_in` line with the payload through the same masker (`maskCapturedBody`: over 2 MiB, `<CT N bytes>` unparsed, as for HTTP bodies), and runs the handler inside `runWithRequestContext`. The context never becomes the system identity from a header. The RabbitMQ version is `stackcrew-nest-rabbitmq-consumer`; any broker follows this shape:
 
 ```ts
 // a consumer method (any broker)
@@ -166,7 +172,7 @@ async onMessage(payload: Buffer | undefined, contentType: string | undefined, he
   await runWithRequestContext(contextFromMessageHeaders(headers), async () => {
     const type = contentType ?? JSON_CONTENT_TYPE;
     writeCallLine(this.logger, // never throws: the message is handled whatever happens to its line
-      () => ({ event: LogEvent.MESSAGE_IN, ...contextLogFields(), reqBody: this.logBodies ? maskBody(payload, type, this.maskOptions) : undefined }),
+      () => ({ event: LogEvent.MESSAGE_IN, ...contextLogFields(), reqBody: this.logBodies ? maskCapturedBody(payload, type, this.maskOptions) : undefined }),
       () => ({
         event: LogEvent.MESSAGE_IN, // an empty payload logs no body, as maskBody does
         reqBody: this.logBodies && payload !== undefined && payload.length > 0 ? bodyPlaceholder(type, payload.length) : undefined,

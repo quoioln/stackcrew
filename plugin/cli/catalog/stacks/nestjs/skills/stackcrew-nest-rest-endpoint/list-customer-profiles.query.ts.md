@@ -8,6 +8,8 @@ import { IsIn, IsInt, IsOptional, Max, Min } from 'class-validator';
 import { CustomerProfileStatus } from '../entities/customer-profile.entity';
 
 export const MAX_PAGE_SIZE = 100;
+/** Offset paging stops here: deeper pages cost a scan of every skipped row. Page further with a keyset cursor instead. */
+export const MAX_PAGE = 1_000;
 const DEFAULT_PAGE_SIZE = 20;
 
 /** Sort keys a client may ask for: an allowlist, never a column name taken from the request. */
@@ -23,10 +25,11 @@ export type SortDirection = (typeof SortDirection)[keyof typeof SortDirection];
  * numbers before @IsInt runs. A missing value keeps its default.
  */
 export class ListCustomerProfilesQuery {
-  @ApiPropertyOptional({ minimum: 1, default: 1 })
+  @ApiPropertyOptional({ minimum: 1, maximum: MAX_PAGE, default: 1 })
   @Type(() => Number)
   @IsInt()
   @Min(1)
+  @Max(MAX_PAGE)
   readonly page: number = 1;
 
   @ApiPropertyOptional({ minimum: 1, maximum: MAX_PAGE_SIZE, default: DEFAULT_PAGE_SIZE })

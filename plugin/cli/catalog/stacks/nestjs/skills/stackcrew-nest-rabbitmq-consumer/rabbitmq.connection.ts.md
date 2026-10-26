@@ -8,14 +8,22 @@ import { connect, type AmqpConnectionManager, type ChannelWrapper, type CreateCh
 import type { RabbitMqEnv } from '../../config/env';
 
 const HEARTBEAT_SECONDS = 30;
+/**
+ * How long a consumer stays down after a channel error. amqp-connection-manager 4.x re-creates a channel only after a
+ * reconnect, and a channel the broker closes (a 406, a failed setup) turns into that reconnect because amqplib's
+ * unhandled channel 'error' takes the connection down. So never add an 'error' listener to the raw channel in a setup
+ * function: the channel would stay closed with the consumer gone. The default would be the heartbeat (30 s).
+ */
+const RECONNECT_SECONDS = 5;
 const CONNECTED = 'rabbitmq_connected';
 const CONNECT_FAILED = 'rabbitmq_connect_failed';
 const DISCONNECTED = 'rabbitmq_disconnected';
+const CHANNEL_ERROR = 'rabbitmq_channel_error';
 
 /**
  * One long-lived connection per process (amqp-connection-manager): it reconnects by itself, re-runs every channel's
  * setup (topology, prefetch, consumer) after a reconnect, and holds publishes until the broker is back. The URL
- * carries credentials, so it is never logged; only the error name is. Closed on shutdown.
+ * carries credentials, so it is never logged; only error names and AMQP codes are. Closed on shutdown.
  */
 @Injectable()
 export class RabbitMqConnection implements OnApplicationShutdown {
@@ -23,16 +31,26 @@ export class RabbitMqConnection implements OnApplicationShutdown {
   private readonly manager: AmqpConnectionManager;
 
   constructor(config: ConfigService<RabbitMqEnv, true>) {
-    this.manager = connect([config.get('RABBITMQ_URL', { infer: true })], { heartbeatIntervalInSeconds: HEARTBEAT_SECONDS });
+    this.manager = connect([config.get('RABBITMQ_URL', { infer: true })], {
+      heartbeatIntervalInSeconds: HEARTBEAT_SECONDS,
+      reconnectTimeInSeconds: RECONNECT_SECONDS,
+    });
     this.manager.on('connect', () => this.logger.log({ event: CONNECTED }, CONNECTED));
     // `err` is optional in amqp-connection-manager 5's types; typing it so fits 4.x and 5.x
     this.manager.on('connectFailed', ({ err }: { err?: Error }) => this.logger.warn({ event: CONNECT_FAILED, error: err?.name }, CONNECT_FAILED));
     this.manager.on('disconnect', ({ err }: { err?: Error }) => this.logger.warn({ event: DISCONNECTED, error: err?.name }, DISCONNECTED));
   }
 
-  /** A confirm channel unless `confirm: false`: its publish() resolves once the broker has the message. */
-  createChannel(options: CreateChannelOpts = {}): ChannelWrapper {
-    return this.manager.createChannel(options);
+  /**
+   * A confirm channel unless `confirm: false`: its publish() resolves once the broker has the message. Every channel
+   * gets an 'error' listener: amqp-connection-manager emits 'error' when a setup function rejects (a queue redeclared
+   * with other arguments gives PRECONDITION_FAILED, 406), and an EventEmitter without a listener throws, which would
+   * crash the process. The line names the channel, the error class and the AMQP code; never the message.
+   */
+  createChannel(name: string, options: CreateChannelOpts = {}): ChannelWrapper {
+    const channel = this.manager.createChannel({ ...options, name });
+    channel.on('error', (err: Error & { code?: number }) => this.logger.error({ event: CHANNEL_ERROR, channel: name, error: err.name, code: err.code }, CHANNEL_ERROR));
+    return channel;
   }
 
   /** For the readiness probe (@nestjs/terminus). */

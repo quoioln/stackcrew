@@ -4,11 +4,13 @@ Goes to `src/modules/kyc/acme/acme-kyc.client.ts`.
 // Default location: src/modules/kyc/acme/acme-kyc.client.ts
 import { HttpService } from '@nestjs/axios';
 import { Inject, Injectable } from '@nestjs/common';
-import { isAxiosError } from 'axios';
+import { ConfigService } from '@nestjs/config';
+import { AxiosError, isAxiosError } from 'axios';
 import { firstValueFrom } from 'rxjs';
 import { providerCallPolicy } from '../../../common/providers/provider-call.policy';
 import type { ProviderCall, ProviderPolicyOptions } from '../../../common/providers/provider-policy.types';
-import { ProviderRejectedError, ProviderUnavailableError, type ProviderError } from '../../../common/providers/provider.errors';
+import { ProviderProtocolError, ProviderRejectedError, ProviderUnavailableError, type ProviderError } from '../../../common/providers/provider.errors';
+import type { KycProviderEnv } from '../../../config/env';
 import type { VerifyIdentityCommand, VerifyIdentityResult } from '../interfaces/kyc-verification';
 import { KycProvider } from '../kyc-provider.port';
 import { KYC_PROVIDER_POLICY } from '../kyc.constants';
@@ -20,42 +22,55 @@ const TOO_MANY_REQUESTS = 429;
 const SERVER_ERROR = 500;
 
 /**
- * The Acme adapter of KycProvider. Base URL, timeout, the API key header and no redirects come from KycModule's
- * HttpModule.registerAsync; OutboundHttpLogger on that HttpService writes one masked http_out line per attempt, so this
- * class logs no body. Each attempt maps its failure to a typed provider error; the policy retries the transient ones.
+ * The Acme adapter of KycProvider. Base URL, timeout, body size limits, the API key header and no redirects come from
+ * KycModule's HttpModule.registerAsync; OutboundHttpLogger on that HttpService writes one masked http_out line per
+ * attempt, so this class logs no body. Each attempt is bounded as a whole by an AbortSignal (axios `timeout` stops
+ * counting once the response headers arrive), and maps its failure to a typed provider error; the policy retries the
+ * transient ones.
  */
 @Injectable()
 export class AcmeKycClient extends KycProvider {
   private readonly call: ProviderCall;
+  private readonly attemptTimeoutMs: number;
 
   constructor(
     private readonly http: HttpService,
+    config: ConfigService<KycProviderEnv, true>,
     @Inject(KYC_PROVIDER_POLICY) policy: ProviderPolicyOptions,
   ) {
     super();
     this.call = providerCallPolicy(policy); // one breaker for every call to this provider
+    this.attemptTimeoutMs = config.get('KYC_PROVIDER_TIMEOUT_MS', { infer: true });
   }
 
-  /** Safe to retry: Acme applies a request once per Idempotency-Key, and every attempt sends the same key. */
+  /** Safe to retry: Acme applies a request once per Idempotency-Key, and every attempt sends the command's stored key. */
   verify(command: VerifyIdentityCommand): Promise<VerifyIdentityResult> {
     return this.call(async () => {
       try {
         const response = await firstValueFrom(this.http.post<unknown>(VERIFY_PATH, toAcmeRequest(command), {
-          headers: { [IDEMPOTENCY_KEY_HEADER]: command.requestId },
+          headers: { [IDEMPOTENCY_KEY_HEADER]: command.idempotencyKey },
+          signal: AbortSignal.timeout(this.attemptTimeoutMs), // the whole attempt: connect, headers and body
         }));
         return toVerifyResult(response.data);
       } catch (error: unknown) {
-        throw isAxiosError(error) ? providerErrorFor(error.response?.status) : error; // a ProviderProtocolError passes as is
+        throw isAxiosError(error) ? providerErrorFor(error) : error; // a ProviderProtocolError passes as is
       }
     });
   }
 }
 
-/** Only a missing response (timeout, refused, reset), 5xx and 429 are transient; any other status is a rejection. */
-function providerErrorFor(status: number | undefined): ProviderError {
-  if (status === undefined || status >= SERVER_ERROR || status === TOO_MANY_REQUESTS) {
-    return new ProviderUnavailableError();
+/** 5xx, 429 and no reply at all (timeout, the attempt bound, refused, reset) are transient; other statuses are rejections. */
+function providerErrorFor(error: AxiosError): ProviderError {
+  const status = error.response?.status;
+  if (status !== undefined) {
+    return status >= SERVER_ERROR || status === TOO_MANY_REQUESTS ? new ProviderUnavailableError() : new ProviderRejectedError();
   }
-  return new ProviderRejectedError();
+  if (error.code === AxiosError.ERR_BAD_RESPONSE) {
+    return new ProviderProtocolError(); // a reply over maxContentLength: sending it again gets the same reply
+  }
+  if (error.code === AxiosError.ERR_BAD_REQUEST) {
+    return new ProviderRejectedError(); // our request over maxBodyLength, or invalid before it was sent
+  }
+  return new ProviderUnavailableError();
 }
 ```

@@ -23,7 +23,7 @@ Each `<file>.md` next to this skill holds one source file: its first line says w
 | File | What it does |
 |---|---|
 | `messaging.types.ts.md` | `MessageEnvelope` (id, type, version, occurredAt), `WorkQueue`, `ContextHeaders`. |
-| `rabbitmq.connection.ts.md` | `RabbitMqConnection`: the one connection; never logs the URL. |
+| `rabbitmq.connection.ts.md` | `RabbitMqConnection`: the one connection; `createChannel(name, options)` adds a structured `'error'` listener; never logs the URL. |
 | `work-queue.ts.md` | `assertWorkQueue` (main, DLX, wait, parking) and `failedDeliveries` from `x-death`. |
 | `message-errors.ts.md` | `ParkReason`, `NonRetryableMessageError`, `InvalidMessageError`, `parkReasonOf`. |
 | `message-codec.ts.md` | `decodeMessage(Class, payload)`: parse once, validate, or throw a non-retryable error. |
@@ -53,7 +53,8 @@ export class RabbitMqEnv {
 ```
 
 - Add `CreateProcessedMessage1730000000001` to `migrations` in `DatabaseModule` (rename the timestamp to follow the project's last migration).
-- Import `KycCompletedModule` in `AppModule`. `main.ts` calls `app.enableShutdownHooks()`, so a deploy closes the consumer channel, then the connection; unacked messages go back to the queue.
+- Import `KycCompletedModule` in `AppModule`. `main.ts` calls `app.enableShutdownHooks()`, so a deploy cancels the consumer, waits up to `SHUTDOWN_GRACE_MS` for the deliveries in flight to settle, closes the channel, then the connection; anything still unacked goes back to the queue.
+- Readiness: the `/health` readiness check (`@nestjs/terminus`) reports down when `RabbitMqConnection.isConnected()` or `KycCompletedConsumer.isConsuming()` is false.
 - Use `amqps` and a vhost per service with only the permissions it needs, outside local development.
 
 ## 4. Topology (addon-rabbitmq)
@@ -78,13 +79,16 @@ export class RabbitMqEnv {
 
 `kyc-completed.consumer.ts` is the shape to copy:
 
-- `onApplicationBootstrap` creates a channel whose `setup` declares the topology, sets `prefetch` and starts `consume` with `noAck: false`. amqp-connection-manager runs `setup` again after a reconnect.
+- `onApplicationBootstrap` creates a channel (`createChannel(name, { setup })`) whose `setup` declares the topology, sets `prefetch` and starts `consume` with `noAck: false`. amqp-connection-manager runs `setup` again after a reconnect.
+- Every channel needs an `'error'` listener: amqp-connection-manager emits `'error'` when `setup` rejects (a queue redeclared with other arguments gives `PRECONDITION_FAILED`, 406), and an emitter with no listener throws and crashes the process. `RabbitMqConnection.createChannel` attaches one that logs the channel, the error class and the AMQP code, never the message.
+- A channel the broker closes (a 406 from a double ack, a failed setup) is not re-created on its own: amqp-connection-manager 4.x re-creates channels after a reconnect. amqplib's unhandled channel `'error'` takes the connection down, and `RabbitMqConnection` reconnects after `RECONNECT_SECONDS`, which runs every setup again. Do not attach an `'error'` listener to the raw channel inside `setup`: it would keep the connection up and leave the consumer gone. While a setup keeps failing, the connection is re-established every `RECONNECT_SECONDS`, which also interrupts publishing; fix the cause, such as the queue arguments.
+- A failed setup does not exit the process: `isConsuming()` stays false, so the readiness check fails, a rolling deploy stops before it replaces the healthy pods, and the HTTP side keeps serving. A restart would hit the same `PRECONDITION_FAILED` and loop. `isConsuming()` also turns false when the channel closes or the broker cancels the consumer (its queue was deleted), and true again once a reconnect runs `setup`. Alert on the readiness failure and on a consumer count of 0.
 - Each delivery runs inside `runWithRequestContext(contextFromMessageHeaders(headers), ...)`: the request id, tenant and user come from `x-request-id`, `x-tenant-id` and `x-user-id`, sanitized; unsafe values count as absent. A consumer never runs as the system identity: `x-user-id: {{sc:systemUser}}` is an ordinary user and cannot call `runCrossTenant`. Only scheduled jobs use `runAsSystem`.
-- One `message_in` line per delivery through `writeCallLine(..., 'log')` with the payload through `maskBody`: PII and secrets masked, an empty payload logs no body, and the line can never fail the message.
+- One `message_in` line per delivery through `writeCallLine(..., 'log')` with the payload through `maskCapturedBody`: PII and secrets masked, a payload over 2 MiB logs `<CT N bytes>` unparsed (as for HTTP bodies), an empty payload logs no body, and the line can never fail the message.
 - Then the handler, then exactly one settlement, on the channel that delivered the message:
-  - success or duplicate: `ack`;
+  - success or duplicate: `ack`, outside the `try` that classifies handler failures: a failed `ack` (the channel closed after the commit) is logged as `unsettled`, never treated as a handler failure; the broker redelivers it and the idempotency store skips it;
   - a transient failure (a database or network error): `nack(msg, false, false)`, so the DLX sends it to the wait queue; never `requeue: true`, which loops a poison message;
-  - a non-retryable failure (`parkReasonOf`: invalid message, missing tenant, a business rule) or the last attempt: publish a copy to the parking queue on the confirm channel with `x-parked-reason`, wait for the confirm, then `ack`. If the copy is not confirmed, `nack` instead, so the message takes the wait-queue cycle rather than being lost.
+  - a non-retryable failure (`parkReasonOf`: invalid message, missing tenant, a cross-tenant denial, a business rule) or the last attempt: publish a copy to the parking queue on the confirm channel with `x-parked-reason`, wait for the confirm, then `ack`. If the copy is not confirmed, `nack` instead, so the message takes the wait-queue cycle rather than being lost.
 - A `message_outcome` line per delivery with the queue, `messageId`, outcome, park reason and error class: ids only, never the payload or an error message.
 - `prefetch` bounds the unacked messages, and those messages are handled concurrently. When order per aggregate matters, use `prefetch: 1` or one queue per partition key.
 
@@ -108,7 +112,8 @@ export class RabbitMqEnv {
 
 ## 10. Operations
 
-- Readiness: `RabbitMqConnection.isConnected()` in the `@nestjs/terminus` check; `KycCompletedConsumer.ready()` resolves once the consumer is registered.
+- Readiness: `RabbitMqConnection.isConnected()` and `KycCompletedConsumer.isConsuming()` in the `@nestjs/terminus` check (section 3); `ready()` resolves once the consumer is registered, for tests.
+- Every broker channel and connection wrapper has a structured error listener (`rabbitmq_channel_error`, `rabbitmq_connect_failed`, `rabbitmq_disconnected`): error class and code, never the message or the URL.
 - Alert on main-queue depth, unacked count, consumer count, wait-queue depth growing and parking-queue depth.
 - Parked message runbook: inspect it and its `x-parked-reason`, fix the cause, republish it to the main exchange with a tool. Never edit a live queue by hand. The parking queue holds payloads: treat it as sensitive.
 
@@ -122,7 +127,10 @@ export class RabbitMqEnv {
   - a poison message, a tombstone and a schema violation are parked at once, delivered once, with no `x-death`;
   - `x-user-id: {{sc:systemUser}}` cannot read across tenants or change another tenant's row;
   - a message without `x-tenant-id` is parked;
-  - a transient failure is retried through the wait queue and then applied, and after `maxAttempts` it is parked.
+  - a transient failure is retried through the wait queue and then applied, and after `maxAttempts` it is parked;
+  - a payload over 2 MiB logs only its size and is still applied;
+  - on shutdown, the delivery in flight is acked before the channel closes, and a later message waits in the queue;
+  - a failed setup (`PRECONDITION_FAILED`) is logged with its code, the process stays up, and `isConsuming()` is false.
 - Poll with a deadline for outcomes; never sleep a fixed time.
 
 ## Do not

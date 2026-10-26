@@ -20,6 +20,12 @@ export const DEFAULT_PII_FIELDS = ['email', 'phone', 'phoneNumber', 'mobile', 'f
 
 export type MaskOptions = { piiFields: readonly string[]; maxBodyBytes: number };
 
+/**
+ * Bodies up to this size are parsed and masked whole (so a base64 image shrinks to its size); larger ones log only
+ * `<CT N bytes>` and are never parsed or kept for logging. The same cap for http_in, http_out and message_in.
+ */
+export const CAPTURE_LIMIT_BYTES = 2_097_152; // 2 MiB
+
 const MASK = '***';
 const UNKNOWN_TYPE = 'unknown';
 const JSON_TYPE = 'application/json';
@@ -73,6 +79,12 @@ export function maskBody(raw: string | Buffer | undefined, contentType: string |
   } catch {
     return bodyPlaceholder(contentType, size); // JSON that does not parse, or nested too deep, logs its size only
   }
+}
+
+/** maskBody for a body of any size (a message payload): over CAPTURE_LIMIT_BYTES it logs `<CT N bytes>` unparsed. Never throws. */
+export function maskCapturedBody(raw: string | Buffer | undefined, contentType: string | undefined, opts: MaskOptions): string | undefined {
+  const size = raw === undefined ? 0 : Buffer.byteLength(raw);
+  return size > CAPTURE_LIMIT_BYTES ? bodyPlaceholder(contentType, size) : maskBody(raw, contentType, opts);
 }
 
 /**
