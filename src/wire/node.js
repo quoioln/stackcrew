@@ -13,19 +13,18 @@ const FLAT_MARKER = '.stackcrew/lint/eslint.stackcrew.mjs';
 const FLAT_EDITABLE = /\.(js|mjs|ts|mts)$/;
 const EXPORT_DEFAULT = /^export default /gm;
 
-// defineConfig / globalIgnores: eslint/config, ESLint >= 9.22 (typescript-eslint deprecated tseslint.config in its favour).
+// A plain array (no defineConfig/globalIgnores, which need ESLint >= 9.22) so it loads on every ESLint 9.x.
 const NEW_FLAT_CONFIG = `// Created by stackcrew sync --wire. This file is yours to edit.
 import js from '@eslint/js';
-import { defineConfig, globalIgnores } from 'eslint/config';
 import tseslint from 'typescript-eslint';
 ${FLAT_IMPORT}
 
-export default defineConfig([
-  globalIgnores(['dist/**', '.next/**', 'coverage/**', 'node_modules/**']),
+export default [
+  { ignores: ['dist/**', '.next/**', 'coverage/**', 'node_modules/**'] },
   js.configs.recommended,
-  tseslint.configs.recommended,
+  ...tseslint.configs.recommended,
   ...stackcrewConfig,
-]);
+];
 `;
 
 const FLAT_SNIPPET = `${FLAT_IMPORT}\nexport default [...yourExistingConfig, ...stackcrewConfig];`;

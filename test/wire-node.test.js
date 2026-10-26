@@ -63,7 +63,9 @@ test('no eslint dependency and no config: adds the dependencies and creates esli
   assert.ok(cfg.startsWith('// Created by stackcrew sync --wire. This file is yours to edit.\n'));
   assert.ok(cfg.includes(FLAT_IMPORT));
   for (const g of ['dist/**', '.next/**', 'coverage/**', 'node_modules/**']) assert.ok(cfg.includes(`'${g}'`), g);
-  assert.ok(cfg.includes('js.configs.recommended') && cfg.includes('tseslint.configs.recommended') && cfg.includes('...stackcrewConfig'));
+  assert.ok(cfg.includes('js.configs.recommended,') && cfg.includes('...tseslint.configs.recommended,') && cfg.includes('...stackcrewConfig,'));
+  assert.ok(cfg.includes('export default [\n  { ignores: ['));
+  assert.ok(!cfg.includes('defineConfig') && !cfg.includes('globalIgnores') && !cfg.includes('eslint/config'), 'plain array: works on every ESLint 9.x');
   assert.ok(r.notes.some((n) => n === "run your package manager's install (npm install / yarn / pnpm install) to install: eslint, @eslint/js, typescript-eslint"));
 });
 
