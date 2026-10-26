@@ -12,7 +12,7 @@ TypeScript 5+ in `strict` mode. Applies to every `.ts` and `.tsx` file, whatever
 - No `any` in any form (SC-TYPE): not `: any`, `as any`, `any[]`, `Promise<any>` or `Record<string, any>`. Do not use `object`, `{}` or `Function` as types either.
 - External data (request bodies, env, API responses, queue messages, `JSON.parse`) enters as `unknown` and is parsed at the edge with zod or class-validator. Past the edge the value has a real type.
 - `process.env` is read only in the config/env module (SC-ENV). Everything else receives the typed value.
-- No magic strings or numbers (SC-CONST): a named constant, an `enum` or an `as const` object. A URL comes from config, never a literal.
+- No magic strings or numbers (SC-CONST): a named constant or an `as const` object (an existing `enum` is accepted; do not add new ones). A URL comes from config, never a literal.
 - Shared `interface` and `type` declarations live in their own files (`*.types.ts`, `dto/`, `interfaces/`, `schemas/`), never inside a service, action or component file.
 - Search the existing helpers, components and types first, including {{sc:sharedLibraries}}, before writing a new one.
 - Derive types from one source of truth: `z.infer<typeof schema>`, `typeof CONST[keyof typeof CONST]`, `Pick`/`Omit`. Do not hand-copy a shape.
@@ -39,7 +39,7 @@ type VerifyResponse = z.infer<typeof VerifyResponse>;
 const result: VerifyResponse = VerifyResponse.parse(await res.json());
 ```
 
-With class-validator the DTO class plays the same role as the zod schema. Use `Record<string, KnownType>` when every value has one type, and `unknown` when you truly do not know yet. A library signature that forces `any` is the only exception: `stackcrew-allow: SC-TYPE <reason>` on that line.
+With class-validator the DTO class plays the same role as the zod schema. Use `Record<string, KnownType>` when every value has one type, and `unknown` when you truly do not know yet. Payloads always use `unknown`. The only waiver is a third-party library signature that forces `any`: `stackcrew-allow: SC-TYPE <reason>` on that line.
 
 ## Suppressions: wrong and right
 
@@ -54,7 +54,7 @@ Right, fix the type; if a one-line suppression is unavoidable, say why:
 
 ```ts
 // @ts-expect-error vendor typing misses the "retry" option (issue linked in the PR)
-client.configure({ retry: 3 });
+client.configure({ retry: MAX_RETRIES });
 ```
 
 ## Environment access: wrong and right
@@ -96,7 +96,7 @@ const RETRY_DELAY_MS = 5_000;
 await fetch(`${env.VERIFY_API_URL}/verify`, { headers: { [REQUEST_ID_HEADER]: id } });
 ```
 
-- A status is an `as const` object or `enum`; a header or key is a constant in a domain constants file; a URL or timeout is configuration.
+- A status is an `as const` object (or an existing `enum`); a header or key is a constant in a domain constants file; a URL or timeout is configuration.
 - Group constants by domain (`kyc.constants.ts`), not in one global dump.
 - `-1`, `0`, `1`, array indexes, default values and numeric literal types are fine. So are numbers and strings inside tests.
 

@@ -18,7 +18,7 @@
       ],
       "regex": "^(?!\\s*(\\*|//|/\\*)).*(\\bas\\s+any\\b|:\\s*any\\b|=>\\s*any\\b|\\|\\s*any\\b|<\\s*any\\s*[>,]|,\\s*any\\s*[>,]|\\bany\\[\\])",
       "flags": "",
-      "message": "`any` switches off type checking (SC-TYPE). Type the value: `unknown` plus a zod or class-validator parse at the edge, or a named interface/type. Waive on the same line with `stackcrew-allow: SC-TYPE <reason>`, only where a dynamic payload is first received and parsed on the next line, or a library signature forces it."
+      "message": "`any` switches off type checking (SC-TYPE). Type the value: `unknown` plus a zod or class-validator parse at the edge, or a named interface/type. Waive on the same line with `stackcrew-allow: SC-TYPE <reason>`, only where a third-party library signature forces `any`; a payload is typed `unknown` and parsed, never waived."
     },
     {
       "id": "SC-IGNORE",
