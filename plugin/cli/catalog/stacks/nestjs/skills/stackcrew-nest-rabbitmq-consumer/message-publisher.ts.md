@@ -7,7 +7,7 @@ import type { ChannelWrapper } from 'amqp-connection-manager';
 import { randomUUID } from 'node:crypto';
 import { currentContext, REQUEST_ID_HEADER, TENANT_ID_HEADER, USER_ID_HEADER, type RequestContext } from '../context/request-context';
 import type { ContextHeaders, MessageEnvelope } from './messaging.types';
-import { RabbitMqConnection } from './rabbitmq.connection';
+import { CLOSE_GRACE_MS, RabbitMqConnection, settledWithin } from './rabbitmq.connection';
 
 const JSON_CONTENT_TYPE = 'application/json';
 const PUBLISH_TIMEOUT_MS = 10_000;
@@ -51,7 +51,7 @@ export class MessagePublisher implements OnModuleDestroy {
   }
 
   async onModuleDestroy(): Promise<void> {
-    await this.channel.close();
+    await settledWithin([this.channel.close()], CLOSE_GRACE_MS); // rejects the publishes still waiting, at most CLOSE_GRACE_MS
   }
 }
 ```

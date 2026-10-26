@@ -4,7 +4,10 @@ Goes to `src/database/migrations/1730000000002-create-kyc-verification.ts`.
 // Default location: src/database/migrations/1730000000002-create-kyc-verification.ts
 import type { MigrationInterface, QueryRunner } from 'typeorm';
 
-/** The KYC verification operations. The tenant column leads the index. Never edit an applied migration; add a new one. */
+/**
+ * The KYC verification operations. The tenant column leads both indexes; the partial unique one allows one PENDING
+ * operation per profile and tenant. Never edit an applied migration; add a new one.
+ */
 export class CreateKycVerification1730000000002 implements MigrationInterface {
   name = 'CreateKycVerification1730000000002';
 
@@ -24,9 +27,12 @@ export class CreateKycVerification1730000000002 implements MigrationInterface {
         CONSTRAINT "kyc_verification_pkey" PRIMARY KEY ("id")
       )`);
     await queryRunner.query(`CREATE INDEX "kyc_verification_tenant_profile_idx" ON "kyc_verification" ("{{sc:tenantColumn}}", "profileId")`);
+    await queryRunner.query(
+      `CREATE UNIQUE INDEX "kyc_verification_pending_key" ON "kyc_verification" ("{{sc:tenantColumn}}", "profileId") WHERE "status" = 'PENDING'`);
   }
 
   async down(queryRunner: QueryRunner): Promise<void> {
+    await queryRunner.query(`DROP INDEX "kyc_verification_pending_key"`);
     await queryRunner.query(`DROP INDEX "kyc_verification_tenant_profile_idx"`);
     await queryRunner.query(`DROP TABLE "kyc_verification"`);
   }

@@ -822,3 +822,50 @@ test('nest task 8 fix round 2: key stored before the call, wrapper-managed consu
     for (const needle of ['over 2 MiB', 'drained', 'failed setup', 'broker cancel']) assert.ok(testing.includes(needle), `testing SKILL.md missing ${needle}`);
   });
 });
+
+test('nest task 8 fix round 3: axios floor, operation lifecycle, neutral cancel wording, bounded shutdown', async () => {
+  await withRealCatalog(async (c) => {
+    // 7. the broken-2xx classification needs axios 1.16.0 or later: stated where axios is listed and next to §6
+    const logging = nestSkill(c, LOGGING).body;
+    const deps = logging.split('## 2. Dependencies')[1]?.split('\n## ')[0] ?? '';
+    assert.ok(deps.includes('`axios` `^1.16.0`'), 'request-logging dependencies pin the axios floor');
+    const outbound = nestSkill(c, OUTBOUND);
+    const outboundDeps = outbound.body.split('## 2. Dependencies')[1]?.split('\n## ')[0] ?? '';
+    assert.ok(outboundDeps.includes('`^1.16.0`'), 'outbound dependencies name the axios floor');
+    const section6 = outbound.body.split('## 6.')[1]?.split('\n## ')[0] ?? '';
+    assert.ok(/a 2xx whose body broke mid-read \(axios 1\.16\.0 and later attach/.test(section6), 'the §6 parenthetical names the axios floor');
+
+    // 10. operation lifecycle: dedupe on a partial unique index, a terminal FAILED state, evidence by reference, orphans
+    const entity = outbound.file('kyc-verification.entity.ts');
+    assert.ok(entity.includes("FAILED: 'FAILED'") && /unique: true, where: `"status" = 'PENDING'`/.test(entity), 'entity: FAILED and the partial unique index');
+    const migration = outbound.file('create-kyc-verification.migration.ts');
+    assert.ok(/CREATE UNIQUE INDEX "kyc_verification_pending_key"[^`]*WHERE "status" = 'PENDING'/.test(migration), 'migration: the partial unique index');
+    const repository = outbound.file('kyc-verification.repository.ts');
+    assert.ok(repository.includes('.orUpdate(') && repository.includes('indexPredicate:') && !repository.includes('23505'), 'one atomic insert-or-return, no duplicate-key catch');
+    const service = outbound.file('kyc-verification.service.ts');
+    assert.ok(service.includes('this.verifications.startPending(') && service.includes('instanceof ProviderRejectedError') && service.includes('KycVerificationStatus.FAILED'), 'service: dedupe and FAILED');
+    assert.ok(outbound.file('kyc-verification.errors.ts').includes('export class KycVerificationFailed'), 'a terminal error for a failed operation');
+    const spec = outbound.file('kyc-verification.service.spec.ts');
+    for (const needle of ['Promise.all(', 'KycVerificationStatus.FAILED', 'KycVerificationFailed', 'randomUUID()', "'idle in transaction%'"]) {
+      assert.ok(spec.includes(needle), `service spec missing ${needle}`);
+    }
+    assert.ok(!spec.includes('gives each new operation its own key'), 'the old row contradicts the dedupe');
+    const section9 = outbound.body.split('## 9.')[1]?.split('\n## ')[0] ?? '';
+    for (const needle of ['FAILED', 'evidence', 'runAsSystem', 'runCrossTenant', "rename the timestamp to follow the project's last migration", 'PENDING']) {
+      assert.ok(section9.includes(needle), `outbound SKILL.md §9 missing ${needle}`);
+    }
+
+    // 11. consumer wording and bounded shutdown
+    const consumerSkill = nestSkill(c, CONSUMER);
+    const consumer = consumerSkill.file('kyc-completed.consumer.ts');
+    for (const text of [consumerSkill.body, consumer]) assert.ok(!/quorum leader/i.test(text), 'no unverified cancel cause');
+    assert.ok(/the queue was deleted or the broker cancelled the consumer/.test(consumerSkill.body), 'neutral cancel wording');
+    for (const needle of ['pauses publishing', 'PUBLISH_TIMEOUT_MS', 'separate Deployment', 'terminationGracePeriodSeconds', 'every replica']) {
+      assert.ok(consumerSkill.body.includes(needle), `consumer SKILL.md missing ${needle}`);
+    }
+    const connection = consumerSkill.file('rabbitmq.connection.ts');
+    assert.ok(!connection.includes('(topology, prefetch, consumer)'), 'the connection comment no longer puts the consumer in setup');
+    assert.ok(connection.includes('export async function settledWithin(') && connection.includes('settledWithin([this.manager.close()], CLOSE_GRACE_MS)'), 'the connection close is bounded');
+    assert.ok(consumer.includes('settledWithin([this.channel.close()]') && !consumer.includes('async function settledWithin('), 'the channel close is bounded with the shared helper');
+  });
+});

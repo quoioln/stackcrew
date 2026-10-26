@@ -10,4 +10,10 @@ export class KycVerificationNotFound extends ProblemError {
   readonly status = HttpStatus.NOT_FOUND;
   readonly detail = 'The verification does not exist.';
 }
+
+/** The operation ended FAILED (the provider rejected it): 409. A new check is a new operation, from start(). */
+export class KycVerificationFailed extends ProblemError {
+  readonly status = HttpStatus.CONFLICT;
+  readonly detail = 'The verification failed. Start a new verification.';
+}
 ```

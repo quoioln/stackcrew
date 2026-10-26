@@ -8,6 +8,8 @@ import { connect, type AmqpConnectionManager, type ChannelWrapper, type CreateCh
 import type { RabbitMqEnv } from '../../config/env';
 
 const HEARTBEAT_SECONDS = 30;
+/** On shutdown, how long closing the connection may take; keep the shutdown bounds under terminationGracePeriodSeconds. */
+export const CLOSE_GRACE_MS = 5_000;
 /**
  * How long a consumer stays down after a channel error. amqp-connection-manager 4.x re-creates a channel only after a
  * reconnect, and a channel the broker closes (a 406, a failed setup) turns into that reconnect because amqplib's
@@ -22,8 +24,9 @@ const CHANNEL_ERROR = 'rabbitmq_channel_error';
 
 /**
  * One long-lived connection per process (amqp-connection-manager): it reconnects by itself, re-runs every channel's
- * setup (topology, prefetch, consumer) after a reconnect, and holds publishes until the broker is back. The URL
- * carries credentials, so it is never logged; only error names and AMQP codes are. Closed on shutdown.
+ * setup (topology, prefetch) after a reconnect, then registers again the consumers added through the wrapper's
+ * consume(), and holds publishes until the broker is back (each up to its publish timeout). The URL carries
+ * credentials, so it is never logged; only error names and AMQP codes are. Closed on shutdown, within CLOSE_GRACE_MS.
  */
 @Injectable()
 export class RabbitMqConnection implements OnApplicationShutdown {
@@ -59,7 +62,17 @@ export class RabbitMqConnection implements OnApplicationShutdown {
   }
 
   async onApplicationShutdown(): Promise<void> {
-    await this.manager.close();
+    await settledWithin([this.manager.close()], CLOSE_GRACE_MS); // a close that hangs (a dead broker) must not hold the pod
   }
+}
+
+/** Waits for the promises to settle, at most `ms`; never rejects. Shutdown steps use it so each one is bounded. */
+export async function settledWithin(promises: readonly Promise<unknown>[], ms: number): Promise<void> {
+  let timer: NodeJS.Timeout | undefined;
+  const grace = new Promise<void>((resolve) => {
+    timer = setTimeout(resolve, Math.max(0, ms));
+  });
+  await Promise.race([Promise.allSettled(promises), grace]);
+  clearTimeout(timer);
 }
 ```

@@ -18,7 +18,7 @@ The example verifies an identity with a provider called Acme. Request logging (`
 
 - `cockatiel` 3.x (MIT, no dependencies) for the retry with backoff and jitter, the circuit breaker and the bulkhead that `core-backend-api` requires. It is TypeScript-first, and its policies compose (`wrap`) around any async call, including `firstValueFrom(this.http.post(...))`. Stay on 3.x: version 4 is ESM-only and needs Node 22, so a CommonJS Nest 10 build on Node 18 or 20, and Jest's CommonJS runtime, cannot load it.
 - If the user declines it: keep the timeout, and retry transient failures with RxJS `retry({ count, delay })` on the `HttpService` observable (RxJS already ships with Nest). There is then no circuit breaker and no bulkhead; record that gap in the SC-PREFLIGHT note.
-- `@nestjs/axios` and `axios` are already in place for `OutboundHttpLogger`. Never add `axios-retry` or a second HTTP client.
+- `@nestjs/axios` and `axios` are already in place for `OutboundHttpLogger`; `axios` must be `^1.16.0` (section 6). Never add `axios-retry` or a second HTTP client.
 
 ## 3. Files
 
@@ -39,7 +39,7 @@ Each `<file>.md` next to this skill holds one source file: its first line says w
 | `acme-kyc.client.spec.ts.md` | Tests against a local `node:http` provider stub. |
 | `kyc-verification.entity.ts.md`, `create-kyc-verification.migration.ts.md`, `kyc-verification.repository.ts.md`, `kyc-verification.errors.ts.md` | The operation row whose id is the idempotency key, on `TenantScopedRepository`. |
 | `kyc-verification.service.ts.md`, `kyc-verification.module.ts.md` | Section 9: insert and commit the operation, call, persist the result. |
-| `kyc-verification.service.spec.ts.md` | On Postgres: a business retry reuses the stored key. |
+| `kyc-verification.service.spec.ts.md` | On Postgres: a business retry reuses the stored key; dedupe, FAILED, no transaction during the call. |
 
 ## 4. Configuration
 
@@ -79,7 +79,7 @@ export class KycProviderEnv {
 - Call with `await firstValueFrom(this.http.post<unknown>(PATH, body, { headers, signal: AbortSignal.timeout(attemptTimeoutMs) }))`. The path is a constant relative to `baseURL`; never build a URL from a request value.
 - Bound each attempt as a whole with `AbortSignal.timeout(KYC_PROVIDER_TIMEOUT_MS)`. In axios 1.x the `timeout` option stops counting once the response headers arrive; after that only the socket idle timeout applies, so a reply that trickles in byte by byte would hold the call indefinitely.
 - Classify each failed attempt once:
-  - no reply (timeout `ECONNABORTED`, the attempt bound `ERR_CANCELED`, connection refused or reset), a 2xx whose body broke mid-read (axios attaches the 2xx `response` to that error), 5xx and 429: `ProviderUnavailableError`, retried and counted by the circuit breaker;
+  - no reply (timeout `ECONNABORTED`, the attempt bound `ERR_CANCELED`, connection refused or reset), a 2xx whose body broke mid-read (axios 1.16.0 and later attach the 2xx `response` to that error; older versions give no status, and the reply would be refused as a protocol error), 5xx and 429: `ProviderUnavailableError`, retried and counted by the circuit breaker;
   - a reply over `maxContentLength` (`ERR_BAD_RESPONSE` without a status): `ProviderProtocolError`;
   - any other status, or a request over `maxBodyLength`: `ProviderRejectedError`;
   - the mapper's `ProviderProtocolError` passes through.
@@ -110,20 +110,23 @@ export class KycProviderEnv {
 
 A call that changes something runs as a stored operation, in this order (`kyc-verification.service.ts.md`):
 
-1. **Insert the operation row and commit.** Its id is the provider's idempotency key and exists before any call (`start(profileId)`). The caller keeps the id: in a job row, a message, or the API response.
+1. **Insert the operation row and commit.** Its id is the provider's idempotency key and exists before any call (`start(profileId)`). A profile has at most one PENDING operation per tenant: a partial unique index (`kyc_verification_pending_key`, `WHERE "status" = 'PENDING'`) and one `INSERT ... ON CONFLICT ... DO UPDATE ... RETURNING id` in `startPending` give a repeated or concurrent start the same operation and key. The caller keeps the id: in a job row, a message, or the API response.
 2. **Call the provider outside any transaction** with the key reloaded from the row (`run(id, evidence)`). A transaction held open across a remote call keeps locks and a pooled connection for the length of the call.
 3. **Persist the result in a transaction,** with any other write it causes: the profile status, or an outbox row.
 
 - A retry or redelivery of the operation calls `run(id, …)` again. It reloads the stored key, so every attempt and every later retry sends the same key and the provider applies the request once. A completed operation returns its stored result without a call.
+- States: PENDING, then COMPLETED, or FAILED when the provider rejects the request (`ProviderRejectedError`, a 4xx): the same key would be refused again, so `run` marks it FAILED and rethrows, and a later `run` throws `KycVerificationFailed` (409) without a call. Unavailable and an invalid reply leave it PENDING for a retry. A new check after COMPLETED or FAILED is a new operation with a new key.
+- The evidence (the document number, the selfie) is PII: never store it on the operation row, in a message or in a job payload. Keep it where the upload put it (object storage, encrypted, with a retention limit) and store only its reference with the job or message that runs the operation, or in an `evidenceRef` column; every run loads it by that reference.
+- Orphaned PENDING rows (the process died between the steps) are picked up by a scheduled job: it lists PENDING rows created longer ago than the whole call budget with `runAsSystem(undefined, () => runCrossTenant(reason, …))`, which only reads, then runs each one in its own tenant with `runAsSystem(row.{{sc:tenantColumn}}, () => service.run(row.id, evidence))`, or flags it for review when its evidence is gone.
 - Never generate the key at call time, and never create a new operation row for a retry; either would send a fresh key.
-- Add `CreateKycVerification1730000000002` to `migrations` in `DatabaseModule`, and import `KycVerificationModule` where the operation is used.
+- Add `CreateKycVerification1730000000002` to `migrations` in `DatabaseModule` (rename the timestamp to follow the project's last migration), and import `KycVerificationModule` where the operation is used.
 - A provider failure reaches the API as the `ProviderError` the adapter threw (502 or 503 problem details). Catch it only to take a different business path, never to swallow it into `null`.
 - Provider callbacks (webhooks) are REST endpoints (`stackcrew-nest-rest-endpoint`): verify the signature in constant time, store the event with an insert-or-ignore on the provider's event id, answer 200 at once, and process the stored row afterwards.
 
 ## 10. Tests
 
 - **The adapter, against a local provider fake:** `acme-kyc.client.spec.ts` starts a `node:http` server on port 0, points `KYC_PROVIDER_BASE_URL` at it and scripts one reply per request. The real `HttpService`, timeout, policy, mapper and `OutboundHttpLogger` run. Cover: success mapped to the domain result; 5xx and 429 retried with the same stored idempotency key, which is not the request id of the context; retries exhausted; a timeout retried; a reply that trickles past the bound after its headers cut and retried; a reply whose body breaks after a 200 retried; a reply over `maxContentLength` refused without a retry; a 4xx not retried; a reply that is not JSON, misses a field or has an unknown code; the circuit opening. Assert the stub's hit count and one `http_out` line per attempt with masked bodies.
-- **Code that calls the port:** a test binds a fake, `{ provide: KycProvider, useValue: { verify: jest.fn() } }`, and covers each typed error the port can throw. `kyc-verification.service.spec.ts` runs the service on Postgres with that fake. A business retry after a failed call sends the stored id again as the key, with the request id only in `traceRef`; a completed operation makes no second call; another tenant gets not found.
+- **Code that calls the port:** a test binds a fake, `{ provide: KycProvider, useValue: { verify: jest.fn() } }`, and covers each typed error the port can throw. `kyc-verification.service.spec.ts` runs the service on Postgres with that fake. A business retry after a failed call sends the stored id again as the key, with the request id only in `traceRef`; a completed operation makes no second call; a repeated or concurrent start returns the pending operation, and a start after completion a new one; a rejection ends it FAILED with no further call; no transaction is open during the provider call (`pg_stat_activity`, `idle in transaction`); another tenant gets not found.
 - Never call the real provider from a test, not even a sandbox, in the default test run. More in `stackcrew-nestjs-testing`.
 
 ## Do not

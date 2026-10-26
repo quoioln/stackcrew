@@ -11,7 +11,7 @@ import { bodyPlaceholder, loadLogBodies, loadMaskOptions, maskCapturedBody } fro
 import { LogEvent, writeCallLine } from '../../../common/logging/log-fields';
 import { decodeMessage } from '../../../common/messaging/message-codec';
 import { ParkReason, parkReasonOf } from '../../../common/messaging/message-errors';
-import { RabbitMqConnection } from '../../../common/messaging/rabbitmq.connection';
+import { RabbitMqConnection, settledWithin } from '../../../common/messaging/rabbitmq.connection';
 import { assertWorkQueue, deadLetterExchange, failedDeliveries, PARKING_ROUTING_KEY } from '../../../common/messaging/work-queue';
 import { KycCompletedHandler } from './kyc-completed.handler';
 import { KycCompletedMessage } from './kyc-completed.message';
@@ -20,7 +20,7 @@ import { KYC_COMPLETED_QUEUE } from './kyc-messaging.constants';
 const JSON_CONTENT_TYPE = 'application/json';
 const PARKED_REASON_HEADER = 'x-parked-reason';
 const CONSUMER_CHANNEL = 'kyc-completed';
-/** On shutdown, how long deliveries already in flight may take to settle before the channel closes. */
+/** On shutdown, the bound on the whole drain: the cancel, the deliveries in flight and the channel close. */
 const SHUTDOWN_GRACE_MS = 10_000;
 const MESSAGE_OUTCOME = 'message_outcome';
 const CONSUMER_STOPPED = 'consumer_stopped';
@@ -52,8 +52,8 @@ export class KycCompletedConsumer implements OnApplicationBootstrap, OnModuleDes
 
   /**
    * Starts once the app is up. The ChannelWrapper owns the consumer: after every reconnect it runs setup (topology,
-   * prefetch) and then registers the consumer again, and after a broker cancel (the queue deleted, a quorum leader
-   * moved) it registers it again at once.
+   * prefetch) and then registers the consumer again, and after a broker cancel (the queue was deleted or the broker
+   * cancelled the consumer) it registers it again at once on the same channel.
    */
   onApplicationBootstrap(): void {
     const channel = this.rabbit.createChannel(CONSUMER_CHANNEL, { setup: (raw: ConfirmChannel) => this.setup(raw) });
@@ -78,8 +78,8 @@ export class KycCompletedConsumer implements OnApplicationBootstrap, OnModuleDes
 
   /**
    * Stops new deliveries (the wrapper forgets the cancelled consumer, so no reconnect registers it again), waits for
-   * the deliveries in flight, then closes. The cancel and the wait share SHUTDOWN_GRACE_MS; messages still unacked go
-   * back to the queue when the channel closes.
+   * the deliveries in flight, then closes. The cancel, the wait and the close share SHUTDOWN_GRACE_MS; messages still
+   * unacked go back to the queue when the channel closes.
    */
   async onModuleDestroy(): Promise<void> {
     this.stopping = true; // a reconnect during the drain runs setup, which then declares and registers nothing
@@ -91,11 +91,13 @@ export class KycCompletedConsumer implements OnApplicationBootstrap, OnModuleDes
       });
       await settledWithin([cancelled], deadline - Date.now());
     }
-    await settledWithin([...this.inFlight], Math.max(0, deadline - Date.now()));
+    await settledWithin([...this.inFlight], deadline - Date.now());
     if (this.inFlight.size > 0) {
       this.logger.warn({ event: CONSUMER_STOPPED, queue: KYC_COMPLETED_QUEUE.queue, unsettled: this.inFlight.size }, CONSUMER_STOPPED);
     }
-    await this.channel?.close();
+    if (this.channel !== undefined) {
+      await settledWithin([this.channel.close()], deadline - Date.now()); // the connection close follows, bounded too
+    }
   }
 
   private async register(channel: ChannelWrapper): Promise<void> {
@@ -227,16 +229,6 @@ export class KycCompletedConsumer implements OnApplicationBootstrap, OnModuleDes
       process.emitWarning(`${MESSAGE_OUTCOME} line not written`);
     }
   }
-}
-
-/** Waits for the deliveries in flight, at most `ms`. */
-async function settledWithin(deliveries: readonly Promise<void>[], ms: number): Promise<void> {
-  let timer: NodeJS.Timeout | undefined;
-  const grace = new Promise<void>((resolve) => {
-    timer = setTimeout(resolve, ms);
-  });
-  await Promise.race([Promise.allSettled(deliveries), grace]);
-  clearTimeout(timer);
 }
 
 function errorName(failure: unknown): string | undefined {

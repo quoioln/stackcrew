@@ -29,7 +29,8 @@ Search the codebase and the shared libraries ({{sc:sharedLibraries}}) for `maskB
 ## 2. Dependencies (ask the user before adding any)
 
 - `nestjs-pino` **4.x** with `pino` and `pino-http`: the logger. Nest's built-in JSON logger needs Nest 11, and `nestjs-pino` 5 needs Nest 11 too.
-- `@nestjs/axios` 3.x and `axios` for outbound calls; `jwks-rsa` for the JWKS keys (stack rule, Authentication).
+- `@nestjs/axios` 3.x and `axios` `^1.16.0` for outbound calls. From 1.16.0, axios attaches the 2xx `response` to the error of a reply whose body breaks mid-read, which `stackcrew-nest-outbound-client` retries as a transport failure. Older 1.x versions report that error without a status, so the reply would be refused as a protocol error and not retried.
+- `jwks-rsa` for the JWKS keys (stack rule, Authentication).
 - `@opentelemetry/api` for `traceId` and `spanId` (`activeTraceFields`); it comes with the OpenTelemetry SDK. Without OpenTelemetry in the project, ask before adding it, or leave `activeTraceFields` out.
 - Local text output: `pino-pretty` as a dev dependency with `transport: { target: 'pino-pretty' }` in `pinoHttpOptions`, only when a local flag is set. JSON everywhere else.
 
