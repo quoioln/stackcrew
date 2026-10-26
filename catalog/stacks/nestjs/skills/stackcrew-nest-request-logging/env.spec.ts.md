@@ -22,8 +22,10 @@ describe('environment sections', () => {
   });
 
   it('requires https for the JWKS keys outside development and test', () => {
-    // DATABASE_URL is only read once the TypeORM skill has added its DatabaseEnv section
-    const raw = { JWKS_URI: 'http://idp.internal/jwks', JWT_ISSUER: 'i', JWT_AUDIENCE: 'a', DATABASE_URL: 'postgres://db.internal/app' };
+    // plus the variables of the sections other skills add to validateEnv (DatabaseEnv, KycProviderEnv, RabbitMqEnv);
+    // a section the project does not have ignores them. Add the variables of every new section here.
+    const raw = { JWKS_URI: 'http://idp.internal/jwks', JWT_ISSUER: 'i', JWT_AUDIENCE: 'a', DATABASE_URL: 'postgres://db.internal/app',
+      KYC_PROVIDER_BASE_URL: 'https://kyc.example.com', KYC_PROVIDER_API_KEY: 'k', RABBITMQ_URL: 'amqp://mq.internal' };
     expect(() => validateEnv(raw)).toThrow('Invalid environment: JWKS_URI must use https outside development and test');
     expect(() => validateEnv({ ...raw, NODE_ENV: 'production' })).toThrow('JWKS_URI must use https');
     expect(validateEnv({ ...raw, NODE_ENV: 'test' }).JWKS_URI).toBe('http://idp.internal/jwks');

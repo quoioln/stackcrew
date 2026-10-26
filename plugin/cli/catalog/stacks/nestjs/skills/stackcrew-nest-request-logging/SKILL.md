@@ -109,22 +109,44 @@ The line: `event=http_in`, `method`, `route` (the Express route template, such a
 
 ## 7. Outbound: one logger per HttpService
 
-Each module that imports `HttpModule.register(...)` has its own `HttpService` and axios instance. List `outboundHttpLogging(target)` once in that module's providers:
+Each module that imports `HttpModule.register(...)` or `registerAsync(...)` has its own `HttpService` and axios instance. List `...outboundHttpLogging(target)` once in that module's providers. The provider module of `stackcrew-nest-outbound-client`:
 
 ```ts
-// src/modules/kyc/kyc.module.ts
+// Default location: src/modules/kyc/kyc.module.ts
 import { HttpModule } from '@nestjs/axios';
 import { Module } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
 import { outboundHttpLogging } from '../../common/logging/outbound-http-logger';
-import { KycProviderClient } from './kyc-provider.client';
+import type { KycProviderEnv } from '../../config/env';
+import { AcmeKycClient } from './acme/acme-kyc.client';
+import { KycProvider } from './kyc-provider.port';
+import { KYC_PROVIDER_POLICY, KYC_PROVIDER_POLICY_DEFAULTS, KYC_PROVIDER_TARGET } from './kyc.constants';
 
-const KYC_TARGET = 'kyc-provider';
-const KYC_TIMEOUT_MS = 5_000;
+const API_KEY_HEADER = 'X-Api-Key';
 
+/**
+ * The KYC provider: its own HttpService (base URL, per-attempt timeout and the API key from config, no redirects),
+ * OutboundHttpLogger on that HttpService, the resilience settings, and the adapter bound to the KycProvider port.
+ * Other modules import KycModule and inject KycProvider only.
+ */
 @Module({
-  imports: [HttpModule.register({ timeout: KYC_TIMEOUT_MS, maxRedirects: 0 })],
-  providers: [KycProviderClient, ...outboundHttpLogging(KYC_TARGET)],
-  exports: [KycProviderClient],
+  imports: [
+    HttpModule.registerAsync({
+      inject: [ConfigService],
+      useFactory: (config: ConfigService<KycProviderEnv, true>) => ({
+        baseURL: config.get('KYC_PROVIDER_BASE_URL', { infer: true }),
+        timeout: config.get('KYC_PROVIDER_TIMEOUT_MS', { infer: true }),
+        maxRedirects: 0,
+        headers: { [API_KEY_HEADER]: config.get('KYC_PROVIDER_API_KEY', { infer: true }) },
+      }),
+    }),
+  ],
+  providers: [
+    { provide: KYC_PROVIDER_POLICY, useValue: KYC_PROVIDER_POLICY_DEFAULTS },
+    { provide: KycProvider, useClass: AcmeKycClient },
+    ...outboundHttpLogging(KYC_PROVIDER_TARGET),
+  ],
+  exports: [KycProvider],
 })
 export class KycModule {}
 ```

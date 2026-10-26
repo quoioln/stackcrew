@@ -35,6 +35,7 @@ src/
     customer-profiles.controller.ts
     customer-profiles.service.ts
     customer-profile.repository.ts
+    customer-profile.mapper.ts
     dto/create-customer-profile.request.ts
     dto/customer-profile.response.ts
     entities/customer-profile.entity.ts
@@ -47,11 +48,15 @@ src/
 ## Response DTOs
 
 ```ts
-// src/modules/customer-profiles/dto/customer-profile.response.ts
+// Default location: src/modules/customer-profiles/dto/customer-profile.response.ts
 import { ApiProperty } from '@nestjs/swagger';
-import { Expose, plainToInstance } from 'class-transformer';
-import { CustomerProfile, CustomerProfileStatus } from '../entities/customer-profile.entity';
+import { Expose } from 'class-transformer';
+import { CustomerProfileStatus } from '../entities/customer-profile.entity';
 
+/**
+ * The API shape of a customer profile. The mapper copies only the @Expose() fields (excludeExtraneousValues), so the
+ * tenant, the audit fields and any column added to the entity later never reach a client.
+ */
 export class CustomerProfileResponse {
   @Expose()
   @ApiProperty({ format: 'uuid' })
@@ -62,16 +67,20 @@ export class CustomerProfileResponse {
   readonly reference!: string;
 
   @Expose()
+  @ApiProperty()
+  readonly fullName!: string;
+
+  @Expose()
   @ApiProperty({ enum: Object.values(CustomerProfileStatus) })
   readonly status!: CustomerProfileStatus;
 
-  static from(entity: CustomerProfile): CustomerProfileResponse {
-    return plainToInstance(CustomerProfileResponse, entity, { excludeExtraneousValues: true });
-  }
+  @Expose()
+  @ApiProperty({ type: String, format: 'date-time' })
+  readonly createdAt!: Date;
 }
 ```
 
-- `excludeExtraneousValues: true` copies only `@Expose()` fields, so a column added to the entity later (or `{{sc:tenantColumn}}`, `createdBy`) never leaks.
+- The mapper builds it (`customer-profile.mapper.ts`, skill `stackcrew-nest-rest-endpoint`): `plainToInstance(CustomerProfileResponse, entity, { excludeExtraneousValues: true })` copies only `@Expose()` fields, so a column added to the entity later (or `{{sc:tenantColumn}}`, `createdBy`) never leaks. The DTO holds no mapping code.
 - The service returns the DTO (or a domain result the controller maps); a controller's return type is the DTO class, never `Promise<CustomerProfile>`.
 - `ClassSerializerInterceptor` with `@Exclude()` is not enough: one forgotten `@Exclude()` leaks a field. Do not rely on it.
 

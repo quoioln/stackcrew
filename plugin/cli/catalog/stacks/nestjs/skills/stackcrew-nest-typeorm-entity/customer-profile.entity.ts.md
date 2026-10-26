@@ -5,8 +5,8 @@ Goes to `src/modules/customer-profiles/entities/customer-profile.entity.ts`.
 import { Column, DeleteDateColumn, Entity, Index, PrimaryGeneratedColumn } from 'typeorm';
 import { {{sc:baseTenantEntity}} } from '../../../common/database/base-tenant.entity';
 
-const REFERENCE_LENGTH = 64;
-const FULL_NAME_LENGTH = 200;
+export const REFERENCE_LENGTH = 64;
+export const FULL_NAME_LENGTH = 200;
 const STATUS_LENGTH = 16;
 
 export const CustomerProfileStatus = { PENDING: 'PENDING', VERIFIED: 'VERIFIED', REJECTED: 'REJECTED' } as const;

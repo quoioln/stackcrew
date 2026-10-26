@@ -20,6 +20,10 @@ const OPTS = { cli: 'npx stackcrew', version: '0.0.0' };
 const ALL = ['claude', 'cursor', 'codex', 'antigravity'];
 const LOGGING = 'stackcrew-nest-request-logging';
 const ENTITY = 'stackcrew-nest-typeorm-entity';
+const REST = 'stackcrew-nest-rest-endpoint';
+const OUTBOUND = 'stackcrew-nest-outbound-client';
+const CONSUMER = 'stackcrew-nest-rabbitmq-consumer';
+const TESTING = 'stackcrew-nestjs-testing';
 const TEST_EXCLUDES = ['**/*.spec.ts', '**/*.spec.tsx', '**/*.test.ts', '**/*.test.tsx', '**/test/**', '**/tests/**', '**/e2e/**', '**/__tests__/**'];
 
 async function withRealCatalog(fn) {
@@ -177,7 +181,7 @@ test('nest rule files have id, title and a bounded Essentials list', async () =>
 
 test('nestjs with typeorm and all four tools renders within every budget', async () => {
   await withRealCatalog(async (c) => {
-    const ctx = nestCtx(c, { addons: ['typeorm'] });
+    const ctx = nestCtx(c, { addons: ['typeorm', 'rabbitmq'] });
     const { ops } = renderProject(ctx); // throws StackcrewError BUDGET when over
     const agents = renderAgentsMdBlock(ctx).op;
     assert.ok(Buffer.byteLength(agents.content) <= 16000, `AGENTS block ${Buffer.byteLength(agents.content)}`);
@@ -187,12 +191,13 @@ test('nestjs with typeorm and all four tools renders within every budget', async
     for (const o of ops.filter((x) => x.path.startsWith('.agents/rules/stackcrew-'))) {
       assert.ok(Buffer.byteLength(o.content) <= 24000, `${o.path} bytes`);
     }
-    assert.ok(ops.some((o) => o.path.includes(ENTITY)) && ops.some((o) => o.path.includes(LOGGING)));
+    for (const name of [LOGGING, ENTITY, REST, OUTBOUND, CONSUMER, TESTING]) assert.ok(ops.some((o) => o.path.includes(name)), `${name} is rendered`);
     for (const o of ops) assert.ok(!o.content.includes('{{sc:'), `${o.path} has an unrendered placeholder`);
   });
 });
 
-const NEST_SKILLS = [LOGGING, ENTITY];
+/** Nest skills that ship code siblings (all task skills). */
+const NEST_SKILLS = [LOGGING, ENTITY, REST, OUTBOUND, CONSUMER];
 const GOES_TO = /^Goes to `((?:src|test)\/[^`]+\.ts)`\.\n\n```ts\n/;
 /** The code of a sibling `<rel>.md`: its one fenced block. */
 const codeOfSibling = (md) => /```ts\n([\s\S]*?)```\n$/.exec(md ?? '')?.[1] ?? '';
@@ -227,8 +232,9 @@ test('nest skills are task skills under 350 lines; siblings are <file>.ts.md wit
 test('every nest sibling file and code block passes the TypeScript and NestJS guards at its intended path', async () => {
   await withRealCatalog(async (c) => {
     const compiled = compileGuardRules([...c.languages.get('typescript').guard, ...c.stacks.get('nestjs').guard]);
-    const ctx = nestCtx(c, { addons: ['typeorm'] });
-    const skills = ctx.skills.filter((s) => NEST_SKILLS.includes(s.name));
+    const ctx = nestCtx(c, { addons: ['typeorm', 'rabbitmq'] });
+    const skills = ctx.skills.filter((s) => [...NEST_SKILLS, TESTING].includes(s.name));
+    assert.equal(skills.length, NEST_SKILLS.length + 1, 'every nest skill is scanned');
     const sources = [];
     for (const k of skills) {
       for (const f of k.files) sources.push({ name: `${k.name}/${f.relPath}`, path: GOES_TO.exec(f.content)[1], text: codeOfSibling(f.content) });
@@ -242,7 +248,7 @@ test('every nest sibling file and code block passes the TypeScript and NestJS gu
         sources.push({ name: `${doc} block`, path: first ? first[1] : 'src/modules/example/example.service.ts', text: m[1] });
       }
     }
-    assert.ok(sources.length >= 35, `sources ${sources.length}`);
+    assert.ok(sources.length >= 75, `sources ${sources.length}`);
     for (const s of sources) {
       const lines = s.text.split('\n').map((text, i) => ({ line: i + 1, text }));
       const violations = scanLines(s.path, lines, compiled).map((v) => `${s.name}:${v.line} ${v.ruleId} ${v.text.trim()}`);
@@ -519,5 +525,174 @@ test('nest folded rulings R-T8: N+ means unknown size, deep nesting overflows se
       assert.ok(outSpec.includes(needle), `outbound-http-logger.spec.ts missing ${needle}`);
     }
     assert.ok(/over 2 MiB/.test(s.body), 'SKILL.md states the outbound response cap');
+  });
+});
+
+const FEATURE_SKILLS = [[REST, 'task', []], [OUTBOUND, 'task', []], [CONSUMER, 'task', ['rabbitmq']], [TESTING, 'testing', []]];
+
+test('nest feature skills load; rabbitmq consumer is gated by its add-on', async () => {
+  await withRealCatalog(async (c) => {
+    assert.deepEqual(validateCatalog(c), []);
+    const byName = Object.fromEntries(c.stacks.get('nestjs').skills.map((k) => [k.name, k]));
+    for (const [name, kind, addons] of FEATURE_SKILLS) {
+      assert.ok(byName[name], `${name} exists`);
+      assert.equal(byName[name].kind, kind, `${name} kind`);
+      assert.deepEqual(byName[name].requiresAddons, addons, `${name} add-ons`);
+    }
+    const names = (ctx) => ctx.skills.map((k) => k.name);
+    for (const name of [REST, OUTBOUND, TESTING]) assert.ok(names(nestCtx(c)).includes(name), `${name} renders without add-ons`);
+    assert.ok(!names(nestCtx(c)).includes(CONSUMER), 'the consumer skill needs the rabbitmq add-on');
+    assert.ok(names(nestCtx(c, { addons: ['rabbitmq'] })).includes(CONSUMER));
+    const ctx = nestCtx(c, { addons: ['typeorm', 'rabbitmq'] });
+    const role = (id) => ctx.roles.find((r) => r.name === `stackcrew-nestjs-${id}`).skills;
+    assert.ok(role('tester').includes(TESTING) && !role('tester').includes(REST), 'the tester gets the testing skill');
+    for (const name of [REST, OUTBOUND, CONSUMER]) assert.ok(role('developer').includes(name), `the developer gets ${name}`);
+  });
+});
+
+test('nest skill descriptions name NestJS and stay within 500 chars', async () => {
+  await withRealCatalog(async (c) => {
+    for (const k of c.stacks.get('nestjs').skills) {
+      assert.ok(k.description.startsWith('Use when'), `${k.name} starts with "Use when"`);
+      assert.ok(k.description.includes('NestJS'), `${k.name} names NestJS`);
+      assert.ok(k.description.length <= 500, `${k.name} is ${k.description.length} chars`);
+      assert.ok(!/always|any code|all code|every task|whenever the user|proactively/i.test(k.description), `${k.name} has a banned word`);
+      assert.deepEqual(k.paths, [], `${k.name} has no paths`);
+    }
+  });
+});
+
+test('new nest SKILL.md files are at most 350 lines', async () => {
+  await withRealCatalog(async (c) => {
+    for (const [name] of FEATURE_SKILLS) {
+      const k = c.stacks.get('nestjs').skills.find((s) => s.name === name);
+      const lines = k.body.split('\n').length;
+      assert.ok(lines <= 350, `${name} SKILL.md is ${lines} lines`);
+    }
+  });
+});
+
+/** The ts code block of a markdown document whose first line is `// Default location: <file>`, as in a sibling. */
+const blockAt = (md, file) => new RegExp('```ts\\n(// Default location: ' + file.replace(/[.*+?^${}()|[\]\\/]/g, '\\$&') + '\\n[\\s\\S]*?)```').exec(md)?.[1];
+
+test('nest rest-endpoint skill: request, query, response DTOs and mapper in their own files; DTOs only from the controller; pagination; RFC 7807', async () => {
+  await withRealCatalog(async (c) => {
+    const s = nestSkill(c, REST);
+    for (const needle of ['SC-PREFLIGHT', 'TenantScopedRepository', 'RFC 7807', 'plainToInstance', 'excludeExtraneousValues: true', '@Type(() => Number)',
+      'supertest', 'Idempotency-Key', 'stackcrew-nest-typeorm-entity', 'stackcrew-nest-request-logging', 'ask the user']) {
+      assert.ok(s.body.includes(needle), `SKILL.md missing ${needle}`);
+    }
+    const request = s.file('create-customer-profile.request.ts');
+    assert.ok(/@IsString\(\)/.test(request) && /@Length\(/.test(request) && !/tenantId|createdBy|status/.test(request), 'request DTO: validated, no tenant, audit or status');
+    const query = s.file('list-customer-profiles.query.ts');
+    assert.ok(query.includes('@Type(() => Number)') && query.includes('@Max(MAX_PAGE_SIZE)') && query.includes('@IsIn('), 'query DTO: converted numbers, page cap, sort allowlist');
+    const response = s.file('customer-profile.response.ts');
+    const fields = response.match(/^\s+readonly \w+!?:/gm) ?? [];
+    assert.ok(fields.length >= 4, 'response DTO fields');
+    assert.equal((response.match(/^\s+@Expose\(\)$/gm) ?? []).length, fields.length, 'every response field has @Expose()');
+    assert.equal((response.match(/^\s+@ApiProperty\(/gm) ?? []).length, fields.length, 'every response field has @ApiProperty()');
+    assert.ok(!/tenantId|createdBy|updatedBy|deletedAt|plainToInstance/.test(response), 'the response DTO holds no entity-only field and no mapping');
+    const mapper = s.file('customer-profile.mapper.ts');
+    assert.ok(mapper.includes('plainToInstance(CustomerProfileResponse, entity, { excludeExtraneousValues: true })'), 'the mapper builds the DTO');
+    const controller = s.file('customer-profiles.controller.ts');
+    assert.ok(!/Promise<CustomerProfile>|Promise<CustomerProfile\[\]>|@Res\(|Repository/.test(controller), 'the controller returns DTOs and touches no repository');
+    for (const ret of controller.match(/\): Promise<\w+>/g) ?? []) assert.match(ret, /Response>$/, `controller return type ${ret}`);
+    assert.ok(controller.includes('ParseUUIDPipe') && controller.includes('@Query() query: ListCustomerProfilesQuery'));
+    const service = s.file('customer-profiles.service.ts');
+    assert.ok(service.includes('private readonly profiles: CustomerProfileRepository') && !service.includes('Repository<'), 'the service uses the tenant repository');
+    assert.ok(service.includes('throw new CustomerProfileNotFound()') && service.includes('toCustomerProfileResponse('));
+    assert.ok(s.file('customer-profile.errors.ts').includes('extends ProblemError'), 'domain errors are ProblemError subclasses');
+    const unit = s.file('customer-profiles.service.spec.ts');
+    assert.ok(unit.includes('jest.Mocked<Pick<CustomerProfileRepository'), 'the unit spec fakes only the repository port');
+    const e2e = s.file('customer-profiles.e2e.spec.ts');
+    for (const needle of ['request(app.getHttpServer())', "'tenant-b'", '.expect(404)', '.expect(400)', 'Object.keys(', 'createTestApp(', 'http_in']) {
+      assert.ok(e2e.includes(needle), `e2e spec missing ${needle}`);
+    }
+    const rules = c.stacks.get('nestjs').rules.body;
+    assert.equal(blockAt(rules, 'src/modules/customer-profiles/dto/customer-profile.response.ts'), response, 'rules.md shows the same response DTO as the skill');
+    assert.ok(!rules.includes('static from('), 'one mapping shape: the mapper');
+  });
+});
+
+test('nest outbound-client skill: typed DTOs, ACL mapper, HttpService with timeout and cockatiel retry and breaker, OutboundHttpLogger, provider fake', async () => {
+  await withRealCatalog(async (c) => {
+    const s = nestSkill(c, OUTBOUND);
+    for (const needle of ['SC-PREFLIGHT', '`cockatiel` 3.x', 'ask the user', 'Idempotency-Key', 'OutboundHttpLogger', 'outboundHttpLogging(', 'firstValueFrom', 'node:http',
+      'stackcrew-nest-request-logging', 'idempotent']) {
+      assert.ok(s.body.includes(needle), `SKILL.md missing ${needle}`);
+    }
+    const policy = s.file('provider-call.policy.ts');
+    for (const needle of ['circuitBreaker(', 'retry(', 'bulkhead(', 'wrap(', 'new ExponentialBackoff(', 'new ConsecutiveBreaker(', 'handleWhen(', 'isBrokenCircuitError(']) {
+      assert.ok(policy.includes(needle), `policy missing ${needle}`);
+    }
+    const client = s.file('acme-kyc.client.ts');
+    assert.ok(client.includes('firstValueFrom(this.http.post') && client.includes('isAxiosError(') && client.includes('extends KycProvider'), 'client shape');
+    assert.ok(!/axios\.create|fetch\(|console\.|this\.logger\.\w+\([^)]*(data|body|request|response)/i.test(client), 'no second HTTP client and no body logging');
+    const mapper = s.file('acme-kyc.mapper.ts');
+    assert.ok(mapper.includes('validateSync(') && mapper.includes('throw new ProviderProtocolError()'), 'the ACL mapper parses the reply at the edge');
+    const dto = s.file('acme-kyc.dto.ts');
+    assert.ok(/@IsString\(\)/.test(dto) && !/:\s*any\b/.test(dto), 'typed provider DTOs');
+    const errors = s.file('provider.errors.ts');
+    for (const name of ['ProviderUnavailableError', 'ProviderRejectedError', 'ProviderProtocolError']) assert.match(errors, new RegExp(`class ${name} extends ProviderError`));
+    assert.ok(errors.includes('extends ProblemError'), 'provider errors map through AllExceptionsFilter');
+    const mod = s.file('kyc.module.ts');
+    for (const needle of ['HttpModule.registerAsync(', 'maxRedirects: 0', 'timeout:', '...outboundHttpLogging(KYC_PROVIDER_TARGET)', '{ provide: KycProvider, useClass: AcmeKycClient }']) {
+      assert.ok(mod.includes(needle), `kyc.module.ts missing ${needle}`);
+    }
+    const logging = nestSkill(c, LOGGING).body;
+    assert.equal(blockAt(logging, 'src/modules/kyc/kyc.module.ts'), mod, 'the request-logging skill shows the same module');
+    const spec = s.file('acme-kyc.client.spec.ts');
+    for (const needle of ['createServer(', 'ProviderRejectedError', 'ProviderUnavailableError', 'ProviderProtocolError', '429', 'http_out', 'hits', 'overrideProvider(KYC_PROVIDER_POLICY)']) {
+      assert.ok(spec.includes(needle), `client spec missing ${needle}`);
+    }
+  });
+});
+
+test('nest rabbitmq-consumer skill: typed message, idempotency store, DLX with wait and parking queues, header context, masked message_in, no any', async () => {
+  await withRealCatalog(async (c) => {
+    const s = nestSkill(c, CONSUMER);
+    for (const needle of ['SC-PREFLIGHT', '`amqp-connection-manager`', '`amqplib`', 'addon-rabbitmq', 'kyc.completed', 'x-tenant-id', 'x-user-id', 'x-request-id',
+      'runAsSystem', 'Outbox', 'ask the user', '@testcontainers/rabbitmq']) {
+      assert.ok(s.body.includes(needle), `SKILL.md missing ${needle}`);
+    }
+    const consumer = s.file('kyc-completed.consumer.ts');
+    for (const needle of ['contextFromMessageHeaders(headers)', 'runWithRequestContext(', 'writeCallLine(this.logger,', 'event: LogEvent.MESSAGE_IN', 'maskBody(payload, type, this.maskOptions)',
+      'payload !== undefined && payload.length > 0 ? bodyPlaceholder(type, payload.length)', "'log')", 'noAck: false', 'channel.ack(msg)', 'channel.nack(msg, false, false)', 'prefetch(']) {
+      assert.ok(consumer.includes(needle), `consumer missing ${needle}`);
+    }
+    const queue = s.file('work-queue.ts');
+    for (const needle of ["'x-queue-type': 'quorum'", "'x-dead-letter-exchange'", "'x-dead-letter-strategy': 'at-least-once'", "'x-overflow': 'reject-publish'", "'x-message-ttl'", "'x-death'"]) {
+      assert.ok(queue.includes(needle), `work-queue.ts missing ${needle}`);
+    }
+    assert.ok(s.file('processed-message.store.ts').includes('.orIgnore()'), 'insert-or-ignore marks a message once');
+    const handler = s.file('kyc-completed.handler.ts');
+    assert.ok(handler.includes('dataSource.transaction(') && handler.includes('withManager(manager)') && handler.includes('markIfNew(manager,'), 'marker and effect in one transaction');
+    const codec = s.file('message-codec.ts');
+    assert.ok(codec.includes('payload.length === 0') && codec.includes('throw new InvalidMessageError(') && codec.includes('validateSync('), 'an empty or invalid payload is non-retryable');
+    const publisher = s.file('message-publisher.ts');
+    for (const needle of ['REQUEST_ID_HEADER', 'TENANT_ID_HEADER', 'USER_ID_HEADER', 'persistent: true', 'messageId:']) assert.ok(publisher.includes(needle), `publisher missing ${needle}`);
+    assert.match(s.file('processed-message.entity.ts'), /class ProcessedMessage extends \{\{sc:baseEntity\}\}/, 'the dedupe table extends the base entity');
+    const message = s.file('kyc-completed.message.ts');
+    for (const needle of ['messageId', 'type', 'version', 'occurredAt', '@IsUUID(']) assert.ok(message.includes(needle), `message schema missing ${needle}`);
+    const code = s.files.map((f) => codeOfSibling(f.content)).join('\n').replace(/\/\*[\s\S]*?\*\/|\/\/.*$/gm, ''); // code, not comments
+    assert.ok(!/:\s*any\b|as any\b|<any>/.test(code), 'no any');
+    for (const f of s.files.filter((x) => !x.relPath.includes('spec'))) {
+      assert.ok(!codeOfSibling(f.content).includes('runAsSystem('), `${f.relPath}: a consumer never becomes the system identity`);
+    }
+    const e2e = s.file('kyc-completed.consumer.e2e.spec.ts');
+    for (const needle of ['RabbitMQContainer', 'duplicate', 'wait for both outcomes', 'takeParked', 'attempts_exhausted', "'x-user-id': 'system'", 'tombstone', 'message_in']) {
+      assert.ok(e2e.includes(needle), `consumer e2e spec missing ${needle}`);
+    }
+  });
+});
+
+test('nestjs-testing skill: the tester role per test type, third-party fakes, and the required audit and tenant tests', async () => {
+  await withRealCatalog(async (c) => {
+    const s = nestSkill(c, TESTING);
+    for (const needle of ['stack-nestjs-testing', 'Test.createTestingModule', '@testcontainers/postgresql', 'supertest', 'node:http', 'createTestApp', 'MissingTenantError',
+      'CROSS_TENANT_ROLES', '{{sc:systemUser}}', 'http_in', 'http_out', 'message_in', 'stackcrew-nest-typeorm-entity', 'stackcrew-nest-outbound-client',
+      'stackcrew-nest-rabbitmq-consumer', 'stackcrew-nest-rest-endpoint', 'ask the user', 'Run the tests']) {
+      assert.ok(s.body.includes(needle), `testing SKILL.md missing ${needle}`);
+    }
   });
 });
