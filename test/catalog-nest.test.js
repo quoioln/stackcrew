@@ -731,7 +731,7 @@ test('nest task 8 fix round 1: channel error listener and consumer health, serve
     assert.ok(connection.includes('reconnectTimeInSeconds: RECONNECT_SECONDS'), 'a closed channel comes back through a short reconnect');
     const consumer = consumerSkill.file('kyc-completed.consumer.ts');
     assert.ok(!consumer.includes(".on('error'"), 'no error listener on the raw channel: it would stop the reconnect that re-creates the channel');
-    for (const needle of ['isConsuming(): boolean', 'if (msg === null) {', "channel.once('close'", 'SHUTDOWN_GRACE_MS', '.cancel(', 'this.inFlight']) {
+    for (const needle of ['isConsuming(): boolean', 'this.refreshConsuming()', "raw.once('close'", 'SHUTDOWN_GRACE_MS', '.cancel(', 'this.inFlight']) {
       assert.ok(consumer.includes(needle), `consumer missing ${needle}`);
     }
     // 7. ack outside the try that classifies handler failures; a failed ack is logged on its own
@@ -779,5 +779,46 @@ test('nest task 8 fix round 1: channel error listener and consumer health, serve
     const rest = nestSkill(c, REST);
     assert.ok(rest.file('list-customer-profiles.query.ts').includes('@Max(MAX_PAGE)'), 'page is capped');
     assert.ok(rest.file('customer-profiles.e2e.spec.ts').includes('{ page: 1001 }'), 'e2e covers a page over the cap');
+  });
+});
+
+test('nest task 8 fix round 2: key stored before the call, wrapper-managed consumer, honest readiness, isolated destructive e2e rows', async () => {
+  await withRealCatalog(async (c) => {
+    // 1. §9 follows §6: insert and commit the operation, call outside any transaction, persist in one; a retry reloads the key
+    const outbound = nestSkill(c, OUTBOUND);
+    const section9 = outbound.body.split('## 9.')[1]?.split('\n## ')[0] ?? '';
+    for (const needle of ['commit', 'outside any transaction', 'reloads the stored key', 'kyc-verification.service.ts.md']) {
+      assert.ok(section9.includes(needle), `outbound SKILL.md §9 missing ${needle}`);
+    }
+    assert.ok(!outbound.body.includes('call first, then persist'), 'no call-first wording left');
+    const service = outbound.file('kyc-verification.service.ts');
+    assert.ok(service.includes('idempotencyKey: verification.id') && service.includes('async start(') && service.includes('this.dataSource.transaction('), 'service order');
+    assert.ok(service.indexOf('this.provider.verify(') < service.indexOf('this.dataSource.transaction('), 'the provider call is not inside the transaction');
+    const serviceSpec = outbound.file('kyc-verification.service.spec.ts');
+    assert.ok(serviceSpec.includes('.toEqual([id, id])') && serviceSpec.includes("@testcontainers/postgresql"), 'the spec proves a business retry reuses the stored key');
+    assert.ok(outbound.file('kyc-verification.entity.ts').includes('extends {{sc:baseTenantEntity}}'), 'the operation row is a tenant entity');
+    // 7. a 2xx whose body breaks is a transport failure: retried and counted
+    const client = outbound.file('acme-kyc.client.ts');
+    assert.ok(client.includes('status < FIRST_ERROR_STATUS'), 'a 2xx with a failed body read is unavailable');
+    assert.ok(outbound.file('acme-kyc.client.spec.ts').includes('a reply whose body breaks after a 200'), 'spec row for a broken body');
+
+    // 2, 4, 5, 6: the consumer
+    const consumerSkill = nestSkill(c, CONSUMER);
+    const consumer = consumerSkill.file('kyc-completed.consumer.ts');
+    for (const needle of ['channel.consume(KYC_COMPLETED_QUEUE.queue,', 'if (this.stopping) {', "channel.on('connect',", 'this.delivering', 'Date.now() + SHUTDOWN_GRACE_MS']) {
+      assert.ok(consumer.includes(needle), `consumer missing ${needle}`);
+    }
+    assert.ok(!consumer.includes('raw.consume(') && !consumer.includes('registration'), 'the wrapper owns the consumer, so it re-registers after a cancel');
+    assert.ok(!/the broker redelivers it\)?;?\s*$/m.test(consumer) && consumer.includes('holds one prefetch slot'), 'the outer catch says what happens');
+    // 3. readiness only, never liveness; a not-ready pod gets no traffic
+    assert.ok(/never (the )?liveness/i.test(consumerSkill.body) && !consumerSkill.body.includes('the HTTP side keeps serving'), 'readiness wording');
+    assert.ok(/re-registers the consumer/i.test(consumerSkill.body), 'SKILL.md describes the recovery after a broker cancel');
+    // 9. destructive rows are isolated
+    const e2e = consumerSkill.file('kyc-completed.consumer.e2e.spec.ts');
+    assert.ok(e2e.includes("'add_vhost'") && e2e.includes('isolatedVhost('), 'destructive rows run on a vhost of their own');
+    assert.ok(e2e.includes('re-registers after the broker cancels it'), 'e2e row for the broker cancel');
+    // 8. the testing skill names the consumer rows
+    const testing = nestSkill(c, TESTING).body;
+    for (const needle of ['over 2 MiB', 'drained', 'failed setup', 'broker cancel']) assert.ok(testing.includes(needle), `testing SKILL.md missing ${needle}`);
   });
 });

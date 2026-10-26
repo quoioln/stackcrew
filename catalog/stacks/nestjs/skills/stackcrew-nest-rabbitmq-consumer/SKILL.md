@@ -53,8 +53,8 @@ export class RabbitMqEnv {
 ```
 
 - Add `CreateProcessedMessage1730000000001` to `migrations` in `DatabaseModule` (rename the timestamp to follow the project's last migration).
-- Import `KycCompletedModule` in `AppModule`. `main.ts` calls `app.enableShutdownHooks()`, so a deploy cancels the consumer, waits up to `SHUTDOWN_GRACE_MS` for the deliveries in flight to settle, closes the channel, then the connection; anything still unacked goes back to the queue.
-- Readiness: the `/health` readiness check (`@nestjs/terminus`) reports down when `RabbitMqConnection.isConnected()` or `KycCompletedConsumer.isConsuming()` is false.
+- Import `KycCompletedModule` in `AppModule`. `main.ts` calls `app.enableShutdownHooks()`, so a deploy cancels the consumer, sets `stopping` (a reconnect during the drain registers nothing), waits up to `SHUTDOWN_GRACE_MS` in all for the cancel and the deliveries in flight to settle, closes the channel, then the connection; anything still unacked goes back to the queue.
+- Readiness only, never liveness: the readiness probe (`@nestjs/terminus`, for example `/health/ready`) reports down when `RabbitMqConnection.isConnected()` or `KycCompletedConsumer.isConsuming()` is false. The liveness probe never reads them; a restart cannot fix a broker or queue problem, and `core-backend-api` keeps liveness and readiness separate.
 - Use `amqps` and a vhost per service with only the permissions it needs, outside local development.
 
 ## 4. Topology (addon-rabbitmq)
@@ -79,10 +79,12 @@ export class RabbitMqEnv {
 
 `kyc-completed.consumer.ts` is the shape to copy:
 
-- `onApplicationBootstrap` creates a channel (`createChannel(name, { setup })`) whose `setup` declares the topology, sets `prefetch` and starts `consume` with `noAck: false`. amqp-connection-manager runs `setup` again after a reconnect.
+- `onApplicationBootstrap` creates a channel (`createChannel(name, { setup })`) whose `setup` declares the topology and sets `prefetch`, and registers the consumer through the wrapper (`channel.consume(queue, onMessage, { noAck: false, consumerTag })`). The wrapper owns the consumer: after every reconnect it runs `setup` and then registers it again.
+- After a broker cancel, the wrapper re-registers the consumer at once. A cancel comes from a deleted queue or a quorum leader moving. When the queue is gone, the 404 closes the channel, the reconnect re-declares the queue in `setup` and re-registers the consumer. No restart is needed.
+- `setup` records the raw channel it got. Deliveries arrive on that channel, so they are acked, nacked or parked on it, never through the wrapper's current channel.
 - Every channel needs an `'error'` listener: amqp-connection-manager emits `'error'` when `setup` rejects (a queue redeclared with other arguments gives `PRECONDITION_FAILED`, 406), and an emitter with no listener throws and crashes the process. `RabbitMqConnection.createChannel` attaches one that logs the channel, the error class and the AMQP code, never the message.
 - A channel the broker closes (a 406 from a double ack, a failed setup) is not re-created on its own: amqp-connection-manager 4.x re-creates channels after a reconnect. amqplib's unhandled channel `'error'` takes the connection down, and `RabbitMqConnection` reconnects after `RECONNECT_SECONDS`, which runs every setup again. Do not attach an `'error'` listener to the raw channel inside `setup`: it would keep the connection up and leave the consumer gone. While a setup keeps failing, the connection is re-established every `RECONNECT_SECONDS`, which also interrupts publishing; fix the cause, such as the queue arguments.
-- A failed setup does not exit the process: `isConsuming()` stays false, so the readiness check fails, a rolling deploy stops before it replaces the healthy pods, and the HTTP side keeps serving. A restart would hit the same `PRECONDITION_FAILED` and loop. `isConsuming()` also turns false when the channel closes or the broker cancels the consumer (its queue was deleted), and true again once a reconnect runs `setup`. Alert on the readiness failure and on a consumer count of 0.
+- A failed setup does not exit the process. `isConsuming()` stays false, so the readiness probe fails. A rolling deploy then stops before it replaces the pods that are still ready, and the not-ready pod is taken out of the service's endpoints, so it gets no traffic, rather than restarted into the same `PRECONDITION_FAILED`. `isConsuming()` is false from a channel close until the reconnect's `setup` succeeds. Alert on the readiness failure and on a consumer count of 0.
 - Each delivery runs inside `runWithRequestContext(contextFromMessageHeaders(headers), ...)`: the request id, tenant and user come from `x-request-id`, `x-tenant-id` and `x-user-id`, sanitized; unsafe values count as absent. A consumer never runs as the system identity: `x-user-id: {{sc:systemUser}}` is an ordinary user and cannot call `runCrossTenant`. Only scheduled jobs use `runAsSystem`.
 - One `message_in` line per delivery through `writeCallLine(..., 'log')` with the payload through `maskCapturedBody`: PII and secrets masked, a payload over 2 MiB logs `<CT N bytes>` unparsed (as for HTTP bodies), an empty payload logs no body, and the line can never fail the message.
 - Then the handler, then exactly one settlement, on the channel that delivered the message:
@@ -130,7 +132,9 @@ export class RabbitMqEnv {
   - a transient failure is retried through the wait queue and then applied, and after `maxAttempts` it is parked;
   - a payload over 2 MiB logs only its size and is still applied;
   - on shutdown, the delivery in flight is acked before the channel closes, and a later message waits in the queue;
-  - a failed setup (`PRECONDITION_FAILED`) is logged with its code, the process stays up, and `isConsuming()` is false.
+  - a failed setup (`PRECONDITION_FAILED`) is logged with its code, the process stays up, and `isConsuming()` is false;
+  - after a broker cancel (the queue deleted) the consumer is registered again and consumes, without a restart.
+- The rows that stop, cancel or break a consumer run on a vhost of their own, with their own connection and consumer, so the rows can run in any order (`jest --randomize`).
 - Poll with a deadline for outcomes; never sleep a fixed time.
 
 ## Do not

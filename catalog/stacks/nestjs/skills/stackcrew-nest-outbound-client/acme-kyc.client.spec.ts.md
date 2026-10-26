@@ -16,7 +16,7 @@ import { KycProvider } from '../kyc-provider.port';
 import { KYC_PROVIDER_POLICY } from '../kyc.constants';
 import { KycModule } from '../kyc.module';
 
-type Reply = { status: number; body: string; delayMs?: number; trickle?: boolean };
+type Reply = { status: number; body: string; delayMs?: number; trickle?: boolean; broken?: boolean };
 type Hit = { url: string; idempotencyKey: string | undefined; apiKey: string | undefined };
 
 const TIMEOUT_MS = 300;
@@ -45,6 +45,12 @@ describe('AcmeKycClient (against a local provider stub, never the real provider)
     req.on('end', () => {
       hits.push({ url: req.url ?? '', idempotencyKey: req.headers['idempotency-key']?.toString(), apiKey: req.headers['x-api-key']?.toString() });
       const reply = replies.shift() ?? { status: 500, body: '{"error":"no scripted reply"}' };
+      if (reply.broken === true) { // headers and part of the body, then the connection drops
+        res.writeHead(reply.status, { 'content-type': 'application/json' });
+        res.write(reply.body.slice(0, reply.body.length / 2));
+        setTimeout(() => res.socket?.destroy(), TRICKLE_STEP_MS);
+        return;
+      }
       if (reply.trickle === true) { // headers at once, then one character per step: the body takes far longer than TIMEOUT_MS
         res.writeHead(reply.status, { 'content-type': 'application/json' });
         const characters = [...reply.body];
@@ -127,6 +133,14 @@ describe('AcmeKycClient (against a local provider stub, never the real provider)
     await expect(provider.verify(COMMAND)).resolves.toMatchObject({ decision: KycDecision.APPROVED });
     expect(hits).toHaveLength(2);
     expect(lines[0]).toMatchObject({ event: 'http_out', error: 'ERR_CANCELED' });
+  });
+
+  it('retries a reply whose body breaks after a 200: a transport failure, not a rejection', async () => {
+    replies.push({ ...ok(), broken: true }, ok());
+    await expect(provider.verify(COMMAND)).resolves.toMatchObject({ decision: KycDecision.APPROVED });
+    expect(hits.map((hit) => hit.idempotencyKey)).toEqual([VERIFICATION_ID, VERIFICATION_ID]);
+    expect(lines[0]).toMatchObject({ event: 'http_out', status: 200 });
+    expect(['ERR_BAD_RESPONSE', 'ECONNRESET']).toContain(lines[0].error); // aborted stream or reset, both after the headers
   });
 
   it('refuses a reply over maxContentLength as ProviderProtocolError, without retrying', async () => {

@@ -2,6 +2,7 @@ Goes to `test/kyc-completed.consumer.e2e.spec.ts`.
 
 ```ts
 // Default location: test/kyc-completed.consumer.e2e.spec.ts
+import { ConfigService } from '@nestjs/config';
 import type { NestExpressApplication } from '@nestjs/platform-express';
 import { PostgreSqlContainer, type StartedPostgreSqlContainer } from '@testcontainers/postgresql';
 import { RabbitMQContainer, type StartedRabbitMQContainer } from '@testcontainers/rabbitmq';
@@ -14,6 +15,7 @@ import { MessagePublisher } from '../src/common/messaging/message-publisher';
 import { ProcessedMessage } from '../src/common/messaging/processed-message.entity';
 import { RabbitMqConnection } from '../src/common/messaging/rabbitmq.connection';
 import { parkingQueue } from '../src/common/messaging/work-queue';
+import type { RabbitMqEnv } from '../src/config/env';
 import { CustomerProfileRepository } from '../src/modules/customer-profiles/customer-profile.repository';
 import { CustomerProfileStatus } from '../src/modules/customer-profiles/entities/customer-profile.entity';
 import { KycCompletedConsumer } from '../src/modules/customer-profiles/messaging/kyc-completed.consumer';
@@ -24,13 +26,32 @@ import { CapturingLogger, createTestApp } from './support/test-app';
 import { TestIssuer } from './support/test-issuer';
 
 type Line = Record<string, unknown>;
+type Isolated = {
+  consumer: KycCompletedConsumer;
+  channel: ConfirmChannel;
+  publish: (content: Buffer, messageId: string, headers: Record<string, string>) => Promise<void>;
+  close: () => Promise<void>;
+};
 
 const CONTAINERS_MS = 180_000;
 const RETRY_TEST_MS = 60_000; // retryDelayMs is 5 s per wait-queue cycle
 const WAIT_MS = 30_000;
 const POLL_MS = 50;
 const IN_FLIGHT_MS = 500;
+/** Well under RECONNECT_SECONDS (5 s): readiness drops when the channel closes, not when the reconnect comes. */
+const NOT_READY_WITHIN_MS = 2_000;
 const { exchange, routingKey } = KYC_COMPLETED_QUEUE;
+
+/** ConfigService reads process.env first: point RABBITMQ_URL at another vhost while a connection is created. */
+function withRabbitUrl<T>(url: string, create: () => T): T {
+  const saved = process.env.RABBITMQ_URL;
+  process.env.RABBITMQ_URL = url;
+  try {
+    return create();
+  } finally {
+    process.env.RABBITMQ_URL = saved;
+  }
+}
 
 describe('kyc.completed consumer (e2e: RabbitMQ and Postgres in Testcontainers)', () => {
   const issuer = new TestIssuer();
@@ -97,6 +118,36 @@ describe('kyc.completed consumer (e2e: RabbitMQ and Postgres in Testcontainers)'
       }
       return undefined;
     }, (found) => found !== undefined);
+  }
+
+  /**
+   * A vhost of its own, with its own connection and consumer, for the rows that stop, cancel or break a consumer: the
+   * app's consumer is untouched, so every row passes in any order. `prepare` runs on the empty vhost first.
+   */
+  async function isolatedVhost(vhost: string, prepare: (raw: ConfirmChannel) => Promise<unknown> = async () => undefined): Promise<Isolated> {
+    await rabbit.exec(['rabbitmqctl', 'add_vhost', vhost]);
+    await rabbit.exec(['rabbitmqctl', 'set_permissions', '-p', vhost, 'guest', '.*', '.*', '.*']);
+    const url = `${rabbit.getAmqpUrl()}/${vhost}`;
+    const raw = await connect(url);
+    const rawChannel = await raw.createConfirmChannel();
+    await prepare(rawChannel);
+    const connection = withRabbitUrl(url, () => new RabbitMqConnection(new ConfigService<RabbitMqEnv, true>()));
+    const consumer = new KycCompletedConsumer(connection, app.get(KycCompletedHandler));
+    consumer.onApplicationBootstrap();
+    return {
+      consumer,
+      channel: rawChannel,
+      publish: async (content, messageId, headers) => {
+        rawChannel.publish(exchange, routingKey, content, { persistent: true, contentType: 'application/json', messageId, headers });
+        await rawChannel.waitForConfirms();
+      },
+      close: async () => {
+        await consumer.onModuleDestroy();
+        await connection.onApplicationShutdown();
+        await raw.close();
+        await rabbit.exec(['rabbitmqctl', 'delete_vhost', vhost]);
+      },
+    };
   }
 
   const asUser = <T>(tenantId: string, fn: () => Promise<T>): Promise<T> =>
@@ -235,7 +286,7 @@ describe('kyc.completed consumer (e2e: RabbitMQ and Postgres in Testcontainers)'
   });
 
   it('on shutdown stops new deliveries, lets the delivery in flight finish and ack, then closes', async () => {
-    const consumer = app.get(KycCompletedConsumer);
+    const isolated = await isolatedVhost('shutdown-drain');
     const handler = app.get(KycCompletedHandler);
     const original = handler.handle.bind(handler);
     let started = false;
@@ -245,33 +296,56 @@ describe('kyc.completed consumer (e2e: RabbitMQ and Postgres in Testcontainers)'
       return original(message);
     });
     try {
+      await isolated.consumer.ready();
       const inFlight = kycCompleted(await seedProfile('tenant-a'));
-      await publishRaw(payload(inFlight), inFlight.messageId, { 'x-tenant-id': 'tenant-a', 'x-user-id': 'kyc-service' });
+      await isolated.publish(payload(inFlight), inFlight.messageId, { 'x-tenant-id': 'tenant-a', 'x-user-id': 'kyc-service' });
       await eventually(() => started, (yes) => yes);
-      await consumer.onModuleDestroy(); // what app.close() calls
+      await isolated.consumer.onModuleDestroy(); // what app.close() calls
       expect(outcomes(inFlight.messageId)).toEqual([expect.objectContaining({ outcome: 'applied' })]); // acked before the close
-      expect(consumer.isConsuming()).toBe(false);
+      expect(isolated.consumer.isConsuming()).toBe(false);
       const later = kycCompleted(await seedProfile('tenant-a'));
-      await publishRaw(payload(later), later.messageId, { 'x-tenant-id': 'tenant-a', 'x-user-id': 'kyc-service' });
-      const queue = await eventually(() => channel.checkQueue(KYC_COMPLETED_QUEUE.queue), (state) => state.messageCount === 1);
+      await isolated.publish(payload(later), later.messageId, { 'x-tenant-id': 'tenant-a', 'x-user-id': 'kyc-service' });
+      const queue = await eventually(() => isolated.channel.checkQueue(KYC_COMPLETED_QUEUE.queue), (state) => state.messageCount === 1);
       expect(queue).toMatchObject({ messageCount: 1, consumerCount: 0 }); // waits in the queue for the next consumer
       expect(outcomes(later.messageId)).toEqual([]);
     } finally {
       spy.mockRestore();
+      await isolated.close();
     }
   });
 
   it('logs a failed setup (PRECONDITION_FAILED), keeps the process alive and reports the consumer not ready', async () => {
-    // the queue now exists with other arguments than assertWorkQueue declares, as after a changed retryDelayMs
-    await channel.deleteQueue(KYC_COMPLETED_QUEUE.queue);
-    await channel.assertQueue(KYC_COMPLETED_QUEUE.queue, { durable: true, arguments: { 'x-queue-type': 'quorum' } });
-    const restarted = new KycCompletedConsumer(app.get(RabbitMqConnection), app.get(KycCompletedHandler));
-    restarted.onApplicationBootstrap();
-    const errors = await eventually(() => lines('rabbitmq_channel_error', 'channel', 'kyc-completed'), (found) => found.length > 0);
-    expect(errors).toEqual([expect.objectContaining({ code: 406, error: expect.any(String) })]); // 406 = PRECONDITION_FAILED
-    expect(Object.keys(errors[0])).not.toContain('message'); // the AMQP reply text is never logged
-    expect(restarted.isConsuming()).toBe(false); // the readiness probe reports it; the process is still here to say so
-    await restarted.onModuleDestroy();
+    const channelErrors = (): Line[] => lines('rabbitmq_channel_error', 'channel', 'kyc-completed');
+    const earlier = channelErrors().length; // other rows may have logged channel errors of their own
+    // the queue already exists with other arguments than assertWorkQueue declares, as after a changed retryDelayMs
+    const isolated = await isolatedVhost('failed-setup', (raw) => raw.assertQueue(KYC_COMPLETED_QUEUE.queue, { durable: true, arguments: { 'x-queue-type': 'quorum' } }));
+    try {
+      const errors = (await eventually(channelErrors, (found) => found.length > earlier)).slice(earlier);
+      expect(errors[0]).toMatchObject({ code: 406, error: expect.any(String) }); // 406 = PRECONDITION_FAILED
+      expect(errors.flatMap((line) => Object.keys(line))).not.toContain('message'); // the AMQP reply text is never logged
+      expect(isolated.consumer.isConsuming()).toBe(false); // the readiness probe reports it; the process is still here to say so
+    } finally {
+      await isolated.close();
+    }
   });
+
+  it('re-registers after the broker cancels it (its queue deleted) and consumes again, without a restart', async () => {
+    const isolated = await isolatedVhost('broker-cancel');
+    try {
+      await isolated.consumer.ready();
+      expect(isolated.consumer.isConsuming()).toBe(true);
+      const deletedAt = Date.now();
+      await isolated.channel.deleteQueue(KYC_COMPLETED_QUEUE.queue); // the broker cancels the consumer
+      expect(await eventually(() => isolated.consumer.isConsuming(), (consuming) => !consuming)).toBe(false); // not ready meanwhile
+      expect(Date.now() - deletedAt).toBeLessThan(NOT_READY_WITHIN_MS);
+      expect(await eventually(() => isolated.consumer.isConsuming(), (consuming) => consuming)).toBe(true); // the reconnect ran setup
+      const message = kycCompleted(await seedProfile('tenant-a'));
+      await isolated.publish(payload(message), message.messageId, { 'x-tenant-id': 'tenant-a', 'x-user-id': 'kyc-service' });
+      expect(await eventually(() => outcomes(message.messageId), (found) => found.length > 0)).toEqual([expect.objectContaining({ outcome: 'applied' })]);
+      expect(await isolated.channel.checkQueue(KYC_COMPLETED_QUEUE.queue)).toMatchObject({ consumerCount: 1 }); // re-declared, consumed again
+    } finally {
+      await isolated.close();
+    }
+  }, RETRY_TEST_MS);
 });
 ```

@@ -5,6 +5,7 @@ Goes to `src/modules/customer-profiles/messaging/kyc-completed.consumer.ts`.
 import { Injectable, Logger, type OnApplicationBootstrap, type OnModuleDestroy } from '@nestjs/common';
 import type { ChannelWrapper } from 'amqp-connection-manager';
 import type { ConfirmChannel, ConsumeMessage } from 'amqplib';
+import { randomUUID } from 'node:crypto';
 import { contextFromMessageHeaders, contextLogFields, runWithRequestContext } from '../../../common/context/request-context';
 import { bodyPlaceholder, loadLogBodies, loadMaskOptions, maskCapturedBody } from '../../../common/logging/body-masker';
 import { LogEvent, writeCallLine } from '../../../common/logging/log-fields';
@@ -22,7 +23,6 @@ const CONSUMER_CHANNEL = 'kyc-completed';
 /** On shutdown, how long deliveries already in flight may take to settle before the channel closes. */
 const SHUTDOWN_GRACE_MS = 10_000;
 const MESSAGE_OUTCOME = 'message_outcome';
-const CONSUMER_CANCELLED = 'consumer_cancelled';
 const CONSUMER_STOPPED = 'consumer_stopped';
 const Outcome = { APPLIED: 'applied', DUPLICATE: 'duplicate', RETRY: 'retry', PARKED: 'parked', PARK_FAILED: 'park_failed', UNSETTLED: 'unsettled' } as const;
 
@@ -37,23 +37,34 @@ export class KycCompletedConsumer implements OnApplicationBootstrap, OnModuleDes
   private readonly logBodies = loadLogBodies();
   private readonly maskOptions = loadMaskOptions();
   private readonly inFlight = new Set<Promise<void>>();
+  private readonly consumerTag = `${CONSUMER_CHANNEL}-${randomUUID()}`;
   private channel: ChannelWrapper | undefined;
-  private registration: { channel: ConfirmChannel; consumerTag: string } | undefined;
+  private registered: Promise<void> = Promise.resolve();
+  /** The raw channel of the latest successful setup: deliveries arrive on it, so they are settled on it. */
+  private delivering: ConfirmChannel | undefined;
   private consuming = false;
+  private stopping = false;
 
   constructor(
     private readonly rabbit: RabbitMqConnection,
     private readonly handler: KycCompletedHandler,
   ) {}
 
-  /** Starts once the app is up. amqp-connection-manager runs setup again after every reconnect. */
+  /**
+   * Starts once the app is up. The ChannelWrapper owns the consumer: after every reconnect it runs setup (topology,
+   * prefetch) and then registers the consumer again, and after a broker cancel (the queue deleted, a quorum leader
+   * moved) it registers it again at once.
+   */
   onApplicationBootstrap(): void {
-    this.channel = this.rabbit.createChannel(CONSUMER_CHANNEL, { setup: (channel: ConfirmChannel) => this.setup(channel) });
+    const channel = this.rabbit.createChannel(CONSUMER_CHANNEL, { setup: (raw: ConfirmChannel) => this.setup(raw) });
+    this.channel = channel;
+    channel.on('connect', () => this.refreshConsuming()); // setup ran and the consumer is registered again
+    this.registered = this.register(channel);
   }
 
   /**
-   * For the readiness probe: true only while the topology is declared and this consumer is registered on a live
-   * channel. A failed setup (logged by RabbitMqConnection) leaves it false until a reconnect runs setup again.
+   * For the readiness probe only, never liveness: true while a setup succeeded on a live channel and this consumer is
+   * registered. A failed setup (logged by RabbitMqConnection) or a closed channel leaves it false until a reconnect.
    */
   isConsuming(): boolean {
     return this.consuming;
@@ -61,44 +72,67 @@ export class KycCompletedConsumer implements OnApplicationBootstrap, OnModuleDes
 
   /** Resolves once the topology is declared and the consumer is registered (tests). */
   async ready(): Promise<void> {
+    await this.registered;
     await this.channel?.waitForConnect();
   }
 
-  /** Stops new deliveries, waits up to SHUTDOWN_GRACE_MS for those in flight, then closes; unacked ones go back to the queue. */
+  /**
+   * Stops new deliveries (the wrapper forgets the cancelled consumer, so no reconnect registers it again), waits for
+   * the deliveries in flight, then closes. The cancel and the wait share SHUTDOWN_GRACE_MS; messages still unacked go
+   * back to the queue when the channel closes.
+   */
   async onModuleDestroy(): Promise<void> {
+    this.stopping = true; // a reconnect during the drain runs setup, which then declares and registers nothing
     this.consuming = false;
-    const registration = this.registration;
-    this.registration = undefined;
-    if (registration !== undefined) {
-      try {
-        await registration.channel.cancel(registration.consumerTag);
-      } catch (failure: unknown) {
-        this.logger.warn({ event: CONSUMER_STOPPED, queue: KYC_COMPLETED_QUEUE.queue, error: errorName(failure) }, CONSUMER_STOPPED); // channel already gone
-      }
+    const deadline = Date.now() + SHUTDOWN_GRACE_MS;
+    if (this.channel !== undefined) {
+      const cancelled = this.channel.cancel(this.consumerTag).catch((failure: unknown) => {
+        this.logger.warn({ event: CONSUMER_STOPPED, queue: KYC_COMPLETED_QUEUE.queue, error: errorName(failure) }, CONSUMER_STOPPED);
+      });
+      await settledWithin([cancelled], deadline - Date.now());
     }
-    await settledWithin([...this.inFlight], SHUTDOWN_GRACE_MS);
+    await settledWithin([...this.inFlight], Math.max(0, deadline - Date.now()));
     if (this.inFlight.size > 0) {
       this.logger.warn({ event: CONSUMER_STOPPED, queue: KYC_COMPLETED_QUEUE.queue, unsettled: this.inFlight.size }, CONSUMER_STOPPED);
     }
     await this.channel?.close();
   }
 
-  private async setup(channel: ConfirmChannel): Promise<void> {
-    this.consuming = false;
-    await assertWorkQueue(channel, KYC_COMPLETED_QUEUE);
-    await channel.prefetch(KYC_COMPLETED_QUEUE.prefetch);
-    const { consumerTag } = await channel.consume(KYC_COMPLETED_QUEUE.queue, (msg) => this.deliver(channel, msg), { noAck: false });
-    this.registration = { channel, consumerTag };
-    this.consuming = true;
-    channel.once('close', () => {
-      this.consuming = false; // a reconnect runs setup again
-    });
+  private async register(channel: ChannelWrapper): Promise<void> {
+    try {
+      await channel.consume(KYC_COMPLETED_QUEUE.queue, (msg) => this.deliver(msg), { noAck: false, consumerTag: this.consumerTag });
+      this.refreshConsuming();
+    } catch (failure: unknown) {
+      // the wrapper keeps the consumer in its list and registers it on the next connect
+      this.logger.warn({ event: CONSUMER_STOPPED, queue: KYC_COMPLETED_QUEUE.queue, error: errorName(failure) }, CONSUMER_STOPPED);
+    }
   }
 
-  private deliver(channel: ConfirmChannel, msg: ConsumeMessage | null): void {
-    if (msg === null) {
-      this.consuming = false; // the broker cancelled this consumer (the queue was deleted): readiness reports it
-      this.logger.warn({ event: CONSUMER_CANCELLED, queue: KYC_COMPLETED_QUEUE.queue }, CONSUMER_CANCELLED);
+  private async setup(raw: ConfirmChannel): Promise<void> {
+    this.delivering = undefined;
+    this.refreshConsuming();
+    if (this.stopping) {
+      return; // during the drain: the cancelled consumer is not registered again, so there is nothing to declare
+    }
+    await assertWorkQueue(raw, KYC_COMPLETED_QUEUE);
+    await raw.prefetch(KYC_COMPLETED_QUEUE.prefetch);
+    raw.once('close', () => {
+      if (this.delivering === raw) {
+        this.delivering = undefined;
+      }
+      this.refreshConsuming(); // false until a reconnect runs setup again
+    });
+    this.delivering = raw;
+  }
+
+  private refreshConsuming(): void {
+    this.consuming = !this.stopping && this.delivering !== undefined;
+  }
+
+  private deliver(msg: ConsumeMessage): void {
+    const channel = this.delivering; // the wrapper registers the consumer on the channel the latest setup got
+    if (channel === undefined) {
+      this.outcome(msg, Outcome.UNSETTLED); // no live channel to settle on: the broker redelivers it after the close
       return;
     }
     const delivery = this.receive(channel, msg); // never rejects: every path acks, retries or parks, and logs the outcome
@@ -121,7 +155,9 @@ export class KycCompletedConsumer implements OnApplicationBootstrap, OnModuleDes
         this.settle(msg, () => channel.ack(msg), applied ? Outcome.APPLIED : Outcome.DUPLICATE); // after the commit
       });
     } catch (failure: unknown) {
-      this.outcome(msg, Outcome.UNSETTLED, failure); // the context was refused: not settled, so the broker redelivers it
+      // not expected: runWithRequestContext refuses only inside another user's context, which a broker callback never
+      // has. The message stays unacked and holds one prefetch slot until this channel closes; the broker then redelivers it.
+      this.outcome(msg, Outcome.UNSETTLED, failure);
     }
   }
 

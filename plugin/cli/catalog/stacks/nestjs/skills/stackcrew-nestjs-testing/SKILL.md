@@ -65,7 +65,8 @@ After `runMigrations()`, `dataSource.driver.createSchemaBuilder().log()` returns
 With the rabbitmq add-on, follow `kyc-completed.consumer.e2e.spec.ts` in `stackcrew-nest-rabbitmq-consumer`: RabbitMQ and Postgres in Testcontainers, the real consumer.
 
 - Publish raw bytes with the headers you need (`x-request-id`, `x-tenant-id`, `x-user-id`), as any producer could.
-- Cover: applied once in the header's tenant as the header's user; a duplicate applied once; a poison message, a tombstone and a schema violation parked after one delivery; `x-user-id: {{sc:systemUser}}` cannot cross tenants; no tenant header is parked; a transient failure retried, then parked after the attempt cap.
+- Cover: applied once in the header's tenant as the header's user; a duplicate applied once; a poison message, a tombstone and a schema violation parked after one delivery; `x-user-id: {{sc:systemUser}}` cannot cross tenants; no tenant header is parked; a transient failure retried, then parked after the attempt cap; a payload over 2 MiB logged by size only; a drained shutdown (the delivery in flight is acked before the close, a later message waits in the queue); a failed setup logged with its code while the process stays up and not ready; a broker cancel (the queue deleted) after which the consumer is registered again.
+- Run the rows that stop, cancel or break a consumer on a RabbitMQ vhost of their own, with their own connection and consumer, so every row passes in any order (`jest --randomize`).
 - One `message_in` line per delivery with the payload masked.
 - Poll with a deadline for outcome lines or rows; never sleep a fixed time.
 

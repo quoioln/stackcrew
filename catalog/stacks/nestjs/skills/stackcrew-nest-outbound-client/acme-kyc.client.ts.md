@@ -20,6 +20,8 @@ const VERIFY_PATH = '/v1/verifications';
 const IDEMPOTENCY_KEY_HEADER = 'Idempotency-Key';
 const TOO_MANY_REQUESTS = 429;
 const SERVER_ERROR = 500;
+/** axios rejects a status from here on; below it, an error with a response is a body that broke after the headers. */
+const FIRST_ERROR_STATUS = 300;
 
 /**
  * The Acme adapter of KycProvider. Base URL, timeout, body size limits, the API key header and no redirects come from
@@ -59,9 +61,16 @@ export class AcmeKycClient extends KycProvider {
   }
 }
 
-/** 5xx, 429 and no reply at all (timeout, the attempt bound, refused, reset) are transient; other statuses are rejections. */
+/**
+ * Transient (retried, and counted by the circuit breaker): 5xx, 429, no reply at all (timeout, the attempt bound,
+ * refused, reset), and a 2xx whose body broke mid-read (a reset or an aborted stream after the headers). Other statuses
+ * are rejections. A retry is safe: every attempt sends the same idempotency key.
+ */
 function providerErrorFor(error: AxiosError): ProviderError {
   const status = error.response?.status;
+  if (status !== undefined && status < FIRST_ERROR_STATUS) {
+    return new ProviderUnavailableError(); // the transport failed while reading a successful reply
+  }
   if (status !== undefined) {
     return status >= SERVER_ERROR || status === TOO_MANY_REQUESTS ? new ProviderUnavailableError() : new ProviderRejectedError();
   }

@@ -20,6 +20,9 @@ export type VerifyIdentityCommand = {
   readonly selfie: Buffer;
 };
 
+/** What the caller supplies on every run of an operation; the idempotency key comes from the stored operation row. */
+export type KycEvidence = Pick<VerifyIdentityCommand, 'documentNumber' | 'selfie'>;
+
 export type VerifyIdentityResult = {
   readonly decision: KycDecision;
   readonly score: number;
