@@ -6,7 +6,7 @@ title: Logging and observability
 
 ## Essentials
 
-- Bodies are logged only through the one shared masker, never by hand in a service: secret keys are always masked, PII keys come from config (`LOG_MASK_FIELDS` or `app.logging.mask-fields`), keys match by whole word runs with no substring matching, bodies are capped at 16 KB, base64 and binary become size placeholders, non-JSON bodies become a placeholder, and a value that cannot be masked logs `<CT N+ bytes>` when its size is unknown or over the cap.
+- Bodies are logged only through the one shared masker, never by hand in a service: secret keys are always masked, PII keys come from config (`LOG_MASK_FIELDS` or `app.logging.mask-fields`), keys match by whole word runs with no substring matching, bodies are capped at 16 KB, base64 and binary become size placeholders, non-JSON bodies become a placeholder, and a value that cannot be masked logs `<CT N+ bytes>` when its size is unknown.
 - Redact secrets, tokens, `Authorization` headers, cookies and PII in the logging layer, deeply and by default. Log only the headers `content-type`, `content-length` and `user-agent`.
 - Log one line per HTTP call, inbound and outbound, from one place each (never from services): method, templated route or sanitized URL, status, `durationMs`, ids, and the request and response bodies after the shared masker.
 - Emit one structured event per line: a stable message plus key/value fields, never data interpolated into the message.
@@ -57,7 +57,7 @@ One masker, shared by inbound, outbound and consumers. Behavior (the same in eve
 - **Base64:** a string longer than 1024 characters that is base64 (optionally a `data:` URI) becomes `<base64 N bytes>` with N the decoded size.
 - **Size:** serialize compactly. Above 16 KB (`LOG_MAX_BODY_BYTES` or `app.logging.max-body-bytes`, default 16384) keep the first bytes, cut at a character boundary, and append `...[truncated T bytes]` with T the full size.
 - **Content types:** parse and mask `application/json` (and `*+json`) and `application/x-www-form-urlencoded`. `multipart/*`, `application/octet-stream`, `image/*` and `application/pdf` log the placeholder `<binary CT N bytes>`, where CT is the content type and N the size in bytes. Everything else (XML, SOAP, `text/*`, a missing content type, JSON that does not parse) logs only the placeholder `<CT N bytes>` (content type, or `unknown` when missing, and size in bytes); the content is not logged.
-- **Nesting:** a body nested deeper than 64 objects or arrays logs only `<CT N bytes>`, or `<CT N+ bytes>` (N = the body cap) when masking failed and the size is unknown or over the cap. The masker walks at most 64 levels; it never recurses without a bound, so a crafted body of brackets cannot exhaust the stack.
+- **Nesting:** a body nested deeper than 64 objects or arrays logs only `<CT N bytes>`, or `<CT N+ bytes>` (N = the body cap) when masking failed and the size is unknown (the value cannot be serialized at all: a cycle, a BigInt, a throwing getter). The masker walks at most 64 levels; it never recurses without a bound, so a crafted body of brackets cannot exhaust the stack.
 - **Logging never throws:** if masking or writing a line fails, the one line is still written with size-only bodies, and the request, the outbound call or the message keeps its result. A log line is never the reason a call fails.
 - **Switch:** `LOG_BODIES` or `app.logging.log-bodies` (default on). Off drops `reqBody` and `resBody` and keeps the one-line log.
 - Strip or escape CR and LF in logged values.

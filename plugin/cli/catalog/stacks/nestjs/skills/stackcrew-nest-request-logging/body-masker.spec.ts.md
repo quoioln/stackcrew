@@ -113,16 +113,41 @@ describe('maskBody (core-logging masker contract)', () => {
     expect(serializeMasked(outer, DEFAULTS)).toBe('{"note":"ok"}');
     expect(serializeMasked({ body: outer }, DEFAULTS)).toBe('{"body":{"note":"ok"}}');
     const fn = Object.assign(() => 1, { toJSON: (): unknown => ({ password: 'leak' }) });
-    expect(serializeMasked([fn], DEFAULTS)).toBe('[null]');
+    expect(serializeMasked([fn], DEFAULTS)).toBe('[{"password":"***"}]'); // JSON.stringify calls a function's toJSON: its result is masked
   });
 
-  it('stops sizing a wide value at the cap without walking it', () => {
-    const sparse: unknown[] = [];
-    sparse.length = 200_000_000;
-    expect(placeholderFor(sparse, 'text/csv', DEFAULTS)).toBe('<text/csv 16384+ bytes>');
+  it('masks what JSON.stringify would write: an Array subclass or a boxed primitive from a toJSON leaves no toJSON on the copy', () => {
+    const SECRET = { password: 'leak-from-proto' };
+    class LeakyPage extends Array<unknown> { toJSON(): unknown { return [SECRET]; } } // a prototype toJSON a species copy would inherit
+    const page = (): unknown => LeakyPage.from([1]);
+    expect(serializeMasked({ toJSON: page }, DEFAULTS)).toBe('[1]'); // JSON.stringify applies toJSON once, never to its result
+    expect(JSON.stringify(maskValue({ toJSON: page }, DEFAULTS))).toBe('[1]'); // a species copy would have written [SECRET] here
+    expect(serializeMasked(page(), DEFAULTS)).toBe('[{"password":"***"}]');
+    class Page extends Array<unknown> { toJSON(): unknown { return { wrapped: Array.from(this) }; } }
+    const viaToJson = maskValue({ toJSON: (): unknown => Page.from([{ password: 'x' }]) }, DEFAULTS);
+    expect(viaToJson).toEqual([{ password: '***' }]);
+    expect(Object.getPrototypeOf(viaToJson)).toBe(Array.prototype); // plain data: serializing it later runs no user code
+    expect(maskValue(Page.from([{ password: 'x' }]), DEFAULTS)).toEqual({ wrapped: [{ password: '***' }] });
+    expect(serializeMasked({ email: new String('a@b.c'), count: new Number(5), password: new String('p') }, DEFAULTS))
+      .toBe('{"email":"***","count":5,"password":"***"}');
+  });
+
+  it('normalizes a nested Buffer like JSON.stringify, and sizes a value it cannot mask by what JSON.stringify writes', () => {
+    expect(serializeMasked({ file: Buffer.from('hi'), bytes: new Uint8Array([1, 2]) }, DEFAULTS))
+      .toBe('{"file":{"type":"Buffer","data":[104,105]},"bytes":{"0":1,"1":2}}');
+    let deep: unknown = { password: 'p' };
+    for (let i = 0; i < 65; i++) {
+      deep = [deep];
+    }
+    const tooDeep = { deep, file: Buffer.alloc(1024 * 1024) }; // nested past 64 next to a 1 MiB Buffer: masking fails, the size is exact
+    expect(serializeMasked(tooDeep, DEFAULTS)).toBe(`<application/json ${Buffer.byteLength(JSON.stringify(tooDeep))} bytes>`);
     const wide = Object.fromEntries(Array.from({ length: 2000 }, (_, i) => [`key-${'k'.repeat(20)}-${i}`, i]));
-    expect(placeholderFor(wide, 'text/csv', DEFAULTS)).toBe('<text/csv 16384+ bytes>');
+    expect(placeholderFor(wide, 'text/csv', DEFAULTS)).toBe(`<text/csv ${Buffer.byteLength(JSON.stringify(wide))} bytes>`);
+    const sparse: unknown[] = [];
+    sparse.length = 20_000;
+    expect(placeholderFor(sparse, 'text/csv', DEFAULTS)).toBe('<text/csv 100001 bytes>'); // [ 20000 nulls 19999 commas ], as JSON.stringify writes
     expect(placeholderFor({ a: [1, 2] }, 'text/csv', DEFAULTS)).toBe('<text/csv 11 bytes>'); // {"a":[1,2]}
+    expect(placeholderFor({ n: 1n }, 'text/csv', DEFAULTS)).toBe('<text/csv 16384+ bytes>'); // JSON.stringify throws: the size is unknown
   });
 
   it('masks a toJSON result in place: a DTO whose JSON is 64 deep is masked like the plain value', () => {
@@ -136,10 +161,10 @@ describe('maskBody (core-logging masker contract)', () => {
     expect(serializeMasked(plain, DEFAULTS)).toContain('{"password":"***"}');
   });
 
-  it('never throws, even for a value whose getter throws', () => {
+  it('never throws, even for a value whose getter throws: its size is unknown', () => {
     const hostile = { get email(): string { throw new Error('boom'); } };
-    expect(serializeMasked(hostile, DEFAULTS)).toBe('<application/json 0 bytes>');
-    expect(maskValue(hostile, DEFAULTS)).toBe('<application/json 0 bytes>');
+    expect(serializeMasked(hostile, DEFAULTS)).toBe('<application/json 16384+ bytes>');
+    expect(maskValue(hostile, DEFAULTS)).toBe('<application/json 16384+ bytes>');
   });
 });
 ```

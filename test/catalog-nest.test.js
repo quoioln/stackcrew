@@ -399,11 +399,9 @@ test('nest logging fix round 2: bounded sizing, toJSON at the same depth, guarde
   await withRealCatalog(async (c) => {
     const s = nestSkill(c, LOGGING);
     const masker = s.file('body-masker.ts');
-    assert.ok(masker.includes('const seen = new WeakSet<object>()') && masker.includes('if (size > limit) {'), 'sizing stops at a cycle, a shared node or the cap');
-    assert.ok(masker.includes('export function placeholderFor('), 'one bounded placeholder for parsed values');
-    assert.match(masker, /function maskWith\(value: unknown, keys: ReadonlySet<string>, depth: number, applyToJson = true\): unknown \{\n\s+if \(typeof value !== 'object' \|\| value === null\) \{/,
+    assert.ok(masker.includes('export function placeholderFor('), 'one placeholder for parsed values');
+    assert.match(masker, /function maskWith\(value: unknown, keys: ReadonlySet<string>, depth: number\): unknown \{\n\s+if \(typeof value !== 'object' \|\| value === null\) \{/,
       'primitives first, then one depth check for any object');
-    assert.ok(masker.includes('return maskWith(json, keys, depth, false);'), 'a toJSON result keeps the depth and toJSON runs once');
     const spec = s.file('body-masker.spec.ts');
     for (const needle of ['a.self = a', "toJSON(): unknown { return this; }", '16384+ bytes']) assert.ok(spec.includes(needle), `masker spec missing ${needle}`);
     const fields = s.file('log-fields.ts');
@@ -416,20 +414,42 @@ test('nest logging fix round 2: bounded sizing, toJSON at the same depth, guarde
   });
 });
 
-test('nest logging fix round 3: no function on the masked copy, early size cap, empty message body', async () => {
+test('nest logging fix round 3: no function on the masked copy, empty message body', async () => {
   await withRealCatalog(async (c) => {
     const s = nestSkill(c, LOGGING);
-    const masker = s.file('body-masker.ts');
-    assert.match(masker, /if \(typeof value === 'function'\) \{\n\s+return undefined;/, 'a function value is never copied');
-    assert.ok(masker.includes(".filter(([, item]: [string, unknown]) => typeof item !== 'function')"), 'function-valued entries are dropped');
-    assert.match(masker, /size \+= CONTAINER_MARKS[^\n]*\n\s+if \(size > limit\) \{\n\s+return undefined;/, 'a wide node stops before its children');
-    assert.match(masker, /\/\/ "key":\n\s+if \(size > limit\) \{/, 'the key loop stops at the cap');
     const spec = s.file('body-masker.spec.ts');
-    for (const needle of ["toJSON = (): unknown => ({ ...this, kind: 'dto' })", "password: 'leak-from-copied-toJSON'", 'sparse.length = 200_000_000']) {
+    for (const needle of ["toJSON = (): unknown => ({ ...this, kind: 'dto' })", "password: 'leak-from-copied-toJSON'"]) {
       assert.ok(spec.includes(needle), `masker spec missing ${needle}`);
     }
     assert.ok(s.body.includes('payload !== undefined && payload.length > 0 ? bodyPlaceholder(type, payload.length)'), 'an empty message logs no body');
     assert.match(s.body, /\| `body-masker\.ts\.md` \|[^\n]*`placeholderFor`/, 'the file table names placeholderFor');
+  });
+});
+
+test('nest logging fix round 4: parsed values are normalized by a guarded JSON round-trip, never masked as a live graph', async () => {
+  await withRealCatalog(async (c) => {
+    const s = nestSkill(c, LOGGING);
+    const masker = s.file('body-masker.ts');
+    assert.match(masker, /function jsonText\(value: unknown\): string \| undefined \{\n\s+try \{\n\s+return JSON\.stringify\(value\) \?\? '';\n\s+\} catch \{\n\s+return undefined;/,
+      'the round-trip is guarded: a throw means the size is unknown');
+    for (const fn of ['maskValue', 'serializeMasked', 'placeholderFor']) {
+      assert.match(masker, new RegExp(`export function ${fn}\\([^\\n]*\\n\\s+const text = jsonText\\(value\\);`), `${fn} normalizes first`);
+    }
+    assert.ok(masker.includes('JSON.parse(text)'), 'the masked data is the parsed JSON text: plain arrays and objects only');
+    for (const gone of ['toJSON', 'boundedSize', 'WeakSet', 'applyToJson', "typeof item !== 'function'", 'Object.entries(value)\n']) {
+      assert.ok(!masker.replace(/^\s*\*.*$/gm, '').includes(gone), `no live-graph special case left: ${gone}`);
+    }
+    const spec = s.file('body-masker.spec.ts');
+    for (const needle of ['class LeakyPage extends Array<unknown>', "password: 'leak-from-proto'", 'Object.getPrototypeOf(viaToJson)).toBe(Array.prototype)', "expect(serializeMasked({ toJSON: page }, DEFAULTS)).toBe('[1]')",
+      "new String('a@b.c')", '{"file":{"type":"Buffer","data":[104,105]}', 'file: Buffer.alloc(1024 * 1024)', "placeholderFor({ n: 1n }, 'text/csv', DEFAULTS)",
+      '<application/json 16384+ bytes>']) {
+      assert.ok(spec.includes(needle), `masker spec missing ${needle}`);
+    }
+    assert.ok(!spec.includes('<application/json 0 bytes>'), 'a throwing getter no longer sizes as 0');
+    assert.ok(s.body.includes('JSON round-trip') && s.body.includes('runs no user code'), 'SKILL.md states the normalization');
+    assert.ok(!s.body.includes('holds no function'), 'the old wording is gone');
+    const log = c.coreRules.find((r) => r.id === 'core-logging').body;
+    assert.ok(!log.includes('unknown or over the cap'), 'N+ means the size is unknown');
   });
 });
 
