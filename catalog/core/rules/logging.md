@@ -6,7 +6,7 @@ title: Logging and observability
 
 ## Essentials
 
-- Bodies are logged only through the one shared masker, never by hand in a service: secret keys are always masked, PII keys come from config (`LOG_MASK_FIELDS` or `app.logging.mask-fields`), keys match by whole word runs with no substring matching, bodies are capped at 16 KB, base64 and binary become size placeholders, and non-JSON bodies become a placeholder.
+- Bodies are logged only through the one shared masker, never by hand in a service: secret keys are always masked, PII keys come from config (`LOG_MASK_FIELDS` or `app.logging.mask-fields`), keys match by whole word runs with no substring matching, bodies are capped at 16 KB, base64 and binary become size placeholders, non-JSON bodies become a placeholder, and a value that cannot be masked logs `<CT N+ bytes>` when its size is unknown or over the cap.
 - Redact secrets, tokens, `Authorization` headers, cookies and PII in the logging layer, deeply and by default. Log only the headers `content-type`, `content-length` and `user-agent`.
 - Log one line per HTTP call, inbound and outbound, from one place each (never from services): method, templated route or sanitized URL, status, `durationMs`, ids, and the request and response bodies after the shared masker.
 - Emit one structured event per line: a stable message plus key/value fields, never data interpolated into the message.
