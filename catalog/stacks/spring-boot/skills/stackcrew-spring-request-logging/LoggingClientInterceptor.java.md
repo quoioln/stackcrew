@@ -84,8 +84,7 @@ public class LoggingClientInterceptor implements ClientHttpRequestInterceptor {
                 (status == null ? minimal : minimal.addKeyValue(LogFields.STATUS, status)).log();
             } catch (RuntimeException minimalFailure) {
                 // the logging backend itself fails: never replace the call's own result or exception
-                logFailure.addSuppressed(minimalFailure);
-                LogFields.warnLineNotWritten(LogFields.HTTP_OUT, logFailure);
+                LogFields.warnLineNotWritten(LogFields.HTTP_OUT, logFailure, minimalFailure);
             }
         }
     }

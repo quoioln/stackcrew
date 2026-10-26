@@ -165,13 +165,20 @@ function boundedSize(root: unknown, limit: number): number | undefined {
       return undefined;
     } else {
       seen.add(value);
-      const children: unknown[] = Array.isArray(value) ? value : Object.entries(value);
+      const isArray = Array.isArray(value);
+      const children: unknown[] = isArray ? value : Object.entries(value);
       size += CONTAINER_MARKS + Math.max(children.length - 1, 0); // [ ] or { } and the commas
+      if (size > limit) {
+        return undefined; // a wide node (a huge or sparse array) stops here, before its children are queued
+      }
       for (const child of children) {
-        if (Array.isArray(value)) {
+        if (isArray) {
           pending.push(child);
         } else if (Array.isArray(child)) {
           size += Buffer.byteLength(JSON.stringify(child[0])) + 1; // "key":
+          if (size > limit) {
+            return undefined;
+          }
           pending.push(child[1]);
         }
       }
@@ -186,9 +193,14 @@ function boundedSize(root: unknown, limit: number): number | undefined {
 /**
  * Recursive, but never deeper than MAX_NESTING_DEPTH: depth 1 is the body itself. Like JSON.stringify, toJSON runs once
  * per value and its result takes the value's place at the same depth (so a toJSON that returns `this` stops).
+ * The copy holds no function: a toJSON copied onto it (an arrow bound to the original, or a toJSON inside a toJSON
+ * result) would run when the copy is serialized and write the unmasked original.
  */
 function maskWith(value: unknown, keys: ReadonlySet<string>, depth: number, applyToJson = true): unknown {
   if (typeof value !== 'object' || value === null) {
+    if (typeof value === 'function') {
+      return undefined; // JSON.stringify writes no function either: omitted in an object, null in an array
+    }
     const base64 = typeof value === 'string' && value.length > BASE64_MIN_EXCLUSIVE_LENGTH && BASE64.test(value);
     return base64 ? `<base64 ${decodedSize(value)} bytes>` : value;
   }
@@ -202,9 +214,10 @@ function maskWith(value: unknown, keys: ReadonlySet<string>, depth: number, appl
   if (Array.isArray(value)) {
     return value.map((item: unknown) => maskWith(item, keys, depth + 1));
   }
-  // Object.fromEntries defines own properties, so a "__proto__" key stays a plain key
-  return Object.fromEntries(Object.entries(value).map(([key, item]: [string, unknown]) =>
-    [key, isMaskedKey(key, keys) ? MASK : maskWith(item, keys, depth + 1)]));
+  // Object.fromEntries defines own properties, so a "__proto__" key stays a plain key; function values are dropped
+  return Object.fromEntries(Object.entries(value)
+    .filter(([, item]: [string, unknown]) => typeof item !== 'function')
+    .map(([key, item]: [string, unknown]) => [key, isMaskedKey(key, keys) ? MASK : maskWith(item, keys, depth + 1)]));
 }
 
 /** True when any contiguous run of the key's words, joined, is in the list. */

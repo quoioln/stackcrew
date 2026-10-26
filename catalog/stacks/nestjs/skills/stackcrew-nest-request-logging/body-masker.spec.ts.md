@@ -2,7 +2,9 @@ Goes to `src/common/logging/body-masker.spec.ts`.
 
 ```ts
 // Default location: src/common/logging/body-masker.spec.ts
-import { DEFAULT_PII_FIELDS, loadLogBodies, loadMaskOptions, maskBody, maskValue, serializeMasked, type MaskOptions } from './body-masker';
+import {
+  DEFAULT_PII_FIELDS, loadLogBodies, loadMaskOptions, maskBody, maskValue, placeholderFor, serializeMasked, type MaskOptions,
+} from './body-masker';
 
 const JSON_TYPE = 'application/json';
 const DEFAULTS: MaskOptions = { piiFields: DEFAULT_PII_FIELDS, maxBodyBytes: 16384 };
@@ -96,6 +98,31 @@ describe('maskBody (core-logging masker contract)', () => {
     expect(maskValue(a, DEFAULTS)).toBe('<application/json 16384+ bytes>');
     const self = { a: 1, password: 'p', toJSON(): unknown { return this; } };
     expect(serializeMasked(self, DEFAULTS)).toBe('{"a":1,"password":"***"}');
+  });
+
+  it('never copies a function onto the masked copy: a copied toJSON would run on the unmasked original', () => {
+    class Dto {
+      password = 'p4ss';
+      email = 'a@b.c';
+      toJSON = (): unknown => ({ ...this, kind: 'dto' }); // an arrow stays bound to the original instance
+    }
+    expect(serializeMasked(new Dto(), DEFAULTS)).toBe('{"password":"***","email":"***","kind":"dto"}');
+    expect(JSON.stringify(maskValue(new Dto(), DEFAULTS))).toBe('{"password":"***","email":"***","kind":"dto"}');
+    const inner = { note: 'ok', toJSON: (): unknown => ({ password: 'leak-from-copied-toJSON' }) };
+    const outer = { toJSON: (): unknown => inner }; // JSON.stringify runs one toJSON per value: it writes {"note":"ok"}
+    expect(serializeMasked(outer, DEFAULTS)).toBe('{"note":"ok"}');
+    expect(serializeMasked({ body: outer }, DEFAULTS)).toBe('{"body":{"note":"ok"}}');
+    const fn = Object.assign(() => 1, { toJSON: (): unknown => ({ password: 'leak' }) });
+    expect(serializeMasked([fn], DEFAULTS)).toBe('[null]');
+  });
+
+  it('stops sizing a wide value at the cap without walking it', () => {
+    const sparse: unknown[] = [];
+    sparse.length = 200_000_000;
+    expect(placeholderFor(sparse, 'text/csv', DEFAULTS)).toBe('<text/csv 16384+ bytes>');
+    const wide = Object.fromEntries(Array.from({ length: 2000 }, (_, i) => [`key-${'k'.repeat(20)}-${i}`, i]));
+    expect(placeholderFor(wide, 'text/csv', DEFAULTS)).toBe('<text/csv 16384+ bytes>');
+    expect(placeholderFor({ a: [1, 2] }, 'text/csv', DEFAULTS)).toBe('<text/csv 11 bytes>'); // {"a":[1,2]}
   });
 
   it('masks a toJSON result in place: a DTO whose JSON is 64 deep is masked like the plain value', () => {

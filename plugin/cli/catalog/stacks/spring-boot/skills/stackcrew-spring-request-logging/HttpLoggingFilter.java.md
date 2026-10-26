@@ -103,8 +103,8 @@ public class HttpLoggingFilter extends OncePerRequestFilter {
 
     /** Logging never throws (core-logging): when building the line fails, the same line with size-only bodies is written. */
     private void writeLine(ContentCachingRequestWrapper request, TeeResponseWrapper response, Throwable failure) {
-        putUserContext();
         try {
+            putUserContext();
             LoggingEventBuilder line = baseLine(request, response, failure);
             if (masker.logBodies()) {
                 line = addIfPresent(line, LogFields.REQ_BODY, requestBody(request));
@@ -116,8 +116,7 @@ public class HttpLoggingFilter extends OncePerRequestFilter {
                 minimalLine(request, response, failure).log();
             } catch (RuntimeException minimalFailure) {
                 // the logging backend itself fails: never replace the request's own outcome
-                logFailure.addSuppressed(minimalFailure);
-                LogFields.warnLineNotWritten(LogFields.HTTP_IN, logFailure);
+                LogFields.warnLineNotWritten(LogFields.HTTP_IN, logFailure, minimalFailure);
             }
         }
     }

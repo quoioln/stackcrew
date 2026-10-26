@@ -127,6 +127,7 @@ test('core-logging: deep nesting becomes a placeholder and logging never throws'
     const log = c.coreRules.find((r) => r.id === 'core-logging').body;
     assert.ok(log.includes('nested deeper than 64 objects or arrays') && log.includes('<CT N bytes>'), 'nesting cap in the masker contract');
     assert.ok(log.includes('Logging never throws'), 'logging never changes a result');
+    assert.ok(log.includes('`<CT N+ bytes>`'), 'the over-the-cap placeholder is part of the masker contract');
     const persistence = c.coreRules.find((r) => r.id === 'core-persistence').body;
     assert.ok(!/through its manager|through the manager/i.test(persistence), 'no transaction path that bypasses the tenant mechanism');
   });

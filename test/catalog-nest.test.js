@@ -416,6 +416,23 @@ test('nest logging fix round 2: bounded sizing, toJSON at the same depth, guarde
   });
 });
 
+test('nest logging fix round 3: no function on the masked copy, early size cap, empty message body', async () => {
+  await withRealCatalog(async (c) => {
+    const s = nestSkill(c, LOGGING);
+    const masker = s.file('body-masker.ts');
+    assert.match(masker, /if \(typeof value === 'function'\) \{\n\s+return undefined;/, 'a function value is never copied');
+    assert.ok(masker.includes(".filter(([, item]: [string, unknown]) => typeof item !== 'function')"), 'function-valued entries are dropped');
+    assert.match(masker, /size \+= CONTAINER_MARKS[^\n]*\n\s+if \(size > limit\) \{\n\s+return undefined;/, 'a wide node stops before its children');
+    assert.match(masker, /\/\/ "key":\n\s+if \(size > limit\) \{/, 'the key loop stops at the cap');
+    const spec = s.file('body-masker.spec.ts');
+    for (const needle of ["toJSON = (): unknown => ({ ...this, kind: 'dto' })", "password: 'leak-from-copied-toJSON'", 'sparse.length = 200_000_000']) {
+      assert.ok(spec.includes(needle), `masker spec missing ${needle}`);
+    }
+    assert.ok(s.body.includes('payload !== undefined && payload.length > 0 ? bodyPlaceholder(type, payload.length)'), 'an empty message logs no body');
+    assert.match(s.body, /\| `body-masker\.ts\.md` \|[^\n]*`placeholderFor`/, 'the file table names placeholderFor');
+  });
+});
+
 test('nest context carries the OpenTelemetry trace ids and binds the handler on every Nest 10 release', async () => {
   await withRealCatalog(async (c) => {
     const s = nestSkill(c, LOGGING);

@@ -55,11 +55,15 @@ public final class LogFields {
 
     /**
      * The last resort when the logging backend itself throws, even for the fallback line: a warning on the JDK
-     * platform logger. It never throws, also when that logger is bridged to the same failing backend (Spring Boot
-     * routes java.util.logging to SLF4J), so a request or an outbound call keeps its own outcome.
+     * platform logger, with the fallback's failure suppressed into the first. It never throws, also when that logger
+     * is bridged to the same failing backend (Spring Boot routes java.util.logging to SLF4J), so a request or an
+     * outbound call keeps its own outcome.
      */
-    public static void warnLineNotWritten(String event, RuntimeException failure) {
+    public static void warnLineNotWritten(String event, RuntimeException failure, RuntimeException fallbackFailure) {
         try {
+            if (fallbackFailure != failure) { // a backend may rethrow one instance, and self-suppression throws
+                failure.addSuppressed(fallbackFailure);
+            }
             System.getLogger(LogFields.class.getName()).log(System.Logger.Level.WARNING, event + " line not written", failure);
         } catch (RuntimeException bridgedToTheSameBackend) {
             // nothing is left to write to; the request or the call is unaffected

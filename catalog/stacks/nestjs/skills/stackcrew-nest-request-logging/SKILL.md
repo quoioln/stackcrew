@@ -14,7 +14,7 @@ Search the codebase and the shared libraries ({{sc:sharedLibraries}}) for `maskB
 | File | What it does |
 |---|---|
 | `env.ts.md` | `LOG_MASK_FIELDS`, `LOG_MAX_BODY_BYTES`, `LOG_BODIES`, `LOG_LEVEL`, `CROSS_TENANT_ROLES`, the JWKS settings; `validateEnv` for `ConfigModule`, lazy `loggingEnv()` and `tenancyEnv()` for code outside the injector. |
-| `body-masker.ts.md` | The masker: `maskBody`, `maskValue`, `serializeMasked`, `loadMaskOptions`, `loadLogBodies`, `bodyPlaceholder`. |
+| `body-masker.ts.md` | The masker: `maskBody`, `maskValue`, `serializeMasked`, `loadMaskOptions`, `loadLogBodies`, `bodyPlaceholder`, `placeholderFor`. |
 | `request-context.ts.md` | `RequestContext`, `runWithRequestContext`, `runAsSystem`, `runCrossTenant`, `requireTenantId`, `currentActor`, `contextFromMessageHeaders`, the two errors. |
 | `request-context.interceptor.ts.md` | Global interceptor: the handler runs inside the request's context. |
 | `log-fields.ts.md` | Event and field names, `levelFor(status)`, and `writeCallLine`, the line writer that never throws. |
@@ -82,7 +82,7 @@ void bootstrap();
 - JSON (`application/json`, `*+json`) and form bodies are parsed and masked. `multipart/*`, `application/octet-stream`, `image/*`, `application/pdf` log `<binary CT N bytes>`; anything else (XML, SOAP, text, unparseable JSON, no content type) logs `<CT N bytes>`. CT is the media type without parameters, `unknown` when missing. An empty body logs no field.
 - A body nested deeper than 64 objects or arrays logs `<CT N bytes>`: the walk stops at depth 64, so a crafted 10 KB body of brackets cannot exhaust the stack.
 - `maskBody(raw, contentType, opts)` is for bytes and strings; `serializeMasked(value, opts, contentType)` for a body that is already parsed. Never call `maskValue` on a string you have not parsed as JSON.
-- An already-parsed value that cannot be masked is sized without recursion and only up to `LOG_MAX_BODY_BYTES`: `<CT N bytes>`, or `<CT N+ bytes>` with N = `LOG_MAX_BODY_BYTES` when it is larger, cyclic or shares a node (`placeholderFor`). A `toJSON` runs once per value, as in `JSON.stringify`, and its result takes the value's place at the same depth.
+- An already-parsed value that cannot be masked is sized without recursion and only up to `LOG_MAX_BODY_BYTES`: `<CT N bytes>`, or `<CT N+ bytes>` with N = `LOG_MAX_BODY_BYTES` when it is larger, cyclic or shares a node (`placeholderFor`). A `toJSON` runs once per value, as in `JSON.stringify`, and its result takes the value's place at the same depth. The masked copy holds no function, so a `toJSON` copied onto it can never run on the unmasked original.
 - Logging never throws. The masker returns a placeholder on any failure. Every line is written through `writeCallLine`, which falls back to the same line with size-only bodies and turns a logger failure into a process warning. A request, an outbound call or a message never fails, or changes its result, because of its log line.
 
 ## 6. Inbound: one line per request
@@ -144,7 +144,10 @@ async onMessage(payload: Buffer | undefined, contentType: string | undefined, he
     const type = contentType ?? JSON_CONTENT_TYPE;
     writeCallLine(this.logger, // never throws: the message is handled whatever happens to its line
       () => ({ event: LogEvent.MESSAGE_IN, ...contextLogFields(), reqBody: this.logBodies ? maskBody(payload, type, this.maskOptions) : undefined }),
-      () => ({ event: LogEvent.MESSAGE_IN, reqBody: this.logBodies && payload !== undefined ? bodyPlaceholder(type, payload.length) : undefined }),
+      () => ({
+        event: LogEvent.MESSAGE_IN, // an empty payload logs no body, as maskBody does
+        reqBody: this.logBodies && payload !== undefined && payload.length > 0 ? bodyPlaceholder(type, payload.length) : undefined,
+      }),
       'log');
     await this.handler.handle(this.codec.read(payload)); // read() rejects a missing or invalid payload with a non-retryable error
   });
