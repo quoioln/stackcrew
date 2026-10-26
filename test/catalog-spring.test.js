@@ -16,7 +16,11 @@ import { renderAgentsMdBlock } from '../src/render/agents-md.js';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const ALL = ['claude', 'cursor', 'codex', 'antigravity'];
-const SKILLS = ['stackcrew-spring-integration-provider', 'stackcrew-spring-rest-endpoint', 'stackcrew-spring-boot-testing'];
+const SKILLS = ['stackcrew-spring-integration-provider', 'stackcrew-spring-rest-endpoint', 'stackcrew-spring-boot-testing',
+  'stackcrew-spring-jpa-entity', 'stackcrew-spring-request-logging'];
+const NEW_SKILLS = ['stackcrew-spring-jpa-entity', 'stackcrew-spring-request-logging'];
+const WAIVER = '// stackcrew-allow: SC-TYPE log masking walks arbitrary JSON before it is written';
+const WIRE_PATH = 'src/test/java/com/acme/kyc/stackcrew/StackcrewArchitectureTest.java';
 
 async function withRealCatalog(fn) {
   const saved = process.env.STACKCREW_CATALOG_DIR;
@@ -45,7 +49,7 @@ async function withDir(files, fn) {
 const profileFor = (catalog, extra = {}) =>
   createProfile({ stack: 'spring-boot', tools: ALL, mode: 'greenfield', basePackage: 'com.acme.kyc', ...extra }, catalog);
 
-test('spring-boot stack loads with 4 skills (kafka one gated by its add-on) and validates', async () => {
+test('spring-boot stack loads with 6 skills (kafka one gated by its add-on) and validates', async () => {
   await withRealCatalog(async (c) => {
     assert.deepEqual(validateCatalog(c), []);
     const s = c.stacks.get('spring-boot');
@@ -166,7 +170,7 @@ test('guard.json keeps its regex escapes byte-exact', async () => {
   assert.ok(!text.includes(String.fromCharCode(8)), 'no raw backspace byte');
 });
 
-test('without add-ons only the three base spring skills are rendered', async () => {
+test('without add-ons only the five base spring skills are rendered', async () => {
   await withRealCatalog(async (c) => {
     const ctx = buildContext(c, profileFor(c), { cli: 'npx stackcrew', version: '0.0.0' });
     assert.deepEqual(ctx.skills.filter((k) => k.name.startsWith('stackcrew-spring-')).map((k) => k.name).sort(), [...SKILLS].sort());
@@ -198,7 +202,7 @@ test('wire template fills basePackage and keeps the ArchUnit rules', async () =>
 // "Tests run: 0" and a green build even with violations. @ArchTest methods carry a MethodSource and are reported.
 const FIELD_RULE = /@ArchTest\s+(?:public\s+)?static\s+final\s+ArchRule\b/;
 const RULE_METHODS = ['no_untyped_payloads_in_service_and_domain', 'no_field_injection',
-  'controllers_do_not_depend_on_repositories', 'domain_does_not_depend_on_infrastructure'];
+  'controllers_do_not_depend_on_repositories', 'domain_does_not_depend_on_infrastructure', 'entities_extend_the_base_entity'];
 
 test('wire template declares every rule as an @ArchTest method, plus a non-empty import check', async () => {
   assert.match('@ArchTest\n    static final ArchRule x = y;', FIELD_RULE, 'FIELD_RULE regex lost its escapes');
@@ -259,6 +263,142 @@ test('rule files have id, title and a bounded Essentials list', async () => {
       const n = r.essentials.split('\n').filter((l) => /^- /.test(l)).length;
       assert.ok(n >= 5 && n <= 15, `${r.id} essentials ${n}`);
       assert.ok(Buffer.byteLength(r.body) < 24000);
+    }
+  });
+});
+
+const renderedSkills = (c, conventions) => {
+  const profile = profileFor(c);
+  if (conventions) profile.conventions = conventions;
+  return buildContext(c, profile, { cli: 'npx stackcrew', version: '0.0.0' }).skills;
+};
+
+const codeBlockLines = (md) => {
+  const out = [];
+  let inCode = false;
+  for (const line of md.split('\n')) {
+    if (/^\s*```/.test(line)) inCode = !inCode;
+    else if (inCode) out.push(line);
+  }
+  return out;
+};
+
+test('spring request logging no longer forbids bodies and uses the shared masker', async () => {
+  await withRealCatalog(async (c) => {
+    const s = c.stacks.get('spring-boot');
+    const rules = s.rules.body;
+    assert.ok(!/never the body/i.test(rules), 'old no-body rule is gone');
+    assert.ok(!/full bodies/i.test(rules), 'no "full bodies" ban left in the stack rule');
+    for (const needle of ['BodyMasker', 'MaskingProperties', 'HttpLoggingFilter', 'LoggingClientInterceptor', 'app.logging.mask-fields',
+      'app.logging.max-body-bytes', 'app.logging.log-bodies', 'BufferingClientHttpRequestFactory', 'stackcrew-spring-request-logging']) {
+      assert.ok(rules.includes(needle), `rules.md missing ${needle}`);
+    }
+    const provider = s.skills.find((k) => k.name === 'stackcrew-spring-integration-provider').body;
+    const s10 = provider.split('## 10.')[1].split('\n## ')[0];
+    assert.ok(!/full bodies/i.test(s10), 'provider section 10 no longer bans bodies');
+    for (const needle of ['LoggingClientInterceptor', 'traceId', 'MDC.get(MdcKeys.TRACE_ID)', 'size']) assert.ok(s10.includes(needle), `section 10 missing ${needle}`);
+    assert.ok(provider.includes('new BufferingClientHttpRequestFactory('), 'provider client is buffered so the interceptor can read the body');
+    assert.ok(provider.includes('public ProviderClientFactory('));
+  });
+});
+
+test('spring data rules cover the entity base, auditing and tenant isolation', async () => {
+  await withRealCatalog(async (c) => {
+    const rules = c.stacks.get('spring-boot').rules.body;
+    for (const needle of ['@MappedSuperclass', '@EnableJpaAuditing', 'JwtAuditorAware', '@TenantId', 'JwtTenantIdentifierResolver',
+      'TenantContext.runCrossTenant', 'isRoot', 'native', 'stackcrew-spring-jpa-entity', '{{sc:baseEntity}}', '{{sc:baseTenantEntity}}']) {
+      assert.ok(rules.includes(needle), `rules.md missing ${needle}`);
+    }
+    const profile = profileFor(c);
+    profile.conventions = { baseEntity: 'AuditedEntity', baseTenantEntity: 'AuditedTenantEntity' };
+    const rule = buildContext(c, profile, { cli: 'npx stackcrew', version: '0.0.0' }).rules.find((r) => r.id === 'stack-spring-boot');
+    assert.ok(rule.body.includes('AuditedEntity') && rule.body.includes('AuditedTenantEntity'));
+    assert.ok(!rule.body.includes('{{sc:'));
+  });
+});
+
+test('wire template has SC-ENTITY with the configured base entity', async () => {
+  await withRealCatalog(async (c) => {
+    const render = (conventions) => {
+      const profile = profileFor(c);
+      profile.java.wired = true;
+      if (conventions) profile.conventions = conventions;
+      const ctx = buildContext(c, profile, { cli: 'npx stackcrew', version: '0.0.0' });
+      return renderShared(ctx).find((o) => o.path === WIRE_PATH).content;
+    };
+    const custom = render({ baseEntity: 'AuditedEntity' });
+    for (const needle of ['SC-ENTITY', 'entities_extend_the_base_entity', '"jakarta.persistence.Entity"', 'getAllRawSuperclasses', '"AuditedEntity"']) {
+      assert.ok(custom.includes(needle), `missing ${needle}`);
+    }
+    assert.ok(!custom.includes('"BaseEntity"'));
+    assert.ok(render().includes('"BaseEntity"'), 'default base entity');
+    assert.ok(!custom.includes('{{sc:'));
+  });
+});
+
+test('JsonNode lines in the request-logging skill carry an SC-TYPE waiver', async () => {
+  await withRealCatalog(async (c) => {
+    const compiled = compileGuardRules(c.languages.get('java').guard);
+    const MAIN = 'src/main/java/com/acme/kyc/common/logging/Example.java';
+    let jsonNodeLines = 0;
+    for (const skill of renderedSkills(c).filter((k) => NEW_SKILLS.includes(k.name))) {
+      const sources = [{ name: 'SKILL.md', lines: codeBlockLines(skill.body) }];
+      for (const f of skill.files) sources.push({ name: f.relPath, lines: f.relPath.endsWith('.md') ? codeBlockLines(f.content) : f.content.split('\n') });
+      for (const { name, lines } of sources) {
+        const numbered = lines.map((text, i) => ({ line: i + 1, text }));
+        const violations = scanLines(MAIN, numbered, compiled);
+        assert.deepEqual(violations.map((v) => `${skill.name}/${name}:${v.line} ${v.ruleId} ${v.text.trim()}`), [], `${skill.name}/${name}`);
+        for (const { text } of numbered.filter((l) => /\b(JsonNode|ObjectNode)\b/.test(l.text))) {
+          jsonNodeLines += 1;
+          assert.ok(text.includes(WAIVER), `${skill.name}/${name}: missing waiver on: ${text.trim()}`);
+        }
+      }
+    }
+    assert.ok(jsonNodeLines > 0, 'the masker walks a JsonNode tree');
+  });
+});
+
+test('new spring skills are task skills under 350 lines with sibling code that is not a test file', async () => {
+  await withRealCatalog(async (c) => {
+    const skills = Object.fromEntries(c.stacks.get('spring-boot').skills.map((k) => [k.name, k]));
+    for (const name of NEW_SKILLS) {
+      const k = skills[name];
+      assert.ok(k, name);
+      assert.equal(k.kind, 'task');
+      assert.ok(k.description.startsWith('Use when') && k.description.includes('Spring Boot'));
+      assert.ok(k.body.split('\n').length <= 350, `${name} SKILL.md is ${k.body.split('\n').length} lines`);
+      for (const f of k.files) {
+        assert.ok(!/test/i.test(f.relPath), `${name}/${f.relPath}: sibling files are not named like tests`);
+        assert.ok(/\.(java|sql)$/.test(f.relPath), `${name}/${f.relPath}`);
+      }
+    }
+    const entity = skills['stackcrew-spring-jpa-entity'];
+    const entityText = [entity.body, ...entity.files.map((f) => f.content)].join('\n');
+    for (const needle of ['@MappedSuperclass', '@EntityListeners(AuditingEntityListener.class)', '@CreatedBy', '@LastModifiedBy', '@TenantId',
+      'CurrentTenantIdentifierResolver<String>', 'isRoot', 'HibernatePropertiesCustomizer', 'MULTI_TENANT_IDENTIFIER_RESOLVER', 'Flyway', 'Liquibase',
+      'timestamptz', 'runCrossTenant', 'PROPAGATION_REQUIRES_NEW', 'MissingTenantException', 'CrossTenantDeniedException', 'x-tenant-id', 'x-user-id',
+      '{{sc:baseEntity}}', '{{sc:baseTenantEntity}}', '{{sc:tenantClaim}}', '{{sc:rolesClaim}}', '{{sc:systemUser}}', '{{sc:crossTenantRoles}}',
+      'app.tenancy.cross-tenant-roles', 'stackcrew-spring-boot-testing']) {
+      assert.ok(entityText.includes(needle), `jpa-entity missing ${needle}`);
+    }
+    const logging = skills['stackcrew-spring-request-logging'];
+    const loggingText = [logging.body, ...logging.files.map((f) => f.content)].join('\n');
+    for (const needle of ['MaskingProperties', 'BodyMasker', 'HttpLoggingFilter', 'LoggingClientInterceptor', 'ContentCachingRequestWrapper',
+      'ContentCachingResponseWrapper', 'copyBodyToResponse()', 'finally', 'BufferingClientHttpRequestFactory', 'ClientHttpRequestInterceptor',
+      '@ConfigurationProperties("app.logging")', 'app.logging.mask-fields', 'app.logging.max-body-bytes', 'app.logging.log-bodies', 'http_in', 'http_out',
+      'message_in', 'durationMs', 'reqBody', 'resBody', '<base64 ', '...[truncated ', '<binary ', 'addFilterAfter', '%kvp']) {
+      assert.ok(loggingText.includes(needle), `request-logging missing ${needle}`);
+    }
+    for (const k of [entity, logging]) assert.ok(!/always|proactively/i.test(k.description));
+  });
+});
+
+test('spring testing guidance has the audit, tenant isolation and cross-tenant tests on Testcontainers Postgres', async () => {
+  await withRealCatalog(async (c) => {
+    const t = c.stacks.get('spring-boot').testing.body;
+    for (const needle of ['PostgreSQLContainer', '@ServiceConnection', 'createdBy', 'updatedBy', 'createdAt', 'updatedAt', '{{sc:systemUser}}',
+      'tenant A', 'findById', 'runCrossTenant', 'CrossTenantDeniedException', 'app.tenancy.cross-tenant-roles', 'NOT_SUPPORTED', 'SC-ENTITY']) {
+      assert.ok(t.includes(needle), `testing.md missing ${needle}`);
     }
   });
 });

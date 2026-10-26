@@ -27,7 +27,7 @@ import static com.tngtech.archunit.lang.syntax.ArchRuleDefinition.noFields;
  * Add project-specific rules in a separate test class.
  *
  * Verified against ArchUnit 1.x: JavaField.getType(), JavaType.toErasure(),
- * JavaParameterizedType.getActualTypeArguments(), JavaWildcardType bounds.
+ * JavaParameterizedType.getActualTypeArguments(), JavaWildcardType bounds, JavaClass.getAllRawSuperclasses().
  */
 @AnalyzeClasses(packages = "{{sc:basePackage}}", importOptions = ImportOption.DoNotIncludeTests.class)
 class StackcrewArchitectureTest {
@@ -37,6 +37,8 @@ class StackcrewArchitectureTest {
     private static final String MAP = "java.util.Map";
     private static final String OBJECT = "java.lang.Object";
     private static final String AUTOWIRED = "org.springframework.beans.factory.annotation.Autowired";
+    private static final String JPA_ENTITY = "jakarta.persistence.Entity";
+    private static final String BASE_ENTITY = "{{sc:baseEntity}}";
 
     // Brownfield safety: every rule is frozen. Existing violations are recorded in the archunit_store
     // directory (commit it; it may only shrink) and only NEW violations fail. The store may be created
@@ -92,6 +94,15 @@ class StackcrewArchitectureTest {
                 .allowEmptyShould(true)).check(classes);
     }
 
+    /** SC-ENTITY: every JPA entity extends the project base entity, directly or through the tenant base entity. */
+    @ArchTest
+    static void entities_extend_the_base_entity(JavaClasses classes) {
+        freeze(classes()
+                .that().areAnnotatedWith(JPA_ENTITY)
+                .should(extendTheBaseEntity())
+                .allowEmptyShould(true)).check(classes);
+    }
+
     /**
      * Sanity check: the rules above allow an empty selection, so a wrong base package would make all of them pass
      * without checking anything. This fails instead when no production class was imported.
@@ -118,6 +129,21 @@ class StackcrewArchitectureTest {
                         report(events, javaClass, unit.getFullName() + " has parameter type " + parameterType.getName(), parameterType);
                     }
                     report(events, javaClass, unit.getFullName() + " has return type " + unit.getReturnType().getName(), unit.getReturnType());
+                }
+            }
+        };
+    }
+
+    /** Matches by simple name, so a base class from a shared library counts too (ArchUnit resolves it from the classpath). */
+    private static ArchCondition<JavaClass> extendTheBaseEntity() {
+        return new ArchCondition<>("extend " + BASE_ENTITY) {
+            @Override
+            public void check(JavaClass javaClass, ConditionEvents events) {
+                boolean extendsBase = javaClass.getAllRawSuperclasses().stream()
+                        .anyMatch(superclass -> BASE_ENTITY.equals(superclass.getSimpleName()));
+                if (!extendsBase) {
+                    events.add(SimpleConditionEvent.violated(javaClass,
+                            javaClass.getName() + " is an @Entity that does not extend " + BASE_ENTITY + " (SC-ENTITY)"));
                 }
             }
         };

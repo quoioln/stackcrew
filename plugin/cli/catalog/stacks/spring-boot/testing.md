@@ -93,7 +93,8 @@ class HypervergeAdapterTest {
     /** Hand-built: Resilience4j runs inside the adapter template, so no Spring context is needed. */
     private HypervergeAdapter adapterFor(String baseUrl, int maxAttempts) {
         var endpoint = new ProviderProperties.Endpoint(baseUrl, CONNECT, READ);
-        var clients = new ProviderClientFactory(new ProviderProperties(Map.of(ProviderCodes.HYPERVERGE, endpoint)), RestClient.builder());
+        var clients = new ProviderClientFactory(new ProviderProperties(Map.of(ProviderCodes.HYPERVERGE, endpoint)), RestClient.builder(),
+            new BodyMasker(MaskingProperties.defaults()));
         RetryRegistry retries = RetryRegistry.of(RetryConfig.custom().maxAttempts(maxAttempts).waitDuration(Duration.ofMillis(10))
             .retryExceptions(ProviderUnavailableException.class)
             .ignoreExceptions(ProviderRejectedException.class, ProviderProtocolException.class).build());
@@ -109,12 +110,164 @@ class HypervergeAdapterTest {
 - The test kit builds `ProviderClientFactory` by hand (public constructor), plus all three registries (`CircuitBreakerRegistry`, `RetryRegistry`, `BulkheadRegistry`) programmatically; the default registries do not carry the production exception lists, so set them as above when retry matters.
 - Retry and circuit-breaker behavior is tested with a scenario (`inScenario`) that fails then succeeds, and with a 4xx that must produce exactly one request (`verify(1, postRequestedFor(...))`) and `ProviderRejectedException`.
 
+## Entity base, audit and tenant isolation
+
+Every entity ships with an "audit fields filled" test (`createdAt`, `createdBy`, `updatedAt`, `updatedBy` on insert and update) and a "tenant A cannot read tenant B" test (`core-persistence`), on Testcontainers Postgres with the real migrations.
+
+- Use `@SpringBootTest` with no test transaction: each repository call commits, so clean the table in `@AfterEach`. Hibernate reads the tenant when a session opens. A `@DataJpaTest` opens one transaction, and so one session, before the test signs in: the tenant never changes and isolation is not tested. If you use `@DataJpaTest`, keep `@AutoConfigureTestDatabase(replace = AutoConfigureTestDatabase.Replace.NONE)` from the Testcontainers example and add `@Transactional(propagation = Propagation.NOT_SUPPORTED)` and `@Import(PersistenceConfig.class)` (slices skip your configuration, so there would be no auditing and no tenant filter).
+- Sign in by putting the `Jwt` that Spring Security would build into the security context:
+
+```java
+final class TestJwt {
+    private TestJwt() {}
+
+    static void signIn(String userId, String tenantId, String... roles) {
+        Jwt jwt = Jwt.withTokenValue("test").header("alg", "none").subject(userId)
+                .claim("{{sc:tenantClaim}}", tenantId).claim("{{sc:rolesClaim}}", List.of(roles)).build();
+        SecurityContextHolder.getContext().setAuthentication(new JwtAuthenticationToken(jwt));
+    }
+}
+```
+
+```java
+@SpringBootTest
+@Testcontainers
+class VerificationAuditIT {
+    @Container @ServiceConnection
+    static PostgreSQLContainer<?> postgres = new PostgreSQLContainer<>("postgres:16-alpine");
+
+    @Autowired VerificationRepository verifications;
+    @Autowired JdbcTemplate jdbc;
+
+    @AfterEach
+    void cleanUp() {
+        SecurityContextHolder.clearContext();
+        jdbc.update("delete from verification");
+    }
+
+    @Test
+    void fillsTheFourAuditFieldsOnInsertAndUpdate() {
+        TestJwt.signIn("alice", "tenant-a");
+        UUID id = verifications.save(new Verification("ref-1")).getId();
+        Verification inserted = verifications.findById(id).orElseThrow();
+        assertThat(inserted.getCreatedBy()).isEqualTo("alice");
+        assertThat(inserted.getUpdatedBy()).isEqualTo("alice");
+        assertThat(inserted.getCreatedAt()).isNotNull().isEqualTo(inserted.getUpdatedAt());
+
+        TestJwt.signIn("bob", "tenant-a");
+        inserted.approve();
+        verifications.save(inserted);
+        Verification updated = verifications.findById(id).orElseThrow();
+        assertThat(updated.getCreatedBy()).isEqualTo("alice");
+        assertThat(updated.getCreatedAt()).isEqualTo(inserted.getCreatedAt());
+        assertThat(updated.getUpdatedBy()).isEqualTo("bob");
+        assertThat(updated.getUpdatedAt()).isAfter(inserted.getUpdatedAt());
+    }
+
+    @Test
+    void writesTheSystemUserWhenThereIsNoUser() {
+        Verification saved = TenantContext.runAs("tenant-a", null, () -> verifications.save(new Verification("ref-2")));
+        assertThat(saved.getCreatedBy()).isEqualTo("{{sc:systemUser}}");
+        assertThat(saved.getUpdatedBy()).isEqualTo("{{sc:systemUser}}");
+    }
+}
+```
+
+```java
+@SpringBootTest(properties = "app.tenancy.cross-tenant-roles=report_admin")
+@Testcontainers
+class VerificationTenancyIT {
+    @Container @ServiceConnection
+    static PostgreSQLContainer<?> postgres = new PostgreSQLContainer<>("postgres:16-alpine");
+
+    @Autowired VerificationRepository verifications;
+    @Autowired TenantContext tenantContext;
+    @Autowired TransactionTemplate transactions;
+    @Autowired JdbcTemplate jdbc;
+    private UUID rowOfTenantA;
+
+    @BeforeEach
+    void oneRowPerTenant() {
+        TestJwt.signIn("alice", "tenant-a");
+        rowOfTenantA = verifications.save(new Verification("ref-a")).getId();
+        TestJwt.signIn("bob", "tenant-b");
+        verifications.save(new Verification("ref-b"));
+        SecurityContextHolder.clearContext();
+    }
+
+    @AfterEach
+    void cleanUp() {
+        SecurityContextHolder.clearContext();
+        jdbc.update("delete from verification");
+    }
+
+    @Test
+    void tenantBCannotReadOrDeleteTenantARows() {
+        TestJwt.signIn("bob", "tenant-b");
+        assertThat(verifications.findAll()).extracting(Verification::getReference).containsExactly("ref-b");
+        assertThat(verifications.count()).isEqualTo(1);
+        assertThat(verifications.existsById(rowOfTenantA)).isFalse();
+        assertThat(findOrDenied(rowOfTenantA)).isEmpty();
+        try {
+            verifications.deleteById(rowOfTenantA);
+        } catch (CrossTenantDeniedException deniedBeforeHibernate66) {
+            // refused by the @PostLoad guard; Hibernate 6.6+ finds nothing to delete
+        }
+        assertThat(jdbc.queryForObject("select count(*) from verification where id = ?", Integer.class, rowOfTenantA)).isEqualTo(1);
+    }
+
+    @Test
+    void withoutATenantReadsNothingAndInsertsNothing() {
+        assertThat(verifications.findAll()).isEmpty();
+        assertThat(verifications.count()).isZero();
+        assertThatThrownBy(() -> verifications.save(new Verification("ref-x"))).isInstanceOf(MissingTenantException.class);
+    }
+
+    @Test
+    void crossTenantRoleReadsEveryTenant() {
+        TestJwt.signIn("carol", "tenant-a", "report_admin");
+        List<Verification> all = tenantContext.runCrossTenant("monthly volume report", verifications::findAll);
+        assertThat(all).extracting(Verification::getTenant).containsExactlyInAnyOrder("tenant-a", "tenant-b");
+    }
+
+    @Test
+    void otherRolesCannotReadAcrossTenants() {
+        TestJwt.signIn("bob", "tenant-b", "user");
+        assertThatThrownBy(() -> tenantContext.runCrossTenant("monthly volume report", verifications::findAll))
+                .isInstanceOf(CrossTenantDeniedException.class);
+    }
+
+    @Test
+    void systemJobReadsAcrossTenantsInsideATransactionButCannotWrite() {
+        List<Verification> all = TenantContext.runAs(null, TenantContext.SYSTEM_USER, () -> transactions.execute(
+                status -> tenantContext.runCrossTenant("nightly reconciliation", verifications::findAll)));
+        assertThat(all).hasSize(2);
+        assertThatThrownBy(() -> TenantContext.runAs(null, TenantContext.SYSTEM_USER, () -> tenantContext.runCrossTenant(
+                "nightly reconciliation", () -> verifications.save(new Verification("ref-x")))))
+                .isInstanceOf(MissingTenantException.class);
+    }
+
+    /** Hibernate 6.6+ (Boot 3.4+) filters a load by id; before that the base entity's @PostLoad guard refuses it. */
+    private Optional<Verification> findOrDenied(UUID id) {
+        try {
+            return verifications.findById(id);
+        } catch (CrossTenantDeniedException deniedBeforeHibernate66) {
+            return Optional.empty();
+        }
+    }
+}
+```
+
+- Cover every write path the entity uses. A bulk JPQL `update` skips auditing, so its test asserts `updatedAt` and `updatedBy` too.
+- The tenant test runs for every new tenant entity, not once per project.
+
 ## ArchUnit
 
 - `StackcrewArchitectureTest` is generated into `src/test/java/<base package>/stackcrew/` when wiring is on. Do not edit it by hand; regenerate with the stackcrew `sync`.
 - Add project-specific architecture rules in a separate test class in the same package tree. Declare each rule as a method, `@ArchTest static void rule_name(JavaClasses classes) { ... .check(classes); }`, not as a `static final ArchRule` field: maven-surefire-plugin 3.5.3 runs field rules but drops their results, so the build stays green even with violations.
 - The rules are wrapped in `FreezingArchRule`: existing violations of a brownfield codebase are recorded in the `archunit_store` directory and only new violations fail. Commit `archunit_store`; it may only shrink, so fix violations and let the baseline lose lines, never add to it by hand or re-freeze to hide a new violation.
 - The rules cover `..service..` and `..domain..` only (plus domain must not depend on `..infrastructure..` or `..adapter..`, and controllers must not depend on repositories). Boundary deserialization and framework config belong in `infrastructure`, `adapter` or `config` packages, outside the scan.
+- SC-ENTITY: every class annotated `jakarta.persistence.Entity` must have `{{sc:baseEntity}}` among its superclasses (directly or through `{{sc:baseTenantEntity}}`). Entities that exist when the rule first runs are frozen like the other rules; a new entity without the base fails.
 
 ## Naming and structure
 

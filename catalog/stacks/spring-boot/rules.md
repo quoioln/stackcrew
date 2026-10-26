@@ -13,7 +13,8 @@ Spring Boot 3.x on Java 17+. Applies with the Java rule (SC-TYPE, SC-CONST, SC-R
 - Constructor injection only: no field `@Autowired`, `final` fields, stateless beans. A 4th dependency is a signal to split the class.
 - Every outbound call has connect and read timeouts, plus circuit breaker, retry (idempotent calls only, with jitter) and bulkhead from Resilience4j; 4xx and protocol errors neither retry nor trip the breaker. Never call a third party with the default client.
 - Provider callbacks (webhooks) are authenticated, idempotent (dedupe on the provider event id with an atomic insert, not a caught exception) and acknowledged fast; process from the persisted row.
-- Log with SLF4J and structured fields: `traceId` (Micrometer Tracing), provider code, outcome, duration. Never log secrets, PII or full bodies (a record's `toString` prints every field). Add a Micrometer metric tagged by provider.
+- Entities extend `{{sc:baseEntity}}` (tenant data: `{{sc:baseTenantEntity}}` with Hibernate `@TenantId`); Spring Data JPA auditing fills the four audit fields; the tenant comes from the JWT through `JwtTenantIdentifierResolver`; no native SQL on tenant tables; cross-tenant reads only through `TenantContext.runCrossTenant`. Use skill `stackcrew-spring-jpa-entity`.
+- Log with SLF4J and structured fields: `traceId` (Micrometer Tracing), provider code, outcome, duration. HTTP bodies are logged only by `HttpLoggingFilter` (inbound) and `LoggingClientInterceptor` (outbound) through the shared `BodyMasker` (skill `stackcrew-spring-request-logging`); never log a request or record by hand (its `toString` prints every field). Add a Micrometer metric tagged by provider.
 - Errors are RFC 7807 `ProblemDetail` through one `@RestControllerAdvice` with a stable, safe `detail`; request DTOs are records with `@Valid` and Bean Validation (`jakarta.validation.*`).
 - Configuration is typed `@ConfigurationProperties` records (`@Validated`), one map keyed by provider code rather than a class per provider; no scattered `@Value`, no secrets in `application.yml` (env or a vault).
 - Use `RestClient` (or `WebClient` on a reactive stack) for HTTP; `RestTemplate` is legacy. URLs come from properties, paths and header names from constants.
@@ -23,7 +24,7 @@ Spring Boot 3.x on Java 17+. Applies with the Java rule (SC-TYPE, SC-CONST, SC-R
 ## Boot 3 specifics
 
 - Jakarta EE APIs use the `jakarta.*` namespace: `jakarta.persistence`, `jakarta.validation`, `jakarta.servlet`, `jakarta.annotation`, `jakarta.transaction`, `jakarta.inject`, `jakarta.ws.rs`. A `javax.persistence|validation|servlet|annotation|transaction|inject|ws.rs` import in new code is a bug. JDK packages keep `javax`: `javax.crypto`, `javax.sql`, `javax.net.ssl`.
-- Build each provider `RestClient` from the injected `RestClient.Builder` through one factory, with timeouts from properties (see the skill, step 4):
+- Build each provider `RestClient` from the injected `RestClient.Builder` through one factory, with timeouts from properties, a `BufferingClientHttpRequestFactory` and one `LoggingClientInterceptor` per provider (see the skill, step 4):
 
 ```java
 @ConfigurationProperties(prefix = "kyc.providers")
@@ -35,7 +36,10 @@ RestClient create(String providerCode) {
     ProviderProperties.Endpoint e = props.endpoints().get(providerCode);
     var factory = new JdkClientHttpRequestFactory(HttpClient.newBuilder().connectTimeout(e.connectTimeout()).build());
     factory.setReadTimeout(e.readTimeout());
-    return builder.clone().baseUrl(e.baseUrl()).requestFactory(factory).build();
+    return builder.clone().baseUrl(e.baseUrl())
+            .requestFactory(new BufferingClientHttpRequestFactory(factory))          // the interceptor reads the body
+            .requestInterceptor(new LoggingClientInterceptor(providerCode, masker))  // one masked http_out line
+            .build();
 }
 ```
 
@@ -99,14 +103,24 @@ Full steps with code: skill `stackcrew-spring-integration-provider`.
 
 - Never expose entities over the API: map to record DTOs or projections.
 - Avoid N+1: fetch joins, `@EntityGraph` or projections; keep associations `LAZY` and check the SQL.
-- Set `spring.jpa.open-in-view=false` in production.
+- Set `spring.jpa.open-in-view=false` in every environment (`runCrossTenant` refuses to run with it on).
 - Paginate every list query with `Pageable`; never return an unbounded collection.
 - Use `@Version` for optimistic locking on concurrently updated entities and handle `OptimisticLockException`.
 - Schema changes go through Flyway or Liquibase; never `ddl-auto=update` or `create` in production (use `validate`).
 - Manage both sides of a bidirectional relation; understand `cascade` and `orphanRemoval` before using them.
-- Bulk changes use modifying queries or batching; do not load entities to delete them.
-- Index foreign keys and query predicates; review the generated SQL for hot paths.
+- Bulk changes use `@Modifying` JPQL queries or batching; do not load entities to delete them. A bulk `update` skips auditing: set `updatedAt` and `updatedBy` in the statement and test it.
+- Index foreign keys and query predicates; review the generated SQL for hot paths. On a tenant table the tenant column leads the index.
 - Entities are plain classes: no Lombok `@Data`, `@Builder` or `@AllArgsConstructor`.
+
+### Entity base, audit and tenant (`core-persistence`)
+
+- Every `@Entity` extends `{{sc:baseEntity}}`, a `@MappedSuperclass` with `@EntityListeners(AuditingEntityListener.class)` and `@CreatedDate`/`@CreatedBy`/`@LastModifiedDate`/`@LastModifiedBy` on `createdAt`, `createdBy`, `updatedAt`, `updatedBy` (`Instant`, `timestamptz`). Tenant data extends `{{sc:baseTenantEntity}}`, which adds the Hibernate `@TenantId` field `{{sc:tenantColumn}}`. ArchUnit SC-ENTITY fails on an entity without the base.
+- `@EnableJpaAuditing(auditorAwareRef = "jwtAuditorAware")` sits on a separate `@Configuration`, never on the application class. `JwtAuditorAware` returns the JWT `sub`, the `runAs` user, or `{{sc:systemUser}}`.
+- `JwtTenantIdentifierResolver` (registered through a `HibernatePropertiesCustomizer`) gives Hibernate the tenant from the JWT claim `{{sc:tenantClaim}}` when a session opens, and a marker that matches no rows when there is none (never null). Hibernate then filters derived queries, JPQL, Criteria and `@Modifying` updates and deletes, and assigns the tenant on insert. Inserts without a tenant throw.
+- Load by id is filtered only from Hibernate 6.6 (Boot 3.4); the `@PostLoad` guard in `{{sc:baseTenantEntity}}` refuses another tenant's row on older versions. Keep it.
+- Native SQL is not filtered: no `nativeQuery`, `JdbcTemplate` or `JdbcClient` on a tenant table, and no hand-written tenant `where`.
+- Cross-tenant reads go only through `TenantContext.runCrossTenant(reason, work)`: role check (`app.tenancy.cross-tenant-roles`), a `cross_tenant` log line, and a new read-only transaction whose session is a Hibernate root tenant (`CurrentTenantIdentifierResolver.isRoot`, honored on every Boot 3.x). Message consumers and jobs set the tenant with `TenantContext.runAs` before the transaction starts.
+- Full steps, Boot 3.0/3.1 differences and the tests: skill `stackcrew-spring-jpa-entity`.
 
 ## Security
 
@@ -115,9 +129,9 @@ Full steps with code: skill `stackcrew-spring-integration-provider`.
 
 ## Logging and observability config
 
-- Logback with a plain pattern for dev and JSON (logstash-logback-encoder) for prod, switched by Spring profile.
-- A `OncePerRequestFilter` fills MDC (`requestId`, `traceId`, `spanId`, `userId`) at entry and clears it in `finally`.
-- Request logging records method, templated route, status and duration; never the body or the `Authorization` header.
-- A masking converter redacts sensitive fields in Logback output. Do not log a command or request record directly: its `toString` prints every field, so override `toString` or log selected fields.
+- Logback with a plain pattern for dev (add `%kvp` so the key-value fields print) and JSON for prod (`logging.structured.format.console=logstash` on Boot 3.4+, logstash-logback-encoder before), switched by Spring profile.
+- Request logging per `core-logging`: `HttpLoggingFilter` (a `OncePerRequestFilter` with `ContentCachingRequestWrapper`/`ContentCachingResponseWrapper`, `copyBodyToResponse()` in `finally`) is added to the security filter chain after `BearerTokenAuthenticationFilter`. It puts `requestId`, `userId` and `tenantId` in MDC (`traceId`, `spanId` come from Micrometer Tracing), clears them in `finally`, and writes one `http_in` line: method, templated route, status, `durationMs`, `reqBody`, `resBody`.
+- Outbound calls: one `LoggingClientInterceptor` per `RestClient`, on a `BufferingClientHttpRequestFactory`, writes one `http_out` line with target, sanitized URL, status, duration and both bodies.
+- Bodies go only through `BodyMasker`, configured by `MaskingProperties`: `app.logging.mask-fields` (PII list; empty means the default), `app.logging.max-body-bytes` (16384), `app.logging.log-bodies` (true). Never the `Authorization` header or cookies. Do not log a command or request record directly: its `toString` prints every field. Full setup: skill `stackcrew-spring-request-logging`.
 - Levels per package through `logging.level.*`; never DEBUG SQL in prod. Use `org.hibernate.SQL=DEBUG` and `org.hibernate.orm.jdbc.bind=TRACE` in dev only, and a slow-query log (datasource-proxy or p6spy at about 300 ms) in prod.
 - Flyway or Liquibase log applied versions at INFO.

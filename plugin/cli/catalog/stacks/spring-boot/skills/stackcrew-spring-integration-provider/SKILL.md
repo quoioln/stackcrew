@@ -128,18 +128,26 @@ public record ProviderProperties(@NotEmpty Map<String, @Valid Endpoint> endpoint
 public class ProviderClientFactory {
     private final ProviderProperties props;
     private final RestClient.Builder builder;
+    private final BodyMasker masker;
 
-    public ProviderClientFactory(ProviderProperties props, RestClient.Builder builder) { this.props = props; this.builder = builder; }
+    public ProviderClientFactory(ProviderProperties props, RestClient.Builder builder, BodyMasker masker) {
+        this.props = props; this.builder = builder; this.masker = masker;
+    }
 
     public RestClient create(String providerCode) {
         ProviderProperties.Endpoint e = props.endpoints().get(providerCode);
         if (e == null) { throw new IllegalStateException("no endpoint configured for provider " + providerCode); }
         var factory = new JdkClientHttpRequestFactory(HttpClient.newBuilder().connectTimeout(e.connectTimeout()).build());
         factory.setReadTimeout(e.readTimeout());
-        return builder.clone().baseUrl(e.baseUrl()).requestFactory(factory).build();
+        return builder.clone().baseUrl(e.baseUrl())
+            .requestFactory(new BufferingClientHttpRequestFactory(factory))          // the interceptor reads the response body
+            .requestInterceptor(new LoggingClientInterceptor(providerCode, masker))  // one masked http_out line per call
+            .build();
     }
 }
 ```
+
+`BodyMasker` and `LoggingClientInterceptor` come from skill `stackcrew-spring-request-logging`; create them first if the project has none.
 
 ```yaml
 kyc:
@@ -429,7 +437,8 @@ class CallbackProcessor {                        // another bean
 log.info("provider call ok provider={} requestId={} traceId={}", providerCode, requestId, MDC.get(MdcKeys.TRACE_ID));
 ```
 
-- Never log document numbers, images, tokens or full bodies. A record's `toString` prints every field: override it (see `VerifyCommand`) or log only selected fields; mask identifiers with the shared `Masking` util.
+- Adapters do not log request or response bodies themselves: the `LoggingClientInterceptor` on the provider's `RestClient` (step 4) writes one `http_out` line per call with both bodies after the shared `BodyMasker`. Secret and PII keys become `"***"`; selfies and document images (base64 strings over 1 KB) and file uploads are logged by size only (`<base64 N bytes>`, `<binary CT N bytes>`).
+- Adapter log lines carry ids and outcomes, never values: no document numbers, tokens or a record printed whole (its `toString` prints every field; override it as in `VerifyCommand`).
 - Metrics: the `Timer` (tags `provider`, `outcome`) and failure `Counter` in the template; Resilience4j adds breaker, retry and bulkhead metrics under the same instance name.
 
 ## 11. Tests with WireMock
