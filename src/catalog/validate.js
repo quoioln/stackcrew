@@ -1,3 +1,5 @@
+import { CONVENTION_VAR_NAMES } from '../conventions.js';
+
 /** Banned in any catalog markdown (case-insensitive): the catalog must not orchestrate workflows. */
 export const BANNED_ORCHESTRATION = [
   'auto-advance',
@@ -21,6 +23,8 @@ const STACK_SKILL_KINDS = ['task', 'testing'];
 const SHARED_SKILL_KINDS = ['advisor', 'command'];
 // The plugin build has no stack context, so command content may only use these.
 const COMMAND_PLACEHOLDERS = ['cli', 'version'];
+// Everything a stack render can fill: the base variables plus the project conventions.
+export const RENDER_PLACEHOLDERS = ['stackId', 'stackName', 'cli', 'version', 'basePackage', ...CONVENTION_VAR_NAMES];
 
 const isStr = (v) => typeof v === 'string' && v.trim() !== '';
 const isStrArray = (v) => Array.isArray(v) && v.every((x) => typeof x === 'string');
@@ -82,6 +86,7 @@ function checkRule(rule, expectedId, errs) {
     if (bullets > ESSENTIALS_MAX_BULLETS) err(`## Essentials has ${bullets} bullets (max ${ESSENTIALS_MAX_BULLETS})`);
   }
   checkOrchestration(rule.body, rule.source, errs);
+  checkPlaceholders(`${rule.body}\n${rule.essentials}`, RENDER_PLACEHOLDERS, rule.source, errs);
 }
 
 function checkGuard(guard, source, errs) {
@@ -110,6 +115,8 @@ function checkDetect(detect, source, errs) {
 }
 
 function checkSkill(skill, allowedKinds, where, stackName, addons, errs) {
+  // Shared skills are read raw by the plugin build and the init interview (no stack), so they get the narrow list.
+  const allowed = where === 'shared' ? COMMAND_PLACEHOLDERS : RENDER_PLACEHOLDERS;
   const err = (m) => errs.push(`${skill.source}: ${m}`);
   const folder = skillFolder(skill.source);
   if (skill.name !== folder) err(`name "${skill.name}" must equal its folder "${folder}"`);
@@ -126,8 +133,9 @@ function checkSkill(skill, allowedKinds, where, stackName, addons, errs) {
   const prefix = skill.source.replace(/SKILL\.md$/, '');
   for (const f of skill.files) {
     if (f.relPath.endsWith('.md')) checkOrchestration(f.content, prefix + f.relPath, errs);
+    checkPlaceholders(f.content, allowed, prefix + f.relPath, errs);
   }
-  if (skill.kind === 'command') checkPlaceholders(`${skill.description}\n${skill.body}`, COMMAND_PLACEHOLDERS, skill.source, errs);
+  checkPlaceholders(`${skill.description}\n${skill.body}`, allowed, skill.source, errs);
 }
 
 /**
@@ -145,7 +153,10 @@ export function validateCatalog(catalog) {
   };
 
   if (catalog.alwaysOn.trim() === '') errs.push('core/always-on.md: missing or empty');
-  else checkOrchestration(catalog.alwaysOn, 'core/always-on.md', errs);
+  else {
+    checkOrchestration(catalog.alwaysOn, 'core/always-on.md', errs);
+    checkPlaceholders(catalog.alwaysOn, RENDER_PLACEHOLDERS, 'core/always-on.md', errs);
+  }
 
   for (const rule of catalog.coreRules) {
     checkRule(rule, `core-${rule.source.replace(/^core\/rules\/|\.md$/g, '')}`, errs);
@@ -198,6 +209,9 @@ export function validateCatalog(catalog) {
     checkRule(st.testing, `stack-${folder}-testing`, errs);
     claimId(st.testing);
     checkGuard(st.guard, `stacks/${folder}/guard.json`, errs);
+    for (const [dir, files] of [['lint', st.lintFiles], ['wire', st.wireFiles]]) {
+      for (const f of files) checkPlaceholders(f.content, RENDER_PLACEHOLDERS, `stacks/${folder}/${dir}/${f.relPath}`, errs);
+    }
 
     const names = new Set(sharedNames);
     for (const s of st.skills) {
@@ -219,6 +233,7 @@ export function validateCatalog(catalog) {
     }
     if (!isStr(r.description)) errs.push(`${src}: description is required`);
     checkOrchestration(`${r.description}\n${r.body}`, src, errs);
+    checkPlaceholders(`${r.description}\n${r.body}`, RENDER_PLACEHOLDERS, src, errs);
   }
 
   for (const c of catalog.pluginCommands) {

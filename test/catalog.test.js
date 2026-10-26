@@ -169,3 +169,23 @@ test('lintSkillDescription checks command prefix and length', () => {
   assert.ok(lintSkillDescription({ ...base, description: 'Use when asked.' }).length > 0);
   assert.ok(lintSkillDescription({ ...base, description: 'Use only when ' + 'x'.repeat(500) }).some((e) => /500/.test(e)));
 });
+
+test('validator rejects an unknown placeholder in stack rules and a convention placeholder in a shared skill', async () => {
+  const c = await loadCatalog(MINI);
+  demo(c).rules.body += '\n{{sc:baseEntity}} ok, {{sc:nope}} not\n';
+  demo(c).lintFiles[0].content += '{{sc:alsoNope}}';
+  demo(c).wireFiles[0].content += '{{sc:tenantClaim}}';
+  c.roles[0].body += '{{sc:roleNope}}';
+  const advisor = c.sharedSkills.find((s) => s.name === 'stackcrew-demo-advisor');
+  advisor.body += '{{sc:baseEntity}}';
+  task(c).body += '{{sc:stackName}}{{sc:typeFreeFiles}}';
+  const errs = validateCatalog(c);
+  assert.ok(errs.some((e) => e.startsWith(demo(c).rules.source + ': ') && e.includes('{{sc:nope}}')));
+  assert.ok(!errs.some((e) => e.startsWith(demo(c).rules.source + ': ') && e.includes('placeholder {{sc:baseEntity}}')));
+  assert.ok(errs.some((e) => e.includes('{{sc:alsoNope}}') && e.includes('lint/demo.xml')));
+  assert.ok(!errs.some((e) => e.includes('placeholder {{sc:tenantClaim}}')));
+  assert.ok(errs.some((e) => e.includes('{{sc:roleNope}}') && e.startsWith('roles/')));
+  assert.ok(errs.some((e) => e.includes(advisor.source) && e.includes('{{sc:baseEntity}}')));
+  assert.ok(errs.some((e) => e.includes(task(c).source) && e.includes('{{sc:typeFreeFiles}}')));
+  assert.ok(!errs.some((e) => e.includes(task(c).source) && e.includes('placeholder {{sc:stackName}}')));
+});

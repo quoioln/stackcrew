@@ -6,6 +6,7 @@ import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 import { loadCatalog } from '../src/catalog/load.js';
 import { createProfile } from '../src/profile.js';
+import { resolveConventions, conventionVars } from '../src/conventions.js';
 import { planSkillDirs } from '../src/render/writeset.js';
 import { buildContext, loadCustomRules } from '../src/render/context.js';
 
@@ -82,7 +83,7 @@ test('templates are filled; no {{sc: left anywhere; catalog not mutated', async 
   const { ctx } = await ctxFor();
   const out = JSON.stringify({ r: ctx.rules, s: ctx.skills, c: ctx.commandSkills, ro: ctx.roles, a: ctx.alwaysOn });
   assert.ok(!out.includes('{{sc:'));
-  assert.deepEqual(ctx.vars, { stackId: 'demo-java', stackName: ctx.stack.name, cli: 'npx stackcrew', version: '9.9.9', basePackage: 'com.acme' });
+  assert.deepEqual(ctx.vars, { ...conventionVars(resolveConventions({})), stackId: 'demo-java', stackName: ctx.stack.name, cli: 'npx stackcrew', version: '9.9.9', basePackage: 'com.acme' });
 });
 
 test('custom alwaysOn rule appends to alwaysOn; others join rules', async () => {

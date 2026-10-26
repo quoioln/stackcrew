@@ -6,6 +6,7 @@ import { parseFrontmatter } from '../util/frontmatter.js';
 import { toLf } from '../util/hash.js';
 import { extractEssentials } from '../catalog/load.js';
 import { planSkillDirs } from './writeset.js';
+import { resolveConventions, conventionVars } from '../conventions.js';
 
 const CUSTOM_DIR = '.stackcrew/custom';
 
@@ -49,7 +50,9 @@ export function buildContext(catalog, profile, { customRules = [], cli, version 
   const language = catalog.languages.get(stack.language);
   if (!language) throw new StackcrewError('RENDER', `Unknown language "${stack.language}" for stack "${stack.id}"`);
 
+  const conventions = resolveConventions(profile);
   const vars = {
+    ...conventionVars(conventions),
     stackId: stack.id,
     stackName: stack.name,
     cli: cli ?? '',
@@ -117,6 +120,7 @@ export function buildContext(catalog, profile, { customRules = [], cli, version 
     commandSkills,
     roles,
     skillDirs: planSkillDirs(profile.tools),
+    conventions,
     vars,
   };
 }

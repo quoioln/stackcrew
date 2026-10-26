@@ -245,21 +245,23 @@ test('custom rule in .stackcrew/custom is rendered for claude and cursor', async
   }
 });
 
-test('init --force keeps decisions, context and java settings', async () => {
+test('init --force keeps decisions, context, conventions and java settings', async () => {
   const dir = await tmp();
   await run(dir, 'init', '--stack', 'demo-java');
   const p = await readJson(path.join(dir, 'stackcrew.json'));
   p.decisions = [{ id: 'd1', area: 'db', decision: 'postgres', rationale: 'r', rejected: ['mysql'] }];
   p.context = { team: 'payments' };
   p.java = { basePackage: 'com.acme.app', wired: true };
+  p.conventions = { baseEntity: 'AuditedEntity', crossTenantRoles: [] };
   await writeFile(path.join(dir, 'stackcrew.json'), JSON.stringify(p, null, 2));
   const r = await run(dir, 'init', '--force', '--stack', 'demo-java', '--tools', 'claude');
   assert.equal(r.code, 0, r.err + r.out);
-  assert.match(r.out, /overwriting existing stackcrew\.json \(kept: decisions, context, java settings\)/);
+  assert.match(r.out, /overwriting existing stackcrew\.json \(kept: decisions, context, conventions, java\/node settings\)/);
   const q = await readJson(path.join(dir, 'stackcrew.json'));
   assert.deepEqual(q.decisions, p.decisions);
   assert.deepEqual(q.context, p.context);
   assert.equal(q.java.basePackage, 'com.acme.app');
+  assert.deepEqual(q.conventions, p.conventions);
   assert.deepEqual(q.tools, ['claude']);
 });
 
@@ -318,4 +320,20 @@ test('sync reports only changed blocks', async () => {
   assert.match(first.out, /[1-9]\d* block\(s\) updated/);
   const again = await run(dir, 'sync');
   assert.match(again.out, /\b0 block\(s\) updated/);
+});
+
+test('sync rejects a bad conventions block before writing', async () => {
+  const dir = await tmp();
+  await run(dir, 'init', '--stack', 'demo-java');
+  const p = await readJson(path.join(dir, 'stackcrew.json'));
+  p.conventions = { baseEnity: 'X', baseEntity: 'Base Entity' };
+  await writeFile(path.join(dir, 'stackcrew.json'), JSON.stringify(p, null, 2));
+  const before = await readFile(path.join(dir, CORE), 'utf8');
+  await rm(path.join(dir, CORE));
+  const r = await run(dir, 'sync');
+  assert.equal(r.code, 1);
+  assert.match(r.err, /conventions\.baseEntity/);
+  assert.match(r.err, /unknown key "baseEnity"/);
+  assert.equal(existsSync(path.join(dir, CORE)), false, 'nothing is written');
+  assert.ok(before.length > 0);
 });

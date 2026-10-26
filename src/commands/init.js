@@ -87,7 +87,9 @@ export async function initCommand(args, io) {
       if (typeof existing.java.basePackage === 'string') profile.java.basePackage = existing.java.basePackage;
       if (existing.java.wired === true) profile.java.wired = true;
     }
-    io.stdout.write('overwriting existing stackcrew.json (kept: decisions, context, java settings)\n');
+    if (existing.conventions !== undefined) profile.conventions = existing.conventions;
+    if (profile.node && existing.node?.wired === true) profile.node.wired = true;
+    io.stdout.write('overwriting existing stackcrew.json (kept: decisions, context, conventions, java/node settings)\n');
   }
 
   const errors = validateProfile(profile, catalog);

@@ -1,6 +1,7 @@
 import path from 'node:path';
 import { readFile, writeFile } from 'node:fs/promises';
 import { StackcrewError } from './errors.js';
+import { validateConventions } from './conventions.js';
 
 export const PROFILE_FILE = 'stackcrew.json';
 export const TOOLS = ['claude', 'cursor', 'codex', 'antigravity'];
@@ -32,6 +33,9 @@ export function createProfile({ stack, addons = [], tools = TOOLS, mode, guard =
   const profile = { version: 1, stack, addons, tools, mode, guard, context: {}, decisions: [] };
   if (catalog.stacks.get(stack)?.language === 'java') {
     profile.java = { basePackage: basePackage ?? '', wired: false };
+  }
+  if (catalog.stacks.get(stack)?.language === 'typescript') {
+    profile.node = { wired: false };
   }
   return profile;
 }
@@ -87,6 +91,14 @@ export function validateProfile(profile, catalog) {
   const bp = profile.java?.basePackage;
   if (profile.java !== undefined && !isStr(bp)) errors.push('java.basePackage: must be a string');
   else if (isStr(bp) && bp !== '' && !BASE_PACKAGE_RE.test(bp)) errors.push(`java.basePackage: "${bp}" is not a valid Java package`);
+
+  if (profile.node !== undefined) {
+    if (!profile.node || typeof profile.node !== 'object' || Array.isArray(profile.node) || typeof profile.node.wired !== 'boolean') {
+      errors.push('node.wired: must be a boolean');
+    }
+  }
+
+  if (profile.conventions !== undefined) errors.push(...validateConventions(profile.conventions));
 
   return errors;
 }

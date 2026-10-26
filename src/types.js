@@ -26,13 +26,18 @@
 /** @typedef {{ id: string, area: string, decision: string, rationale: string, rejected: string[] }} Decision */
 /** @typedef {{ version: 1, stack: string, addons: string[], tools: ('claude'|'cursor'|'codex'|'antigravity')[],
  *   mode: 'greenfield'|'brownfield', guard: boolean, context: Record<string,string>,
- *   decisions: Decision[], java?: { basePackage: string, wired: boolean } }} Profile */
+ *   decisions: Decision[], java?: { basePackage: string, wired: boolean },
+ *   node?: { wired: boolean }, conventions?: Partial<Conventions> }} Profile */
+/** @typedef {{ sharedLibraries: string[], baseEntity: string, baseTenantEntity: string, tenantClaim: string,
+ *   tenantColumn: string, rolesClaim: string, crossTenantRoles: string[], sharedComponents: string,
+ *   systemUser: string, typeFreeFiles: string[] }} Conventions */
 /** @typedef {{ dir: string, format: 'claude'|'generic' }} SkillDir */
 /** @typedef {{ taskDirs: SkillDir[], commandDirs: SkillDir[], warnings: string[] }} SkillDirPlan */
 /** @typedef {{ name: string, description: string, model: string, body: string, skills: string[] }} RenderedRole */
 /** @typedef {{ catalog: Catalog, profile: Profile, stack: Stack, language: Language, addons: Addon[],
  *   rules: RuleDoc[], alwaysOn: string, skills: SkillDoc[], commandSkills: SkillDoc[], roles: RenderedRole[],
- *   skillDirs: SkillDirPlan, vars: { stackId: string, stackName: string, cli: string, version: string, basePackage: string } }} RenderContext */
+ *   skillDirs: SkillDirPlan, conventions: Conventions,
+ *   vars: Record<string, string> }} RenderContext */
 /** @typedef {{ path: string, kind: 'owned'|'block', content: string }} FileOp   // path: POSIX, project-relative */
 /** @typedef {{ ops: FileOp[], warnings: string[] }} RenderResult */
 /** @typedef {{ written: string[], unchanged: string[], deleted: string[], skippedModified: string[],
