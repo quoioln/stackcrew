@@ -162,7 +162,7 @@ describe('kyc.completed consumer (e2e: RabbitMQ and Postgres in Testcontainers)'
     expect(parked?.properties.headers?.['x-death']).toBeUndefined(); // it never went through the wait queue
   });
 
-  it('never lets x-user-id: system read or write across tenants', async () => {
+  it('never lets x-user-id: {{sc:systemUser}} read or write across tenants', async () => {
     const profileOfA = await seedProfile('tenant-a');
     const handler = app.get(KycCompletedHandler);
     const original = handler.handle.bind(handler);
@@ -173,7 +173,7 @@ describe('kyc.completed consumer (e2e: RabbitMQ and Postgres in Testcontainers)'
     });
     try {
       const message = kycCompleted(profileOfA);
-      await publishRaw(payload(message), message.messageId, { 'x-tenant-id': 'tenant-b', 'x-user-id': 'system' });
+      await publishRaw(payload(message), message.messageId, { 'x-tenant-id': 'tenant-b', 'x-user-id': '{{sc:systemUser}}' });
       expect(await eventually(() => outcomes(message.messageId), (found) => found.length > 0))
         .toEqual([expect.objectContaining({ outcome: 'parked', reason: 'business_rule' })]); // not in tenant-b: nothing changed
       expect(crossTenant).toEqual(['CrossTenantDeniedError']);

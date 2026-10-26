@@ -680,7 +680,7 @@ test('nest rabbitmq-consumer skill: typed message, idempotency store, DLX with w
       assert.ok(!codeOfSibling(f.content).includes('runAsSystem('), `${f.relPath}: a consumer never becomes the system identity`);
     }
     const e2e = s.file('kyc-completed.consumer.e2e.spec.ts');
-    for (const needle of ['RabbitMQContainer', 'duplicate', 'wait for both outcomes', 'takeParked', 'attempts_exhausted', "'x-user-id': 'system'", 'tombstone', 'message_in']) {
+    for (const needle of ['RabbitMQContainer', 'duplicate', 'wait for both outcomes', 'takeParked', 'attempts_exhausted', "'x-user-id': '{{sc:systemUser}}'", 'tombstone', 'message_in']) {
       assert.ok(e2e.includes(needle), `consumer e2e spec missing ${needle}`);
     }
   });
