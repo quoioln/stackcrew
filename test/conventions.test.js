@@ -45,6 +45,21 @@ test('crossTenantRolesCsv is the plain comma-joined role list, empty for no role
   assert.ok(validateConventions({ crossTenantRolesCsv: 'x' }).some((m) => m.includes('unknown key "crossTenantRolesCsv"')), 'not settable in stackcrew.json');
 });
 
+test('claim names, the system user and roles allow only [A-Za-z0-9_.:/-]', () => {
+  const ok = { tenantClaim: 'https://example.com/claims/tenant_id', rolesClaim: 'realm_access.roles', systemUser: 'svc-job:batch', crossTenantRoles: ['super_admin', 'ops/report.v2'] };
+  assert.deepEqual(validateConventions(ok), []);
+  for (const [key, value] of [['tenantClaim', 'tenant"id'], ['rolesClaim', 'roles\\x'], ['systemUser', "sys'tem"], ['tenantClaim', 'a,b'], ['systemUser', 'a b']]) {
+    const errors = validateConventions({ [key]: value });
+    assert.equal(errors.length, 1, `${key}=${value}`);
+    assert.ok(errors[0].startsWith(`conventions.${key}:`) && errors[0].includes('A-Z a-z 0-9 _ . : / -'), errors[0]);
+  }
+  for (const role of ['ops,report', 'super"admin', 'a b', '`x`']) {
+    const errors = validateConventions({ crossTenantRoles: ['ok', role] });
+    assert.equal(errors.length, 1, role);
+    assert.ok(errors[0].startsWith('conventions.crossTenantRoles:') && errors[0].includes(JSON.stringify(role)) && errors[0].includes('A-Z a-z 0-9 _ . : / -'), errors[0]);
+  }
+});
+
 test('validateConventions rejects unknown key, bad identifier, unsafe path', () => {
   const e = validateConventions({ baseEnity: 'X', baseEntity: 'Base Entity', sharedComponents: '../ui' });
   assert.ok(e.some((m) => m.includes('unknown key "baseEnity"')));

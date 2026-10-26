@@ -25,6 +25,9 @@ const IDENT_KEYS = ['baseEntity', 'baseTenantEntity', 'tenantColumn'];
 const TOKEN_KEYS = ['tenantClaim', 'rolesClaim', 'systemUser'];
 const LIST_KEYS = ['sharedLibraries', 'crossTenantRoles', 'typeFreeFiles'];
 const IDENT_RE = /^[A-Za-z_$][\w$]*$/;
+/** Claim names, the system user and roles go into Java and TypeScript string literals, YAML and a comma-separated list. */
+const TOKEN_RE = /^[A-Za-z0-9_.:/-]+$/;
+const TOKEN_CHARS = 'A-Z a-z 0-9 _ . : / -';
 
 /** @param {import('./types.js').Profile} profile @returns {import('./types.js').Conventions} */
 export function resolveConventions(profile) {
@@ -51,8 +54,8 @@ export function validateConventions(value) {
     }
   }
   for (const k of TOKEN_KEYS) {
-    if (has(k) && !(typeof value[k] === 'string' && value[k] !== '' && !/\s/.test(value[k]))) {
-      errors.push(`conventions.${k}: must be a non-empty string without whitespace`);
+    if (has(k) && !(typeof value[k] === 'string' && TOKEN_RE.test(value[k]))) {
+      errors.push(`conventions.${k}: must be a non-empty string of the characters ${TOKEN_CHARS}`);
     }
   }
   if (has('sharedComponents')) {
@@ -63,6 +66,11 @@ export function validateConventions(value) {
   for (const k of LIST_KEYS) {
     if (has(k) && !(Array.isArray(value[k]) && value[k].every((x) => typeof x === 'string' && x !== ''))) {
       errors.push(`conventions.${k}: must be an array of non-empty strings`);
+    }
+  }
+  if (has('crossTenantRoles') && Array.isArray(value.crossTenantRoles)) {
+    for (const role of value.crossTenantRoles.filter((r) => typeof r === 'string' && r !== '' && !TOKEN_RE.test(r))) {
+      errors.push(`conventions.crossTenantRoles: role ${JSON.stringify(role)} must use only the characters ${TOKEN_CHARS}`);
     }
   }
   return errors;
