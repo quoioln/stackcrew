@@ -87,7 +87,7 @@ describe('maskBody (core-logging masker contract)', () => {
     expect(mask(nest(50000))).toBe('<application/json 100000 bytes>');
     expect(mask(`{"a":${nest(70)}}`)).toBe('<application/json 146 bytes>');
     expect(maskValue(JSON.parse(nest(65)), DEFAULTS)).toBe('<application/json 130 bytes>');
-    // an already-parsed value is sized only up to maxBodyBytes: N+ means "larger than that"
+    // N+ means the size is unknown: JSON.stringify threw (here the nesting overflows the stack; also a cycle, a BigInt or a throwing getter)
     expect(serializeMasked(JSON.parse(nest(50000)), DEFAULTS, 'application/problem+json')).toBe('<application/problem+json 16384+ bytes>');
   });
 

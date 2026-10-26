@@ -119,6 +119,15 @@ export function placeholderFor(value: unknown, contentType: string | undefined, 
   return text === undefined ? placeholderText(contentType, overCap(opts)) : bodyPlaceholder(contentType, Buffer.byteLength(text));
 }
 
+/**
+ * The UTF-8 size of what JSON.stringify writes for an already-parsed value, or undefined when it throws and the size is
+ * unknown. Callers compare it with a capture cap before masking. Never throws.
+ */
+export function jsonByteLength(value: unknown): number | undefined {
+  const text = jsonText(value);
+  return text === undefined ? undefined : Buffer.byteLength(text);
+}
+
 /** True for the bodies the masker parses (JSON, *+json, form); everything else only ever logs its size. */
 export function isMaskable(contentType: string | undefined): boolean {
   const type = mediaType(contentType);

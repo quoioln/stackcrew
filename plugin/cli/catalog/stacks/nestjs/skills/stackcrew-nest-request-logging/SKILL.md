@@ -14,7 +14,7 @@ Search the codebase and the shared libraries ({{sc:sharedLibraries}}) for `maskB
 | File | What it does |
 |---|---|
 | `env.ts.md` | `LOG_MASK_FIELDS`, `LOG_MAX_BODY_BYTES`, `LOG_BODIES`, `LOG_LEVEL`, `CROSS_TENANT_ROLES`, the JWKS settings; `validateEnv` for `ConfigModule`, lazy `loggingEnv()` and `tenancyEnv()` for code outside the injector. |
-| `body-masker.ts.md` | The masker: `maskBody`, `maskValue`, `serializeMasked`, `loadMaskOptions`, `loadLogBodies`, `bodyPlaceholder`, `placeholderFor`. |
+| `body-masker.ts.md` | The masker: `maskBody`, `maskValue`, `serializeMasked`, `loadMaskOptions`, `loadLogBodies`, `bodyPlaceholder`, `placeholderFor`, `jsonByteLength`. |
 | `request-context.ts.md` | `RequestContext`, `runWithRequestContext`, `runAsSystem`, `runCrossTenant`, `requireTenantId`, `currentActor`, `contextFromMessageHeaders`, the two errors. |
 | `request-context.interceptor.ts.md` | Global interceptor: the handler runs inside the request's context. |
 | `log-fields.ts.md` | Event and field names, `levelFor(status)`, and `writeCallLine`, the line writer that never throws. |
@@ -22,7 +22,7 @@ Search the codebase and the shared libraries ({{sc:sharedLibraries}}) for `maskB
 | `problem-details.ts.md`, `all-exceptions.filter.ts.md` | RFC 7807 responses with constant details; `ProblemError` for domain errors. |
 | `outbound-http-logger.ts.md` | `OutboundHttpLogger`: one `http_out` line per call on a module's `HttpService`. |
 | `logging.setup.ts.md`, `common.module.ts.md` | `pinoHttpOptions`, `setupApp(app)`, and the module that registers it all. |
-| `body-masker.spec.ts.md`, `log-fields.spec.ts.md`, `request-context.spec.ts.md`, `env.spec.ts.md` | The masker contract, the line writer, the identity rules and the env parsing (section 9). |
+| `body-masker.spec.ts.md`, `log-fields.spec.ts.md`, `request-context.spec.ts.md`, `env.spec.ts.md`, `outbound-http-logger.spec.ts.md` | The masker contract, the line writer, the identity rules, the env parsing and the outbound line (section 9). |
 
 `common.module.ts` imports the authentication pieces from the stack rule (`src/common/auth/`). The TypeORM base classes that read the context are in `stackcrew-nest-typeorm-entity`.
 
@@ -131,6 +131,7 @@ export class KycModule {}
 
 - The line: `event=http_out`, `target`, `method`, `url` (scheme, host, port and path: no query string, no user info), `status`, `durationMs`, `reqBody`, `resBody`, the context ids, and `error` (the axios error code) when the call failed. A call that failed without a response still gives one line, without `status` and `resBody`. A retried call gives one line per attempt.
 - Bodies are read after axios has serialized the request and parsed the response. The response is chosen by its content type, so an XML or text reply logs only its size. `responseType: 'stream'` responses are never read.
+- A request or response body over 2 MiB logs only `<CT N bytes>`, as on the inbound line: N is the `Content-Length`, or the size of the data axios returned (for parsed JSON without a `Content-Length`, the size of its JSON text). It is never masked or serialized again for the line.
 - Base URLs come from config; set `timeout` on every client. The provider client itself, retries and the error mapping are in `stackcrew-nest-outbound-client`.
 
 ## 8. Message consumers
@@ -160,6 +161,7 @@ async onMessage(payload: Buffer | undefined, contentType: string | undefined, he
 - `log-fields.spec.ts` pins `writeCallLine`: a failing build writes the fallback line, and a failing fallback or logger becomes a process warning, never an exception.
 - `request-context.spec.ts` pins the identity rules: a cross-tenant role reads (read only), other roles are denied, only `runAsSystem` is the system identity (a token or header user named `{{sc:systemUser}}` is denied), unsafe header values are dropped, and concurrent contexts stay apart.
 - `env.spec.ts` pins that numeric variables are converted from the strings the environment holds, and that an error names the variable, never its value.
+- `outbound-http-logger.spec.ts` pins the `http_out` line against a local `node:http` stub: masked bodies, a URL without its query string, and bodies over 2 MiB logged by size only, with and without `Content-Length`.
 - e2e with supertest (ask first) through the harness in `stack-nestjs-testing` (`createTestApp`: `AppModule` imported after the env is set, `createNestApplication({ rawBody: true })`, `setupApp(app)`, a `CapturingLogger`, a local token issuer). Wait for the line: it is written after the client has the response. Cover:
   - a body with a password gives exactly one `http_in` line with `"***"` in `reqBody`, while the client gets the original body;
   - a missing or invalid token gives a 401 with one line and no `userId`; a guard 403, an unknown route, a validation error and a malformed JSON body each give one line;

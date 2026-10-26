@@ -278,7 +278,7 @@ test('nest request logging writes one line per request from a middleware ahead o
     assert.ok(errors.includes("'application/problem+json'") && errors.includes('stackFrames(exception)'));
     const out = s.file('outbound-http-logger.ts');
     for (const needle of ['axios.interceptors.request.use', 'axios.interceptors.response.use', 'sanitizeUrl(', 'data instanceof Readable',
-      'isMaskable(contentType) ? serializeMasked', 'error.code ?? error.name']) {
+      'isMaskable(contentType) && size <= CAPTURE_LIMIT_BYTES ? serializeMasked', 'error.code ?? error.name']) {
       assert.ok(out.includes(needle), `outbound logger missing ${needle}`);
     }
     for (const needle of ['`nestjs-pino` **4.x**', 'Nest 11', 'rawBody: true', 'setupApp(app)', 'compression', 'MiddlewareConsumer', 'enterWith', 'message_in',
@@ -408,7 +408,7 @@ test('nest logging fix round 2: bounded sizing, toJSON at the same depth, guarde
     assert.match(fields, /\} catch \{\n\s+try \{\n\s+line = fallback\(\);\n\s+\} catch \(failure: unknown\) \{/, 'the fallback has its own guard');
     const fieldsSpec = s.file('log-fields.spec.ts');
     assert.ok(fieldsSpec.includes("jest.spyOn(process, 'emitWarning')") && fieldsSpec.includes('fallback throws too'), 'writer branches are specified');
-    assert.ok(!s.file('outbound-http-logger.ts').includes('JSON.stringify(data)'), 'outbound sizes parsed bodies with the bounded sizer');
+    assert.ok(!s.file('outbound-http-logger.ts').includes('JSON.stringify(data)'), 'outbound sizes parsed bodies through the masker helpers, never a bare JSON.stringify');
     assert.ok(s.file('env.ts').includes("@IsUrl({ require_tld: false, require_protocol: true, protocols: ['http', 'https'] })"));
     assert.ok(s.file('env.spec.ts').includes("JWKS_URI: 'idp.example.com/jwks'"), 'a scheme-less URL fails by name');
   });
@@ -494,5 +494,30 @@ test('nest tenant entities in a transaction go through withManager only', async 
     assert.ok(s.body.includes('inject `DataSource` only to open a transaction'), 'DataSource is for opening transactions');
     assert.ok(!s.body.includes('writes two entities'), 'the example and its comment agree');
     assert.match(spec, /throw new Error\('roll back'\)[^]*?toMatchObject\(\{ status: CustomerProfileStatus\.VERIFIED/, 'withManager joins the transaction: a rollback undoes its write');
+  });
+});
+
+test('nest folded rulings R-T8: N+ means unknown size, deep nesting overflows serialization, outbound responses capped at 2 MiB', async () => {
+  await withRealCatalog(async (c) => {
+    const s = nestSkill(c, LOGGING);
+    const spec = s.file('body-masker.spec.ts');
+    assert.ok(!spec.includes('larger than that') && spec.includes('N+ means the size is unknown'), 'R-T8-a: the spec comment names unknown size');
+    const log = c.coreRules.find((r) => r.id === 'core-logging').body;
+    assert.ok(log.includes('nesting deep enough to overflow serialization'), 'R-T8-b: core-logging lists deep nesting as unknown size');
+    const out = s.file('outbound-http-logger.ts');
+    assert.ok(!out.includes('bounded size') && !out.includes('bounded sizer'), 'R-T8-c: no bounded-sizer wording left');
+    const responseBody = /function responseBody\([^]*?\n\}\n/.exec(out)?.[0] ?? '';
+    for (const needle of ['declared > CAPTURE_LIMIT_BYTES', 'jsonByteLength(data)', 'size <= CAPTURE_LIMIT_BYTES']) {
+      assert.ok(responseBody.includes(needle) || out.includes(needle), `R-T8-d: outbound response cap missing ${needle}`);
+    }
+    assert.ok(/function cappedBody\([^]*?size <= CAPTURE_LIMIT_BYTES \? maskBody\(raw, contentType, opts\) : bodyPlaceholder\(contentType, size\)/.test(out),
+      'R-T8-d: string, Buffer and ArrayBuffer bodies over the cap log their size only');
+    assert.match(s.file('body-masker.ts'), /export function jsonByteLength\(value: unknown\): number \| undefined \{\n\s+const text = jsonText\(value\);/,
+      'the size of a parsed value comes from the guarded round-trip');
+    const outSpec = s.file('outbound-http-logger.spec.ts');
+    for (const needle of ['CAPTURE_LIMIT + 1', "'/big-json-chunked'", '<text/plain ${CAPTURE_LIMIT + 1} bytes>', 'reqBody: `<application/json ${CAPTURE_LIMIT + 1} bytes>`']) {
+      assert.ok(outSpec.includes(needle), `outbound-http-logger.spec.ts missing ${needle}`);
+    }
+    assert.ok(/over 2 MiB/.test(s.body), 'SKILL.md states the outbound response cap');
   });
 });
