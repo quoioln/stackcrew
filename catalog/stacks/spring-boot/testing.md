@@ -246,11 +246,18 @@ class VerificationTenancyIT {
     }
 
     @Test
+    void runAsWithTheSystemUserIdIsNotTheSystemIdentity() {
+        assertThatThrownBy(() -> TenantContext.runAs("tenant-a", TenantContext.SYSTEM_USER,
+                () -> tenantContext.runCrossTenant("monthly volume report", verifications::findAll)))
+                .isInstanceOf(CrossTenantDeniedException.class);
+    }
+
+    @Test
     void systemJobReadsAcrossTenantsInsideATransactionButCannotWrite() {
-        List<Verification> all = TenantContext.runAs(null, TenantContext.SYSTEM_USER, () -> transactions.execute(
+        List<Verification> all = TenantContext.runAsSystem(null, () -> transactions.execute(
                 status -> tenantContext.runCrossTenant("nightly reconciliation", verifications::findAll)));
         assertThat(all).hasSize(2);
-        assertThatThrownBy(() -> TenantContext.runAs(null, TenantContext.SYSTEM_USER, () -> tenantContext.runCrossTenant(
+        assertThatThrownBy(() -> TenantContext.runAsSystem(null, () -> tenantContext.runCrossTenant(
                 "nightly reconciliation", () -> verifications.save(new Verification("ref-x")))))
                 .isInstanceOf(MissingTenantException.class);
     }

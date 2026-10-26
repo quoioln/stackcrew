@@ -13,7 +13,7 @@ Applies to every stack that persists data. The stack rules and skills hold the m
 - The tenant comes from the JWT claim `{{sc:tenantClaim}}`, never from a request parameter or body. The framework mechanism (a tenant-scoped repository or the ORM's tenant filter) applies the tenant condition to every read, count, update, delete and soft delete, and assigns the tenant on every write. Never hand-write a `where` on `{{sc:tenantColumn}}`, and never use a raw repository or raw SQL on a tenant entity.
 - A tenant entity touched with no tenant in context fails closed: throw where the framework allows it, otherwise return no rows. Never return or modify unfiltered rows.
 - `createdBy` and `updatedBy` hold the JWT `sub`. With no user (job, consumer, migration) they hold `{{sc:systemUser}}`.
-- Cross-tenant access goes through one explicit call, `runCrossTenant(reason, work)`. Roles allowed to read across tenants: {{sc:crossTenantRoles}} (from claim `{{sc:rolesClaim}}`); the `{{sc:systemUser}}` identity is also allowed. Anyone else gets an error. Every use logs who and why.
+- Cross-tenant access goes through one explicit call, `runCrossTenant(reason, work)`. Roles allowed to read across tenants: {{sc:crossTenantRoles}} (from claim `{{sc:rolesClaim}}`); the `{{sc:systemUser}}` identity is also allowed, only for work started through the system job entry, never because a token, a message header or a stored value carries that user id. Anyone else gets an error. Every use logs who and why.
 - Every stack's tests include an "audit fields filled" test and a "tenant A cannot read tenant B" test.
 - Shared libraries to search first for an existing base class: {{sc:sharedLibraries}}. Search the codebase too. Create the base classes once, in the shared location, only when none exists. The base holds the four audit fields and no `id`: the id strategy is the project's choice.
 
@@ -21,7 +21,7 @@ Applies to every stack that persists data. The stack rules and skills hold the m
 
 - **Request:** the authentication layer puts user, tenant and roles in the request context once. Persistence code reads that context and never decodes a token itself.
 - **Message consumer:** messages carry the headers `x-tenant-id`, `x-user-id` and `x-request-id`. Producers always send them. The consumer sets the context from them before it handles the message.
-- **Job and migration:** run as `{{sc:systemUser}}`. Work that touches a tenant entity sets the tenant explicitly for each unit of work.
+- **Job and migration:** run as `{{sc:systemUser}}` through the system job entry, the one call that grants that identity. Work that touches a tenant entity sets the tenant explicitly for each unit of work. A consumer never becomes `{{sc:systemUser}}` from its `x-user-id` header.
 - **Public endpoint:** does not read or write tenant entities, unless the project defines how to resolve a tenant. By default there is none.
 - **Server-rendered code (full-stack):** read user and tenant through the one shared context helper, never from a header or a cookie directly.
 

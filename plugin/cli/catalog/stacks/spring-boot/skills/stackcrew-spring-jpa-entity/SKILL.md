@@ -16,9 +16,9 @@ Search the codebase and the shared libraries ({{sc:sharedLibraries}}) for `{{sc:
 | `BaseEntity.java`, saved as `{{sc:baseEntity}}.java` | `@MappedSuperclass` + `@EntityListeners(AuditingEntityListener.class)` with `createdAt`, `createdBy`, `updatedAt`, `updatedBy`. No id, no setters. |
 | `BaseTenantEntity.java`, saved as `{{sc:baseTenantEntity}}.java` | Extends `{{sc:baseEntity}}`, adds the `@TenantId` field `{{sc:tenantColumn}}`; refuses inserts without a tenant and loads of another tenant's row. |
 | `PersistenceConfig.java` | `@EnableJpaAuditing`, a UTC `DateTimeProvider` from the `Clock`, and the `HibernatePropertiesCustomizer` that registers the resolver. |
-| `JwtAuditorAware.java` | `createdBy`/`updatedBy` = JWT `sub`, the `runAs` user, or `{{sc:systemUser}}`. |
+| `JwtAuditorAware.java` | `createdBy`/`updatedBy` = JWT `sub`, the `runAs` user, or `{{sc:systemUser}}` (jobs, and work without a user). |
 | `JwtTenantIdentifierResolver.java` | Tenant for each Hibernate session; a no-tenant marker instead of null; `isRoot` for cross-tenant reads. |
-| `TenantContext.java`, `TenancyProperties.java` | Tenant, user and roles from the JWT (claims `{{sc:tenantClaim}}`, `sub`, `{{sc:rolesClaim}}`); `runAs` for consumers and jobs; `runCrossTenant`. |
+| `TenantContext.java`, `TenancyProperties.java` | Tenant, user and roles from the JWT (claims `{{sc:tenantClaim}}`, `sub`, `{{sc:rolesClaim}}`); `runAs` for consumers, `runAsSystem` for jobs; `runCrossTenant`. |
 | `MissingTenantException.java`, `CrossTenantDeniedException.java` | The two fail-closed errors. |
 
 - `TenantContext` reads the `Jwt` that Spring Security put in the security context (`spring-boot-starter-oauth2-resource-server`). Persistence code never decodes a token.
@@ -26,7 +26,7 @@ Search the codebase and the shared libraries ({{sc:sharedLibraries}}) for `{{sc:
 
 ## 2. Configuration
 
-Set `app.tenancy.cross-tenant-roles` to the roles allowed to read across tenants: {{sc:crossTenantRoles}} (`conventions.crossTenantRoles` in `stackcrew.json`; stackcrew's default is `super_admin`). Write one list entry per role; leave the list empty when the conventions say none. Jobs and consumers running as `{{sc:systemUser}}` through `runAs` are allowed either way.
+The roles allowed to read across tenants are `conventions.crossTenantRoles` in `stackcrew.json`: {{sc:crossTenantRoles}}. Write them into `app.tenancy.cross-tenant-roles`; with stackcrew's default conventions that is `cross-tenant-roles: [super_admin]`. This yml list is the single source: `TenancyProperties` has no default in code, and an empty or missing list grants no role, so then only `runAsSystem` jobs can read across tenants.
 
 ```yaml
 spring:
@@ -36,9 +36,7 @@ spring:
       ddl-auto: validate         # the migration owns the schema
 app:
   tenancy:
-    # conventions.crossTenantRoles: {{sc:crossTenantRoles}}
-    cross-tenant-roles:
-      - super_admin              # the default role; replace with the roles named on the line above
+    cross-tenant-roles: []       # write the roles from conventions.crossTenantRoles here: {{sc:crossTenantRoles}}
 ```
 
 ## 3. The entity
@@ -137,10 +135,11 @@ public interface VerificationRepository extends JpaRepository<Verification, UUID
 TenantContext.runAs(tenantIdHeader, userIdHeader, () -> verificationService.handle(command));
 ```
 
-- **Job:** `TenantContext.runAs(tenantId, TenantContext.SYSTEM_USER, ...)` for each tenant, one unit of work each.
+- **Job:** `TenantContext.runAsSystem(tenantId, ...)` for each tenant, one unit of work each. This system job entry is the only way to act as `{{sc:systemUser}}`; call it only from a scheduled job or a migration.
 - **Another thread** (`@Async`, an executor): the context does not follow. Pass the tenant and user ids and call `runAs` there.
+- `runAs(tenantId, userId, ...)` never grants the system identity, whatever `userId` says: a consumer whose `x-user-id` is `{{sc:systemUser}}`, or an outbox row written by such a user, stays an ordinary user.
 - **No tenant:** reads return no rows, inserts throw `MissingTenantException`. Never catch it to retry without a tenant.
-- `runAs` refuses to run inside a request that has a JWT: a request cannot switch tenants.
+- `runAs` and `runAsSystem` refuse to run inside a request that has a JWT: a request cannot switch tenants.
 
 ## 7. Cross-tenant reads
 
@@ -148,7 +147,7 @@ TenantContext.runAs(tenantIdHeader, userIdHeader, () -> verificationService.hand
 List<VolumeRow> rows = tenantContext.runCrossTenant("monthly volume report", () -> reports.volumeByTenant());
 ```
 
-- `runCrossTenant` checks the caller: a role in `app.tenancy.cross-tenant-roles` (from claim `{{sc:rolesClaim}}`), or the user `{{sc:systemUser}}` inside `runAs`. A JWT whose `sub` happens to be `{{sc:systemUser}}` does not count: the system identity belongs to jobs and consumers only. It logs `event=cross_tenant` with `userId`, `tenantId` (when there is one) and `reason`, and runs the work in a new read-only transaction whose session has no tenant filter (`isRoot`). Anyone else gets `CrossTenantDeniedException`.
+- `runCrossTenant` checks the caller: a role in `app.tenancy.cross-tenant-roles` (from claim `{{sc:rolesClaim}}`), or work started with `runAsSystem`. A JWT `sub`, a message header or a `runAs` user that happens to be `{{sc:systemUser}}` does not count. It logs `event=cross_tenant` with `userId`, `tenantId` (when there is one) and `reason`, and runs the work in a new read-only transaction whose session has no tenant filter (`isRoot`). Anyone else gets `CrossTenantDeniedException`.
 - Map `CrossTenantDeniedException` to the same 404 `ProblemDetail` as a missing row. Before Hibernate 6.6 it is also what a lookup of another tenant's id throws (section 5), and a 403 there would confirm that the id exists; a 404 also gives the same answer on every Boot version.
 - The reason is a short, human-readable sentence; it is in the log.
 - Read only: an insert inside throws `MissingTenantException`. Return DTOs or projections; entities are detached when the work returns.

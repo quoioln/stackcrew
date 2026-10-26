@@ -21,8 +21,8 @@ import java.util.function.Supplier;
 
 /**
  * Who is calling and for which tenant. In a request both come from the JWT that Spring Security put in the security
- * context (persistence code never decodes a token). Message consumers and jobs set them with runAs. runCrossTenant is
- * the only way to switch the tenant filter off.
+ * context (persistence code never decodes a token). Message consumers set them with runAs, jobs with runAsSystem.
+ * runCrossTenant is the only way to switch the tenant filter off.
  *
  * The static methods are read by Hibernate callbacks (resolver, auditor, @PrePersist), which are not Spring beans.
  */
@@ -78,15 +78,14 @@ public class TenantContext {
     }
 
     /**
-     * For message consumers (headers x-tenant-id and x-user-id) and jobs (userId {{sc:systemUser}}, one tenant per unit of
-     * work). Call it before the transaction starts: Hibernate reads the tenant when the session opens. Not for requests,
-     * which already carry their tenant in the JWT.
+     * For message consumers (headers x-tenant-id and x-user-id) and work handed to another thread: the tenant and the
+     * user on whose behalf it runs. It never grants the system identity, whatever userId says (a header or a stored
+     * value can carry "{{sc:systemUser}}"). Call it before the transaction starts: Hibernate reads the tenant when the
+     * session opens. Not for requests, which already carry their tenant in the JWT.
      */
     public static <T> T runAs(String tenantId, String userId, Supplier<T> work) {
-        if (currentJwt().isPresent()) {
-            throw new IllegalStateException("runAs is for consumers and jobs; a request takes its tenant from the JWT");
-        }
-        return withScope(new Scope(tenantId, userId, false, true), work);
+        requireNoRequestUser();
+        return withScope(new Scope(tenantId, userId, false, false), work);
     }
 
     /** runAs for work that returns nothing, such as a message handler. */
@@ -98,8 +97,26 @@ public class TenantContext {
     }
 
     /**
-     * Read across tenants: allowed for the roles in app.tenancy.cross-tenant-roles, and for {{sc:systemUser}} only inside
-     * runAs (a job or a consumer, never a token whose sub happens to be {{sc:systemUser}}). Everyone else is denied.
+     * The system job entry: scheduled jobs and migrations run here as {{sc:systemUser}}, one tenant per unit of work
+     * (null when the job touches no tenant entity). The only way to get the system identity, and with it the right to
+     * call runCrossTenant without a role. Never call it from a request handler or a message consumer.
+     */
+    public static <T> T runAsSystem(String tenantId, Supplier<T> work) {
+        requireNoRequestUser();
+        return withScope(new Scope(tenantId, SYSTEM_USER, false, true), work);
+    }
+
+    /** runAsSystem for work that returns nothing. */
+    public static void runAsSystem(String tenantId, Runnable work) {
+        runAsSystem(tenantId, () -> {
+            work.run();
+            return null;
+        });
+    }
+
+    /**
+     * Read across tenants: allowed for the roles in app.tenancy.cross-tenant-roles and for work started with
+     * runAsSystem; denied for everyone else, including a token or a runAs user whose id happens to be {{sc:systemUser}}.
      * Runs the work in a new read-only transaction, so Hibernate opens a fresh session without the tenant filter.
      * Return DTOs or projections: the entities are detached when the work returns.
      */
@@ -110,7 +127,7 @@ public class TenantContext {
         String userId = currentUserId().orElse(null);
         String loggedReason = reason.replaceAll("[\\r\\n]", " ");
         Scope scope = SCOPE.get();
-        boolean systemWork = scope != null && scope.runAs() && SYSTEM_USER.equals(scope.userId());
+        boolean systemWork = scope != null && scope.systemJob();
         if (!systemWork && currentRoles().stream().noneMatch(crossTenantRoles::contains)) {
             log.atWarn().setMessage(CROSS_TENANT_EVENT).addKeyValue("event", CROSS_TENANT_EVENT).addKeyValue("userId", userId)
                     .addKeyValue("reason", loggedReason).addKeyValue("outcome", "denied").log();
@@ -154,6 +171,12 @@ public class TenantContext {
         }
     }
 
-    /** runAs marks a scope set by a job or consumer; only such a scope can carry the system identity. */
-    private record Scope(String tenantId, String userId, boolean crossTenant, boolean runAs) {}
+    private static void requireNoRequestUser() {
+        if (currentJwt().isPresent()) {
+            throw new IllegalStateException("runAs and runAsSystem are for consumers and jobs; a request takes its tenant from the JWT");
+        }
+    }
+
+    /** systemJob is set only by runAsSystem; it is the one marker that carries the system identity. */
+    private record Scope(String tenantId, String userId, boolean crossTenant, boolean systemJob) {}
 }

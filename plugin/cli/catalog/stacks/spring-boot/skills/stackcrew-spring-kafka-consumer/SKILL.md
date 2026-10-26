@@ -217,8 +217,9 @@ The group id comes from the constant in `@KafkaListener(groupId = ...)`, so it i
 ## 6. The listener: restore the context, parse, delegate
 
 The listener only restores the context, logs the `message_in` line, parses and delegates.
-- `ConsumerMdc` reads the correlation id and `x-request-id` from the record headers, or creates them when missing. It also puts `x-tenant-id` and `x-user-id` in MDC, and its `close()` removes all four keys, so every exit path clears them.
-- The handler runs inside `TenantContext.runAs` with the tenant and user from the headers (skill `stackcrew-spring-jpa-entity`). Its `@Transactional` then opens the Hibernate session with that tenant. A record without `x-tenant-id` reads no tenant rows and cannot insert any (`MissingTenantException`).
+- `ConsumerMdc` reads the correlation id and `x-request-id` from the record headers, or creates them when missing or unsafe (`LogFields.safeRequestIdOrNew`). It also puts `x-tenant-id` and `x-user-id` in MDC after `LogFields.safeIdOrNull` (an unsafe value counts as absent), and its `close()` removes all four keys, so every exit path clears them.
+- The handler runs inside `TenantContext.runAs` with the tenant and user from the headers (skill `stackcrew-spring-jpa-entity`). Its `@Transactional` then opens the Hibernate session with that tenant. A record without `x-tenant-id` reads no tenant rows and cannot insert any (`MissingTenantException`). `runAs` never grants the system identity: `x-user-id: {{sc:systemUser}}` does not let a consumer read across tenants. Only a scheduled job started with `TenantContext.runAsSystem` can.
+- A tombstone (null value) logs its `message_in` line without `reqBody`, and `EventCodec.read` throws the non-retryable `InvalidEventException` (step 2), so it goes to the dead-letter topic at once instead of being retried.
 
 ```java
 @Component
@@ -239,7 +240,7 @@ class OrderPaidListener {
             LoggingEventBuilder line = log.atInfo().setMessage(LogFields.MESSAGE_IN)
                     .addKeyValue(LogFields.EVENT, LogFields.MESSAGE_IN)
                     .addKeyValue("topic", record.topic()).addKeyValue("partition", record.partition()).addKeyValue("offset", record.offset());
-            if (masker.logBodies()) {
+            if (masker.logBodies() && record.value() != null) {
                 line = line.addKeyValue(LogFields.REQ_BODY,
                         masker.mask(record.value().getBytes(StandardCharsets.UTF_8), MediaType.APPLICATION_JSON_VALUE));
             }
@@ -256,9 +257,10 @@ final class ConsumerMdc implements AutoCloseable {
     private ConsumerMdc(String tenantId, String userId) { this.tenantId = tenantId; this.userId = userId; }
 
     static ConsumerMdc open(Headers headers) {
-        MDC.put(MdcKeys.CORRELATION_ID, valueOrNew(headers, KafkaHeaderNames.CORRELATION_ID));
-        MDC.put(LogFields.REQUEST_ID, valueOrNew(headers, LogFields.REQUEST_ID_HEADER));
-        ConsumerMdc context = new ConsumerMdc(value(headers, LogFields.TENANT_ID_HEADER), value(headers, LogFields.USER_ID_HEADER));
+        MDC.put(MdcKeys.CORRELATION_ID, LogFields.safeRequestIdOrNew(value(headers, KafkaHeaderNames.CORRELATION_ID)));
+        MDC.put(LogFields.REQUEST_ID, LogFields.safeRequestIdOrNew(value(headers, LogFields.REQUEST_ID_HEADER)));
+        ConsumerMdc context = new ConsumerMdc(LogFields.safeIdOrNull(value(headers, LogFields.TENANT_ID_HEADER)),
+                LogFields.safeIdOrNull(value(headers, LogFields.USER_ID_HEADER)));
         if (context.tenantId != null) { MDC.put(LogFields.TENANT_ID, context.tenantId); }
         if (context.userId != null) { MDC.put(LogFields.USER_ID, context.userId); }
         return context;
@@ -278,12 +280,7 @@ final class ConsumerMdc implements AutoCloseable {
 
     private static String value(Headers headers, String name) {
         Header header = headers.lastHeader(name);
-        return header == null ? null : new String(header.value(), StandardCharsets.UTF_8);
-    }
-
-    private static String valueOrNew(Headers headers, String name) {
-        String value = value(headers, name);
-        return value == null ? UUID.randomUUID().toString() : value;
+        return header == null || header.value() == null ? null : new String(header.value(), StandardCharsets.UTF_8);
     }
 }
 ```

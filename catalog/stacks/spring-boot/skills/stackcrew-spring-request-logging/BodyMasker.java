@@ -75,13 +75,16 @@ public class BodyMasker {
             return null;
         }
         String type = mediaType(contentType);
-        if (type.equals(JSON_TYPE) || type.endsWith(JSON_SUFFIX)) {
-            return maskJson(body, type);
-        }
         if (type.equals(FORM_TYPE)) {
             return maskForm(body, type);
         }
-        return placeholder(contentType, body.length);
+        return isMaskable(contentType) ? maskJson(body, type) : placeholder(contentType, body.length);
+    }
+
+    /** True for the bodies this masker parses (JSON, *+json, form); everything else only ever logs its size. */
+    public static boolean isMaskable(String contentType) {
+        String type = mediaType(contentType);
+        return type.equals(JSON_TYPE) || type.endsWith(JSON_SUFFIX) || type.equals(FORM_TYPE);
     }
 
     /** Size-only placeholder: `<binary CT N bytes>` for files, `<CT N bytes>` for everything else. */
