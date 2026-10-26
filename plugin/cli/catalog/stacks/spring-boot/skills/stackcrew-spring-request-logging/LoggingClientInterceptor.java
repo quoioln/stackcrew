@@ -47,7 +47,16 @@ public class LoggingClientInterceptor implements ClientHttpRequestInterceptor {
         LoggingEventBuilder line = line(request, body, start, HttpLoggingFilter.levelFor(status))
                 .addKeyValue(LogFields.STATUS, status);
         if (masker.logBodies()) {
-            line = withBody(line, LogFields.RES_BODY, response.getBody().readAllBytes(), response.getHeaders().getContentType());
+            byte[] responseBody;
+            try {
+                responseBody = response.getBody().readAllBytes();
+            } catch (IOException | RuntimeException e) {
+                // the body broke off (connection reset, read timeout): still one line, with the status and no body
+                line(request, body, start, Level.ERROR).addKeyValue(LogFields.STATUS, status)
+                        .addKeyValue(LogFields.ERROR, e.getClass().getName()).log();
+                throw e;
+            }
+            line = withBody(line, LogFields.RES_BODY, responseBody, response.getHeaders().getContentType());
         }
         line.log();
         return response;

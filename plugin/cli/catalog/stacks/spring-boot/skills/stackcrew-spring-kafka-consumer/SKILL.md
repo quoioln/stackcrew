@@ -32,7 +32,7 @@ public final class KafkaHeaderNames {
 }
 ```
 
-Annotation attributes accept these because they are compile-time constants. Add `CORRELATION_ID` to the existing `MdcKeys` if it is missing. Create the topic and its dead-letter topic (same or more partitions) through your infrastructure code, not by hand. The dead-letter topic name always comes from `DLT_SUFFIX`: spring-kafka 3.1 and 3.2 (Boot 3.2 and 3.3) default to `<topic>.DLT` while 3.3 and later default to `<topic>-dlt`, so relying on the default breaks on a Boot upgrade.
+Annotation attributes accept these because they are compile-time constants. Add `CORRELATION_ID` to the existing `MdcKeys` if it is missing. The context headers `x-request-id`, `x-tenant-id` and `x-user-id` are `LogFields.REQUEST_ID_HEADER`, `TENANT_ID_HEADER` and `USER_ID_HEADER` from `stackcrew-spring-request-logging`; reuse them rather than declaring them again. Create the topic and its dead-letter topic (same or more partitions) through your infrastructure code, not by hand. The dead-letter topic name always comes from `DLT_SUFFIX`: spring-kafka 3.1 and 3.2 (Boot 3.2 and 3.3) default to `<topic>.DLT` while 3.3 and later default to `<topic>-dlt`, so relying on the default breaks on a Boot upgrade.
 
 ## 2. The typed event and the codec: parse once, at the edge
 
@@ -216,41 +216,81 @@ The group id comes from the constant in `@KafkaListener(groupId = ...)`, so it i
 
 ## 6. The listener: restore the context, parse, delegate
 
-The listener only restores context, parses and delegates. The correlation id is read from the record header, or created when missing, and removed in `finally`.
+The listener only restores the context, logs the `message_in` line, parses and delegates.
+- `ConsumerMdc` reads the correlation id and `x-request-id` from the record headers, or creates them when missing. It also puts `x-tenant-id` and `x-user-id` in MDC, and its `close()` removes all four keys, so every exit path clears them.
+- The handler runs inside `TenantContext.runAs` with the tenant and user from the headers (skill `stackcrew-spring-jpa-entity`). Its `@Transactional` then opens the Hibernate session with that tenant. A record without `x-tenant-id` reads no tenant rows and cannot insert any (`MissingTenantException`).
 
 ```java
 @Component
 class OrderPaidListener {
+    private static final Logger log = LoggerFactory.getLogger(OrderPaidListener.class);
+
     private final EventCodec codec;
     private final OrderPaidHandler handler;
+    private final BodyMasker masker;
 
-    OrderPaidListener(EventCodec codec, OrderPaidHandler handler) { this.codec = codec; this.handler = handler; }
+    OrderPaidListener(EventCodec codec, OrderPaidHandler handler, BodyMasker masker) {
+        this.codec = codec; this.handler = handler; this.masker = masker;
+    }
 
     @KafkaListener(topics = KafkaTopics.ORDER_PAID, groupId = KafkaTopics.GROUP_FULFILMENT)
     public void on(ConsumerRecord<String, String> record) {
-        try (ConsumerMdc ignored = ConsumerMdc.open(record.headers())) {
-            handler.handle(codec.read(record.value(), OrderPaid.class));
+        try (ConsumerMdc context = ConsumerMdc.open(record.headers())) {
+            LoggingEventBuilder line = log.atInfo().setMessage(LogFields.MESSAGE_IN)
+                    .addKeyValue(LogFields.EVENT, LogFields.MESSAGE_IN)
+                    .addKeyValue("topic", record.topic()).addKeyValue("partition", record.partition()).addKeyValue("offset", record.offset());
+            if (masker.logBodies()) {
+                line = line.addKeyValue(LogFields.REQ_BODY,
+                        masker.mask(record.value().getBytes(StandardCharsets.UTF_8), MediaType.APPLICATION_JSON_VALUE));
+            }
+            line.log();
+            TenantContext.runAs(context.tenantId(), context.userId(), () -> handler.handle(codec.read(record.value(), OrderPaid.class)));
         }
     }
 }
 
 final class ConsumerMdc implements AutoCloseable {
-    private ConsumerMdc() {}
+    private final String tenantId;
+    private final String userId;
+
+    private ConsumerMdc(String tenantId, String userId) { this.tenantId = tenantId; this.userId = userId; }
 
     static ConsumerMdc open(Headers headers) {
-        Header header = headers.lastHeader(KafkaHeaderNames.CORRELATION_ID);
-        String correlationId = header == null ? UUID.randomUUID().toString() : new String(header.value(), StandardCharsets.UTF_8);
-        MDC.put(MdcKeys.CORRELATION_ID, correlationId);
-        return new ConsumerMdc();
+        MDC.put(MdcKeys.CORRELATION_ID, valueOrNew(headers, KafkaHeaderNames.CORRELATION_ID));
+        MDC.put(LogFields.REQUEST_ID, valueOrNew(headers, LogFields.REQUEST_ID_HEADER));
+        ConsumerMdc context = new ConsumerMdc(value(headers, LogFields.TENANT_ID_HEADER), value(headers, LogFields.USER_ID_HEADER));
+        if (context.tenantId != null) { MDC.put(LogFields.TENANT_ID, context.tenantId); }
+        if (context.userId != null) { MDC.put(LogFields.USER_ID, context.userId); }
+        return context;
     }
 
+    String tenantId() { return tenantId; }
+
+    String userId() { return userId; }
+
     @Override
-    public void close() { MDC.remove(MdcKeys.CORRELATION_ID); }
+    public void close() {
+        MDC.remove(MdcKeys.CORRELATION_ID);
+        MDC.remove(LogFields.REQUEST_ID);
+        MDC.remove(LogFields.TENANT_ID);
+        MDC.remove(LogFields.USER_ID);
+    }
+
+    private static String value(Headers headers, String name) {
+        Header header = headers.lastHeader(name);
+        return header == null ? null : new String(header.value(), StandardCharsets.UTF_8);
+    }
+
+    private static String valueOrNew(Headers headers, String name) {
+        String value = value(headers, name);
+        return value == null ? UUID.randomUUID().toString() : value;
+    }
 }
 ```
 
 - `traceparent` is restored by the listener observation (step 5) when a Micrometer Tracing bridge is present: `traceId` and `spanId` are then in MDC. Do not hand-roll trace ids. Without observation you would have to parse `traceparent` yourself.
-- Log event id, topic, partition and offset, never the payload. A record's `toString` prints every field: do not log `event`.
+- The payload is logged once, in the `message_in` line, through `BodyMasker` (secret and PII keys become `"***"`, the body is capped). Other lines log event id, topic, partition and offset. A record's `toString` prints every field: do not log `event` or the `ConsumerRecord`.
+- Add `MissingTenantException` to the error handler's `addNotRetryableExceptions` (step 4): a record without a tenant will not succeed on a retry.
 - One listener class per topic and event type. A growing `if/else` on the event type in one listener is a signal for a registry or one listener per type.
 - Never block the listener thread on a slow third party without a timeout: it holds the partition and risks a rebalance. Use the provider skill's timeouts, breaker and bulkhead.
 
@@ -266,14 +306,30 @@ class OrderPaidPublisher {
 
     OrderPaidPublisher(KafkaTemplate<String, String> template, EventCodec codec) { this.template = template; this.codec = codec; }
 
-    CompletableFuture<SendResult<String, String>> publish(OrderPaid event, String correlationId) {
+    CompletableFuture<SendResult<String, String>> publish(OrderPaid event, MessageContext context) {
         var record = new ProducerRecord<>(KafkaTopics.ORDER_PAID, event.orderId(), codec.write(event));   // key = aggregate id: ordering per order
-        record.headers().add(KafkaHeaderNames.CORRELATION_ID, correlationId.getBytes(StandardCharsets.UTF_8));
+        addHeader(record, KafkaHeaderNames.CORRELATION_ID, context.correlationId());
+        addHeader(record, LogFields.REQUEST_ID_HEADER, context.requestId());
+        addHeader(record, LogFields.TENANT_ID_HEADER, context.tenantId());
+        addHeader(record, LogFields.USER_ID_HEADER, context.userId());
         return template.send(record);
+    }
+
+    private static void addHeader(ProducerRecord<String, String> record, String name, String value) {
+        if (value != null) { record.headers().add(name, value.getBytes(StandardCharsets.UTF_8)); }
+    }
+}
+
+/** Captured in the request that writes the outbox row, stored in the row's columns, read back by the relay. */
+record MessageContext(String correlationId, String requestId, String tenantId, String userId) {
+    static MessageContext current() {
+        return new MessageContext(MDC.get(MdcKeys.CORRELATION_ID), MDC.get(LogFields.REQUEST_ID),
+                TenantContext.currentTenantId().orElse(null), TenantContext.currentUserId().orElse(null));
     }
 }
 ```
 
+- Producers always send the three context headers. The relay runs as a job without the request, so it cannot read them then: capture `MessageContext.current()` when the outbox row is written and store it with the row.
 - The relay calls `publish(...)` outside any database transaction, waits for the broker ack, then marks the outbox row published. A send failure leaves the row unpublished for the next run. Consumers dedupe, so a repeat is safe.
 - Trace continuity: store the current `traceparent` (`Propagator.inject` from Micrometer Tracing) in a column of the outbox row when it is written, and in the relay restore it (`Propagator.extract` into a span that wraps the send) so the template observation continues the original trace. Without it the relay starts a new trace and the consumer's trace is cut from the request that caused the event.
 - The event id is generated once, when the outbox row is created, never at send time.
@@ -320,7 +376,8 @@ Cover each of these:
 - an unparseable or invalid payload reaches `KafkaTopics.ORDER_PAID_DLT` after one attempt (assert one delivery, no backoff);
 - a transient failure retries and then succeeds, and the offset is committed only after success;
 - retries are exhausted and the record lands on the dead-letter topic with the original payload;
-- a record without a correlation header gets a generated one in MDC.
+- a record without a correlation header gets a generated one in MDC;
+- the handler sees the tenant and user from `x-tenant-id` and `x-user-id` (`TenantContext.currentTenantId()` inside the handler), one `message_in` line has the masked payload, and MDC is empty after the listener returns or throws.
 
 Unit-test `EventCodec` and the handler without Kafka (the handler needs only a database slice test).
 
@@ -331,6 +388,7 @@ Unit-test `EventCodec` and the handler without Kafka (the handler needs only a d
 - Do not dedupe on the offset, and do not catch the duplicate-key exception to detect a duplicate.
 - Do not retry an invalid payload, and do not swallow an exception in the listener (the offset would be committed and the record lost).
 - Do not call a third party inside the handler transaction, and do not dual-write to the database and Kafka.
-- Do not log the payload, the `ConsumerRecord`, or an exception message that quotes the payload.
+- Do not log the payload outside the masked `message_in` line, and never the `ConsumerRecord` or an exception message that quotes the payload.
+- Do not make the listener method `@Transactional`: the session would open before `runAs` sets the tenant.
 - Do not process on another thread and acknowledge before it finishes.
 - Do not consume the dead-letter topic with the same handler by reflex: replay is a deliberate, owned procedure.

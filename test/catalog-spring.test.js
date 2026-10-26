@@ -402,3 +402,72 @@ test('spring testing guidance has the audit, tenant isolation and cross-tenant t
     }
   });
 });
+
+const skillText = (c, name) => {
+  const k = c.stacks.get('spring-boot').skills.find((s) => s.name === name);
+  return { body: k.body, file: (rel) => k.files.find((f) => f.relPath === rel)?.content ?? '' };
+};
+
+test('request logging logs every request, clears MDC on every exit and never buffers streams', async () => {
+  await withRealCatalog(async (c) => {
+    const s = skillText(c, 'stackcrew-spring-request-logging');
+    assert.ok(s.body.includes('.addFilterBefore(httpLogging, BearerTokenAuthenticationFilter.class)'), 'filter runs before authentication');
+    assert.ok(s.body.includes('.addFilterAfter(new HttpLoggingFilter.UserMdc(), BearerTokenAuthenticationFilter.class)'), 'user MDC after authentication');
+    assert.ok(!s.body.includes('.addFilterAfter(httpLogging,'), 'old placement is gone');
+    const filter = s.file('HttpLoggingFilter.java');
+    assert.ok(!filter.includes('TenantContext'), 'the filter needs no JPA beans');
+    assert.ok(filter.includes('JwtAuthenticationToken') && filter.includes('"{{sc:tenantClaim}}"'));
+    assert.ok(filter.includes('putOrRemove(LogFields.USER_ID') && filter.includes('putOrRemove(LogFields.TENANT_ID'), 'absent user removes the key');
+    // MDC cleanup sits in an outer finally, after the inner finally that copies the body
+    const copy = filter.indexOf('response.copyBodyToResponse();');
+    const cleanup = filter.indexOf('MDC.remove(LogFields.USER_ID);');
+    assert.ok(copy > 0 && cleanup > copy, 'cleanup after copy');
+    assert.match(filter.slice(copy, cleanup), /\}\n\s+\}\n\s+\}\n\s+\} finally \{/, 'cleanup in its own outer finally');
+    assert.ok(filter.includes('StreamAwareResponseWrapper'));
+    const wrapper = s.file('StreamAwareResponseWrapper.java');
+    for (const needle of ['extends ContentCachingResponseWrapper', 'isAsyncStarted()', 'TEXT_EVENT_STREAM_VALUE', 'APPLICATION_OCTET_STREAM_VALUE',
+      'CONTENT_DISPOSITION', 'public void flushBuffer()', 'getResponse().flushBuffer()', 'streamedBytes']) {
+      assert.ok(wrapper.includes(needle), `wrapper missing ${needle}`);
+    }
+    const interceptor = s.file('LoggingClientInterceptor.java');
+    assert.match(interceptor, /try \{\n\s+responseBody = response\.getBody\(\)\.readAllBytes\(\);\n\s+\} catch \(IOException \| RuntimeException e\) \{/, 'a broken response body still logs');
+    assert.ok(s.body.includes('cutsOnACharacterBoundary') && s.body.includes('\\u00e9'), 'multibyte truncation is pinned');
+  });
+});
+
+test('system identity crosses tenants only inside runAs, and the cross_tenant line stays clean', async () => {
+  await withRealCatalog(async (c) => {
+    const s = skillText(c, 'stackcrew-spring-jpa-entity');
+    const ctx = s.file('TenantContext.java');
+    assert.ok(ctx.includes('scope.runAs() && SYSTEM_USER.equals(scope.userId())'), 'system only from a runAs scope');
+    assert.ok(!ctx.includes('!SYSTEM_USER.equals(userId) &&'), 'a JWT sub of system no longer passes');
+    assert.ok(ctx.includes('reason.replaceAll("[\\\\r\\\\n]", " ")'), 'CR/LF stripped from the reason');
+    assert.ok(ctx.includes('tenantId.isPresent() ? line.addKeyValue("tenantId"'), 'tenantId omitted when absent');
+    assert.ok(ctx.includes('public static void runAs(String tenantId, String userId, Runnable work)'));
+    assert.ok(!s.body.includes('cross-tenant-roles: []'), 'YAML shows the convention roles, not an empty list');
+    assert.ok(s.body.includes('# conventions.crossTenantRoles: {{sc:crossTenantRoles}}'));
+    const t = c.stacks.get('spring-boot').testing.body;
+    assert.ok(t.includes('aTokenWhoseSubIsTheSystemUserIsNotTheSystemIdentity'));
+    const noTenant = t.split('void withoutATenantReadsNothingAndInsertsNothing()')[1].split('@Test')[0];
+    assert.ok(noTenant.includes('findOrDenied(rowOfTenantA)).isEmpty()'), 'load by id without a tenant is pinned');
+  });
+});
+
+test('kafka consumer restores the context headers, logs message_in through the masker and producers send the headers', async () => {
+  await withRealCatalog(async (c) => {
+    const k = skillText(c, 'stackcrew-spring-kafka-consumer').body;
+    for (const needle of ['TenantContext.runAs(context.tenantId(), context.userId()', 'LogFields.REQUEST_ID_HEADER', 'LogFields.TENANT_ID_HEADER',
+      'LogFields.USER_ID_HEADER', 'LogFields.MESSAGE_IN', 'masker.mask(record.value()', 'MDC.remove(LogFields.REQUEST_ID)',
+      'MDC.remove(LogFields.TENANT_ID)', 'MDC.remove(LogFields.USER_ID)', 'record MessageContext', 'addHeader(record, LogFields.TENANT_ID_HEADER']) {
+      assert.ok(k.includes(needle), `kafka skill missing ${needle}`);
+    }
+    assert.ok(!/never the payload/i.test(k) && !k.includes('Do not log the payload,'), 'payload ban replaced by the masked line');
+    const kafkaRules = c.addons.get('kafka').rules.body;
+    assert.ok(!/never log the payload/i.test(kafkaRules) && kafkaRules.includes('message_in'));
+    const logging = skillText(c, 'stackcrew-spring-request-logging').body;
+    const s6 = logging.split('## 6.')[1].split('\n## ')[0];
+    for (const needle of ['TenantContext.runAs(tenantId, userId', 'MDC.put(LogFields.REQUEST_ID', 'MDC.remove(LogFields.REQUEST_ID)', 'finally']) {
+      assert.ok(s6.includes(needle), `request-logging section 6 missing ${needle}`);
+    }
+  });
+});

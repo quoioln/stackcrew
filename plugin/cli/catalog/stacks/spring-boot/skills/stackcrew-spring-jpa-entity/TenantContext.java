@@ -3,6 +3,7 @@ package {{sc:basePackage}}.common.context;
 import jakarta.persistence.EntityManagerFactory;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.slf4j.spi.LoggingEventBuilder;
 import org.springframework.security.core.Authentication;
 import org.springframework.security.core.context.SecurityContextHolder;
 import org.springframework.security.oauth2.jwt.Jwt;
@@ -85,32 +86,46 @@ public class TenantContext {
         if (currentJwt().isPresent()) {
             throw new IllegalStateException("runAs is for consumers and jobs; a request takes its tenant from the JWT");
         }
-        return withScope(new Scope(tenantId, userId, false), work);
+        return withScope(new Scope(tenantId, userId, false, true), work);
+    }
+
+    /** runAs for work that returns nothing, such as a message handler. */
+    public static void runAs(String tenantId, String userId, Runnable work) {
+        runAs(tenantId, userId, () -> {
+            work.run();
+            return null;
+        });
     }
 
     /**
-     * Read across tenants: allowed for the roles in app.tenancy.cross-tenant-roles and for {{sc:systemUser}}, denied for
-     * everyone else. Runs the work in a new read-only transaction, so Hibernate opens a fresh session without the
-     * tenant filter. Return DTOs or projections: the entities are detached when the work returns.
+     * Read across tenants: allowed for the roles in app.tenancy.cross-tenant-roles, and for {{sc:systemUser}} only inside
+     * runAs (a job or a consumer, never a token whose sub happens to be {{sc:systemUser}}). Everyone else is denied.
+     * Runs the work in a new read-only transaction, so Hibernate opens a fresh session without the tenant filter.
+     * Return DTOs or projections: the entities are detached when the work returns.
      */
     public <T> T runCrossTenant(String reason, Supplier<T> work) {
         if (reason == null || reason.isBlank()) {
             throw new IllegalArgumentException("runCrossTenant needs a short, human-readable reason");
         }
         String userId = currentUserId().orElse(null);
-        if (!SYSTEM_USER.equals(userId) && currentRoles().stream().noneMatch(crossTenantRoles::contains)) {
+        String loggedReason = reason.replaceAll("[\\r\\n]", " ");
+        Scope scope = SCOPE.get();
+        boolean systemWork = scope != null && scope.runAs() && SYSTEM_USER.equals(scope.userId());
+        if (!systemWork && currentRoles().stream().noneMatch(crossTenantRoles::contains)) {
             log.atWarn().setMessage(CROSS_TENANT_EVENT).addKeyValue("event", CROSS_TENANT_EVENT).addKeyValue("userId", userId)
-                    .addKeyValue("reason", reason).addKeyValue("outcome", "denied").log();
-            throw new CrossTenantDeniedException("no cross-tenant role for: " + reason);
+                    .addKeyValue("reason", loggedReason).addKeyValue("outcome", "denied").log();
+            throw new CrossTenantDeniedException("no cross-tenant role for: " + loggedReason);
         }
         if (TransactionSynchronizationManager.hasResource(entityManagerFactory)
                 && !TransactionSynchronizationManager.isActualTransactionActive()) {
             throw new IllegalStateException("runCrossTenant needs a new EntityManager, but open-in-view bound one to this"
                     + " request: set spring.jpa.open-in-view=false");
         }
-        log.atInfo().setMessage(CROSS_TENANT_EVENT).addKeyValue("event", CROSS_TENANT_EVENT).addKeyValue("userId", userId)
-                .addKeyValue("tenantId", currentTenantId().orElse(null)).addKeyValue("reason", reason).log();
-        return withScope(new Scope(null, userId, true), () -> crossTenantReads.execute(status -> work.get()));
+        LoggingEventBuilder line = log.atInfo().setMessage(CROSS_TENANT_EVENT).addKeyValue("event", CROSS_TENANT_EVENT)
+                .addKeyValue("userId", userId).addKeyValue("reason", loggedReason);
+        Optional<String> tenantId = currentTenantId();
+        (tenantId.isPresent() ? line.addKeyValue("tenantId", tenantId.get()) : line).log();
+        return withScope(new Scope(null, userId, true, systemWork), () -> crossTenantReads.execute(status -> work.get()));
     }
 
     private static List<String> currentRoles() {
@@ -139,5 +154,6 @@ public class TenantContext {
         }
     }
 
-    private record Scope(String tenantId, String userId, boolean crossTenant) {}
+    /** runAs marks a scope set by a job or consumer; only such a scope can carry the system identity. */
+    private record Scope(String tenantId, String userId, boolean crossTenant, boolean runAs) {}
 }

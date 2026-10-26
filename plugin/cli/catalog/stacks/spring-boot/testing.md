@@ -220,6 +220,7 @@ class VerificationTenancyIT {
     void withoutATenantReadsNothingAndInsertsNothing() {
         assertThat(verifications.findAll()).isEmpty();
         assertThat(verifications.count()).isZero();
+        assertThat(findOrDenied(rowOfTenantA)).isEmpty();
         assertThatThrownBy(() -> verifications.save(new Verification("ref-x"))).isInstanceOf(MissingTenantException.class);
     }
 
@@ -233,6 +234,13 @@ class VerificationTenancyIT {
     @Test
     void otherRolesCannotReadAcrossTenants() {
         TestJwt.signIn("bob", "tenant-b", "user");
+        assertThatThrownBy(() -> tenantContext.runCrossTenant("monthly volume report", verifications::findAll))
+                .isInstanceOf(CrossTenantDeniedException.class);
+    }
+
+    @Test
+    void aTokenWhoseSubIsTheSystemUserIsNotTheSystemIdentity() {
+        TestJwt.signIn("{{sc:systemUser}}", "tenant-a");
         assertThatThrownBy(() -> tenantContext.runCrossTenant("monthly volume report", verifications::findAll))
                 .isInstanceOf(CrossTenantDeniedException.class);
     }

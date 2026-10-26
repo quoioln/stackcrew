@@ -16,11 +16,12 @@ Search the codebase and the shared libraries ({{sc:sharedLibraries}}) for `BodyM
 | `MaskingProperties.java` | `@ConfigurationProperties("app.logging")`: `mask-fields`, `max-body-bytes`, `log-bodies`. |
 | `BodyMasker.java` | The masker: `String mask(byte[] body, String contentType)` and `placeholder(contentType, size)`. |
 | `LogFields.java` | Field, MDC and header names (`event`, `reqBody`, `requestId`, `x-tenant-id`...). |
-| `HttpLoggingFilter.java` | `OncePerRequestFilter` with `ContentCachingRequestWrapper` and `ContentCachingResponseWrapper`: one `http_in` line, MDC `requestId`, `userId`, `tenantId`. |
+| `HttpLoggingFilter.java` | `OncePerRequestFilter` with `ContentCachingRequestWrapper` and the response wrapper below: one `http_in` line, MDC `requestId`, `userId`, `tenantId`; its nested `UserMdc` filter fills the user after authentication. |
+| `StreamAwareResponseWrapper.java` | A `ContentCachingResponseWrapper` that lets streams and downloads through unbuffered and only counts them. |
 | `LoggingClientInterceptor.java` | `ClientHttpRequestInterceptor`: one `http_out` line per outbound call. |
 | `LoggingConfig.java` | The beans; keeps the filter out of the plain servlet chain. |
 
-`HttpLoggingFilter` reads `userId` and `tenantId` through `TenantContext` (skill `stackcrew-spring-jpa-entity`); create that first if it is missing.
+The filter reads `userId` (JWT `sub`) and `tenantId` (claim `{{sc:tenantClaim}}`) from the `Jwt` in Spring Security's context, so it needs no JPA. Message consumers also use `TenantContext` from `stackcrew-spring-jpa-entity` (section 6).
 
 ## 2. Configuration
 
@@ -60,17 +61,20 @@ public class SecurityConfig {
                 .oauth2ResourceServer(server -> server.jwt(Customizer.withDefaults()))
                 .sessionManagement(session -> session.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
                 .csrf(AbstractHttpConfigurer::disable)
-                .addFilterAfter(httpLogging, BearerTokenAuthenticationFilter.class)
+                .addFilterBefore(httpLogging, BearerTokenAuthenticationFilter.class)
+                .addFilterAfter(new HttpLoggingFilter.UserMdc(), BearerTokenAuthenticationFilter.class)
                 .build();
     }
 }
 ```
 
-- `addFilterAfter(..., BearerTokenAuthenticationFilter.class)`: the filter runs after authentication, so its MDC (`requestId`, `userId`, `tenantId`) is on every line of the request, and before `ExceptionTranslationFilter`, so 401 and 403 answers still get their line. A request with an invalid or expired token is rejected inside `BearerTokenAuthenticationFilter` and gets no `http_in` line.
-- `LoggingConfig` disables the automatic servlet registration of the filter bean; keep that, or it runs outside the security chain without a user.
+- `addFilterBefore(..., BearerTokenAuthenticationFilter.class)`: every request gets its line, including a 401 for an invalid or expired token and a 403. The security context is still filled when the line is written, so the line carries `userId` and `tenantId` when the caller was authenticated.
+- `HttpLoggingFilter.UserMdc` after `BearerTokenAuthenticationFilter` puts `userId` and `tenantId` in MDC for every log line of the request. `HttpLoggingFilter` removes `requestId`, `userId` and `tenantId` in an outer `finally`, so a client abort cannot leave them on a pooled thread.
+- `LoggingConfig` disables the automatic servlet registration of the filter bean; keep that, or it runs outside the security chain.
 - The line: `event=http_in`, `method`, `route` (the templated pattern such as `/verifications/{id}`, `UNMATCHED` when no handler matched), `status`, `durationMs`, `reqBody`, `resBody`, and `error` with the exception class when one escaped (logged as 500). INFO for 2xx/3xx, WARN for 4xx, ERROR for 5xx. `traceId` and `spanId` come from Micrometer Tracing's MDC.
 - `copyBodyToResponse()` runs in `finally`: without it the client gets an empty body.
-- Async handlers (`Callable`, `DeferredResult`) log once, when the async dispatch completes. `/actuator` and `text/event-stream` requests are skipped: a caching wrapper would hold an SSE stream back.
+- Async handlers (`Callable`, `DeferredResult`) log once, when the async dispatch completes. `/actuator` and requests with `Accept: text/event-stream` are skipped.
+- Streams and downloads are never buffered. `StreamAwareResponseWrapper` decides at the first write (Spring fetches a `StreamingResponseBody`'s stream before the request goes async, and writes to it later). These go straight to the client, flushes included, and the line logs `<CT N bytes>` (`<binary CT N bytes>` for octet-stream) with the counted size: SSE (`text/event-stream`), `StreamingResponseBody` and any body written after the request went async, `application/octet-stream`, and `Content-Disposition: attachment`. Everything else is cached and masked.
 - Request bodies are cached up to 2 MiB so a base64 image can be measured; larger ones, and bodies the handler never read, log `<CT N bytes>` from `Content-Length`.
 - A caller's `x-request-id` is kept only when it is short and plain (`[A-Za-z0-9._-]{1,64}`); otherwise a new UUID is used.
 
@@ -86,21 +90,34 @@ RestClient client = builder.clone().baseUrl(baseUrl)
 ```
 
 - `BufferingClientHttpRequestFactory` is required: the interceptor reads the response body to log it, and without buffering the caller then reads an empty body. Set it after any other `requestFactory(...)` call on the builder, since the last one wins.
-- `target` is the service or provider code. The line: `event=http_out`, `target`, `method`, `url` (scheme, host, port and path; no query string, no user info), `status`, `durationMs`, `reqBody`, `resBody`, or `error` with the exception class on an I/O failure.
+- `target` is the service or provider code. The line: `event=http_out`, `target`, `method`, `url` (scheme, host, port and path; no query string, no user info), `status`, `durationMs`, `reqBody`, `resBody`, or `error` with the exception class on an I/O failure. A response body that breaks off while it is read still gives one line, with the status and `error` and no `resBody`.
 - On Boot 3.0 and 3.1 (no `RestClient`), add the same interceptor to `RestTemplateBuilder` with `.requestFactory(() -> new BufferingClientHttpRequestFactory(...))`.
 - Adapters, services and controllers never log bodies themselves.
 
 ## 6. Message consumers
 
-Log one `message_in` line per message through the same masker, after setting the context from the headers `x-tenant-id`, `x-user-id`, `x-request-id`:
+Producers send the headers `x-request-id`, `x-tenant-id` and `x-user-id` (`LogFields.*_HEADER`). A consumer puts them in MDC, logs one `message_in` line with the payload through the same masker, runs the handler inside `TenantContext.runAs` (skill `stackcrew-spring-jpa-entity`), and clears MDC on every exit path. The Kafka version is in `stackcrew-spring-kafka-consumer` (`ConsumerMdc`); any other broker follows the same shape:
 
 ```java
-log.atInfo().setMessage(LogFields.MESSAGE_IN)
-        .addKeyValue(LogFields.EVENT, LogFields.MESSAGE_IN)
-        .addKeyValue(LogFields.REQ_BODY, masker.mask(payload, contentType))
-        .log();
+void onMessage(String payload, String requestId, String tenantId, String userId) {
+    MDC.put(LogFields.REQUEST_ID, requestId != null ? requestId : UUID.randomUUID().toString());
+    if (tenantId != null) { MDC.put(LogFields.TENANT_ID, tenantId); }
+    if (userId != null) { MDC.put(LogFields.USER_ID, userId); }
+    try {
+        LoggingEventBuilder line = log.atInfo().setMessage(LogFields.MESSAGE_IN).addKeyValue(LogFields.EVENT, LogFields.MESSAGE_IN);
+        if (masker.logBodies()) {
+            line = line.addKeyValue(LogFields.REQ_BODY,
+                    masker.mask(payload.getBytes(StandardCharsets.UTF_8), MediaType.APPLICATION_JSON_VALUE));
+        }
+        line.log();
+        TenantContext.runAs(tenantId, userId, () -> handler.handle(codec.read(payload)));
+    } finally {
+        MDC.remove(LogFields.REQUEST_ID);
+        MDC.remove(LogFields.TENANT_ID);
+        MDC.remove(LogFields.USER_ID);
+    }
+}
 ```
-
 ## 7. Tests
 
 The masker contract, as a plain JUnit test (no Spring):
@@ -160,6 +177,13 @@ class BodyMaskerTest {
     }
 
     @Test
+    void cutsOnACharacterBoundary() {
+        String body = "{\"n\":\"" + "a-".repeat(8188) + "a\u00e9\"}";   // the 2-byte \u00e9 sits on bytes 16383 and 16384
+        assertThat(body.getBytes(StandardCharsets.UTF_8)).hasSize(16387);
+        assertThat(mask(masker, body)).isEqualTo(body.substring(0, 16383) + "...[truncated 16387 bytes]");
+    }
+
+    @Test
     void logsAPlaceholderForContentItCannotMask() {
         assertThat(masker.mask(new byte[300], "text/xml")).isEqualTo("<text/xml 300 bytes>");
         assertThat(masker.mask("{bad".getBytes(StandardCharsets.UTF_8), JSON)).isEqualTo("<application/json 4 bytes>");
@@ -170,7 +194,11 @@ class BodyMaskerTest {
 }
 ```
 
-Plus one `@SpringBootTest(webEnvironment = RANDOM_PORT)` test that sends a body with a password through a real request and asserts exactly one `http_in` event with `"***"` in `reqBody` and the original body at the client, and one for an outbound call (a stub server or WireMock) that asserts one `http_out` event and a URL without its query string. Capture the events with a Logback `ListAppender` on the two loggers and read `getKeyValuePairs()` and `getMDCPropertyMap()`.
+Plus `@SpringBootTest(webEnvironment = RANDOM_PORT)` tests through real requests. Capture the events with a Logback `ListAppender` on the two loggers and read `getKeyValuePairs()` and `getMDCPropertyMap()`. Cover:
+- a body with a password gives exactly one `http_in` event with `"***"` in `reqBody`, while the client gets the original body;
+- an invalid token gives a 401 with one `http_in` line, and a valid one gives a line with `userId`;
+- an SSE or download endpoint logs a size placeholder and reaches the client unbuffered;
+- an outbound call through a stub server or WireMock gives one `http_out` event with a URL without its query string.
 
 ## Do not
 
@@ -178,4 +206,4 @@ Plus one `@SpringBootTest(webEnvironment = RANDOM_PORT)` test that sends a body 
 - Do not log headers other than `content-type`, `content-length` and `user-agent`; never `Authorization` or cookies.
 - Do not add the interceptor to a client without the buffering factory.
 - Do not register `HttpLoggingFilter` as a plain servlet filter as well as in the security chain.
-- Do not cache streaming responses (SSE, file downloads): exclude them in `shouldNotFilter`.
+- Do not replace `StreamAwareResponseWrapper` with a plain `ContentCachingResponseWrapper`: SSE events and downloads would then wait in memory until the response ends.

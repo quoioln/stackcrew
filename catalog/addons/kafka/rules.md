@@ -79,7 +79,8 @@ spring:
 
 - With observation enabled and a Micrometer Tracing bridge on the classpath, the producer writes `traceparent` and the consumer continues the same trace, so `traceId` and `spanId` are in MDC for every log line of the listener.
 - The correlation id is your own header: read it from the record, or generate one when missing, put it in MDC for the duration of the record and remove it in `finally`.
-- Never log the payload. Log event id, topic, partition, offset, outcome and duration.
+- The context headers `x-request-id`, `x-tenant-id` and `x-user-id` travel with every record (`core-persistence`): the producer sends them, the consumer restores them (MDC, and the tenant context for the handler) and clears them in `finally`.
+- The payload is logged once per record, in the `message_in` line through the shared body masker (`core-logging`); never by hand, never the record's `toString`. Other lines log event id, topic, partition, offset, outcome and duration.
 
 ## Operations
 

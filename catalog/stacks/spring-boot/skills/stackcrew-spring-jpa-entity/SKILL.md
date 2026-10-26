@@ -26,7 +26,7 @@ Search the codebase and the shared libraries ({{sc:sharedLibraries}}) for `{{sc:
 
 ## 2. Configuration
 
-Set `app.tenancy.cross-tenant-roles` to the roles allowed to read across tenants: {{sc:crossTenantRoles}}. Leave it empty when that says none; `{{sc:systemUser}}` is always allowed.
+Set `app.tenancy.cross-tenant-roles` to the roles allowed to read across tenants: {{sc:crossTenantRoles}} (`conventions.crossTenantRoles` in `stackcrew.json`; stackcrew's default is `super_admin`). Write one list entry per role; leave the list empty when the conventions say none. Jobs and consumers running as `{{sc:systemUser}}` through `runAs` are allowed either way.
 
 ```yaml
 spring:
@@ -36,7 +36,9 @@ spring:
       ddl-auto: validate         # the migration owns the schema
 app:
   tenancy:
-    cross-tenant-roles: []       # the roles listed above
+    # conventions.crossTenantRoles: {{sc:crossTenantRoles}}
+    cross-tenant-roles:
+      - super_admin              # the default role; replace with the roles named on the line above
 ```
 
 ## 3. The entity
@@ -129,7 +131,7 @@ public interface VerificationRepository extends JpaRepository<Verification, UUID
 ## 6. Where the tenant comes from
 
 - **Request:** the JWT, through Spring Security. Nothing to do. With `open-in-view=false` Hibernate reads the tenant when each transaction starts.
-- **Message consumer:** producers always send the headers `x-tenant-id`, `x-user-id` and `x-request-id`. The listener sets the context before any transaction starts, so the listener method itself is not `@Transactional`:
+- **Message consumer:** producers always send the headers `x-tenant-id`, `x-user-id` and `x-request-id`. The listener sets the context before any transaction starts, so the listener method itself is not `@Transactional` (the Kafka listener in `stackcrew-spring-kafka-consumer` shows the whole shape, MDC and `message_in` line included):
 
 ```java
 TenantContext.runAs(tenantIdHeader, userIdHeader, () -> verificationService.handle(command));
@@ -146,7 +148,7 @@ TenantContext.runAs(tenantIdHeader, userIdHeader, () -> verificationService.hand
 List<VolumeRow> rows = tenantContext.runCrossTenant("monthly volume report", () -> reports.volumeByTenant());
 ```
 
-- `runCrossTenant` checks the caller (roles in `app.tenancy.cross-tenant-roles`, from claim `{{sc:rolesClaim}}`, or the user `{{sc:systemUser}}`), logs `event=cross_tenant` with `userId`, `tenantId` and `reason`, and runs the work in a new read-only transaction whose session has no tenant filter (`isRoot`). Anyone else gets `CrossTenantDeniedException`.
+- `runCrossTenant` checks the caller: a role in `app.tenancy.cross-tenant-roles` (from claim `{{sc:rolesClaim}}`), or the user `{{sc:systemUser}}` inside `runAs`. A JWT whose `sub` happens to be `{{sc:systemUser}}` does not count: the system identity belongs to jobs and consumers only. It logs `event=cross_tenant` with `userId`, `tenantId` (when there is one) and `reason`, and runs the work in a new read-only transaction whose session has no tenant filter (`isRoot`). Anyone else gets `CrossTenantDeniedException`.
 - Map `CrossTenantDeniedException` to the same 404 `ProblemDetail` as a missing row. Before Hibernate 6.6 it is also what a lookup of another tenant's id throws (section 5), and a 403 there would confirm that the id exists; a 404 also gives the same answer on every Boot version.
 - The reason is a short, human-readable sentence; it is in the log.
 - Read only: an insert inside throws `MissingTenantException`. Return DTOs or projections; entities are detached when the work returns.
