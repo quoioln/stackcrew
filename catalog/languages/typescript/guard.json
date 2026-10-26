@@ -1,0 +1,83 @@
+{
+  "rules": [
+    {
+      "id": "SC-TYPE",
+      "globs": [
+        "**/*.ts",
+        "**/*.tsx"
+      ],
+      "excludeGlobs": [
+        "**/*.spec.ts",
+        "**/*.spec.tsx",
+        "**/*.test.ts",
+        "**/*.test.tsx",
+        "**/test/**",
+        "**/tests/**",
+        "**/e2e/**",
+        "**/__tests__/**"
+      ],
+      "regex": "^(?!\\s*(\\*|//|/\\*)).*(\\bas\\s+any\\b|:\\s*any\\b|=>\\s*any\\b|\\|\\s*any\\b|<\\s*any\\s*[>,]|,\\s*any\\s*[>,]|\\bany\\[\\])",
+      "flags": "",
+      "message": "`any` switches off type checking (SC-TYPE). Type the value: `unknown` plus a zod or class-validator parse at the edge, or a named interface/type. Waive on the same line with `stackcrew-allow: SC-TYPE <reason>`, only where a dynamic payload is first received and parsed on the next line, or a library signature forces it."
+    },
+    {
+      "id": "SC-IGNORE",
+      "globs": [
+        "**/*.ts",
+        "**/*.tsx"
+      ],
+      "excludeGlobs": [],
+      "regex": "@ts-(ignore|nocheck)\\b",
+      "flags": "",
+      "message": "@ts-ignore and @ts-nocheck hide real type errors (SC-IGNORE). Fix the type; if a suppression is truly needed use `// @ts-expect-error <reason>` on the one line, which fails when the error disappears. Waive on the same line with `stackcrew-allow: SC-IGNORE <reason>`, only for generated files or a third-party typing bug you link to."
+    },
+    {
+      "id": "SC-ENV",
+      "globs": [
+        "**/*.ts",
+        "**/*.tsx"
+      ],
+      "excludeGlobs": [
+        "**/*.spec.ts",
+        "**/*.spec.tsx",
+        "**/*.test.ts",
+        "**/*.test.tsx",
+        "**/test/**",
+        "**/tests/**",
+        "**/e2e/**",
+        "**/__tests__/**",
+        "**/config/**",
+        "**/env.ts",
+        "**/env.mjs",
+        "**/env/**",
+        "**/*.config.ts",
+        "**/*.config.mts",
+        "**/*.config.mjs",
+        "**/*.config.js"
+      ],
+      "regex": "^(?!\\s*(\\*|//|/\\*)).*\\bprocess\\.env\\b",
+      "flags": "",
+      "message": "process.env read outside the config module (SC-ENV). Read and validate environment variables once in the config/env module (for example src/config or env.ts) and inject or import the typed value. Waive on the same line with `stackcrew-allow: SC-ENV <reason>`, only in bootstrap code that runs before the config module can load."
+    },
+    {
+      "id": "SC-CONST",
+      "globs": [
+        "**/*.ts",
+        "**/*.tsx"
+      ],
+      "excludeGlobs": [
+        "**/*.spec.ts",
+        "**/*.spec.tsx",
+        "**/*.test.ts",
+        "**/*.test.tsx",
+        "**/test/**",
+        "**/tests/**",
+        "**/e2e/**",
+        "**/__tests__/**"
+      ],
+      "regex": "^(?!\\s*(\\*|//|/\\*))(?!\\s*(export\\s+)?const\\s+[A-Z][A-Z0-9_]*\\s*=).*['\"`]https?://",
+      "flags": "",
+      "message": "Hardcoded URL (SC-CONST). Environment URLs belong in the config/env module; a top-level UPPER_CASE constant is only for fixed protocol identifiers (an XML namespace, a schema URI). Waive on the same line with `stackcrew-allow: SC-CONST <reason>`."
+    }
+  ]
+}
