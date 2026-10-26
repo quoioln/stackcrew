@@ -4,6 +4,7 @@ Goes to `src/common/context/request-context.ts`.
 // Default location: src/common/context/request-context.ts
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { randomUUID } from 'node:crypto';
+import type { IncomingMessage } from 'node:http';
 import { Logger } from '@nestjs/common';
 import { isSpanContextValid, trace } from '@opentelemetry/api';
 import { tenancyEnv } from '../../config/env';
@@ -50,7 +51,7 @@ export class CrossTenantDeniedError extends Error {
 }
 
 const storage = new AsyncLocalStorage<RequestContext>();
-const boundToRequest = new WeakMap<object, RequestContext>();
+const boundToRequest = new WeakMap<IncomingMessage, RequestContext>(); // Express requests extend IncomingMessage
 const logger = new Logger('RequestContext');
 
 export function currentContext(): RequestContext | undefined {
@@ -144,16 +145,16 @@ export function safeIdOrUndefined(value: unknown): string | undefined {
 }
 
 /** Ties a context to one HTTP request object: the logging middleware binds the request id, authentication the user. */
-export function bindRequestContext(req: object, ctx: RequestContext): void {
+export function bindRequestContext(req: IncomingMessage, ctx: RequestContext): void {
   boundToRequest.set(req, Object.freeze({ ...ctx, system: undefined, crossTenant: undefined }));
 }
 
-export function requestContextOf(req: object): RequestContext | undefined {
+export function requestContextOf(req: IncomingMessage): RequestContext | undefined {
   return boundToRequest.get(req);
 }
 
 /** Called by authentication once the token is verified: the user, tenant and roles of this request. */
-export function bindAuthenticatedUser(req: object, user: { userId: string; tenantId?: string; roles: readonly string[] }): void {
+export function bindAuthenticatedUser(req: IncomingMessage, user: { userId: string; tenantId?: string; roles: readonly string[] }): void {
   const requestId = boundToRequest.get(req)?.requestId ?? randomUUID();
   bindRequestContext(req, { requestId, userId: user.userId, tenantId: user.tenantId, roles: user.roles });
 }

@@ -12,7 +12,7 @@ import { outboundHttpLogging } from './outbound-http-logger';
 
 const TARGET = 'stub-provider';
 const TIMEOUT_MS = 2_000;
-const CAPTURE_LIMIT = 2 * 1024 * 1024; // CAPTURE_LIMIT_BYTES in outbound-http-logger.ts
+const CAPTURE_LIMIT = 2_097_152; // 2 MiB, CAPTURE_LIMIT_BYTES in outbound-http-logger.ts
 const OVER_CAP_JSON = `{"blob":"${'x'.repeat(CAPTURE_LIMIT + 1 - '{"blob":""}'.length)}"}`; // 2 MiB + 1 bytes
 const OVER_CAP_TEXT = 'y'.repeat(CAPTURE_LIMIT + 1);
 

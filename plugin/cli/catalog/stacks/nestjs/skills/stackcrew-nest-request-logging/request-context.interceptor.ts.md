@@ -3,6 +3,7 @@ Goes to `src/common/context/request-context.interceptor.ts`.
 ```ts
 // Default location: src/common/context/request-context.interceptor.ts
 import { CallHandler, ExecutionContext, Injectable, NestInterceptor } from '@nestjs/common';
+import type { IncomingMessage } from 'node:http';
 import { Observable } from 'rxjs';
 import { requestContextOf, runWithRequestContext, safeRequestIdOrNew } from './request-context';
 
@@ -17,7 +18,7 @@ export class RequestContextInterceptor implements NestInterceptor {
     if (context.getType() !== 'http') {
       return next.handle();
     }
-    const req = context.switchToHttp().getRequest<object>();
+    const req = context.switchToHttp().getRequest<IncomingMessage>();
     const ctx = requestContextOf(req) ?? { requestId: safeRequestIdOrNew(undefined), roles: [] };
     return new Observable<unknown>((subscriber) => runWithRequestContext(ctx, () => next.handle().subscribe(subscriber)));
   }

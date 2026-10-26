@@ -266,7 +266,7 @@ test('nest request logging writes one line per request from a middleware ahead o
       assert.ok(setup.includes(needle), `logging.setup.ts missing ${needle}`);
     }
     const mw = s.file('http-logging.middleware.ts');
-    for (const needle of ["res.once('finish', writeLine)", "res.once('close', writeLine)", 'if (written) {', 'req.rawBody', 'CAPTURE_LIMIT_BYTES = 2 * 1024 * 1024',
+    for (const needle of ["res.once('finish', writeLine)", "res.once('close', writeLine)", 'if (written) {', 'req.rawBody', 'CAPTURE_LIMIT_BYTES = 2_097_152; // 2 MiB',
       'tee.streamed = true', "isMaskable(headerText(this.getHeader('content-type')))", 'userId: ctx?.userId', "UNMATCHED_ROUTE = 'UNMATCHED'",
       'route: routeTemplates.get(req) ?? UNMATCHED_ROUTE', 'req.path === skipped || req.path.startsWith(`${skipped}/`)']) {
       assert.ok(mw.includes(needle), `middleware missing ${needle}`);
@@ -693,6 +693,30 @@ test('nestjs-testing skill: the tester role per test type, third-party fakes, an
       'CROSS_TENANT_ROLES', '{{sc:systemUser}}', 'http_in', 'http_out', 'message_in', 'stackcrew-nest-typeorm-entity', 'stackcrew-nest-outbound-client',
       'stackcrew-nest-rabbitmq-consumer', 'stackcrew-nest-rest-endpoint', 'ask the user', 'Run the tests']) {
       assert.ok(s.body.includes(needle), `testing SKILL.md missing ${needle}`);
+    }
+  });
+});
+
+test('nest skill code passes the stackcrew ESLint rules the guard cannot see: no object type, no magic-number expressions', async () => {
+  await withRealCatalog(async (c) => {
+    const nest = c.stacks.get('nestjs');
+    const code = [];
+    for (const k of nest.skills) for (const f of k.files) code.push([`${k.name}/${f.relPath}`, codeOfSibling(f.content)]);
+    for (const [doc, md] of [['stack-nestjs', nest.rules.body], ['stack-nestjs-testing', nest.testing.body], ...nest.skills.map((k) => [k.name, k.body])]) {
+      for (const m of md.matchAll(/```ts\n([\s\S]*?)```/g)) code.push([`${doc} block`, m[1]]);
+    }
+    assert.ok(code.length >= 80, `code sources ${code.length}`);
+    for (const [name, text] of code) {
+      const uncommented = text.replace(/\/\*[\s\S]*?\*\//g, '').split('\n').map((line) => line.replace(/\/\/.*$/, ''));
+      for (const line of uncommented) {
+        // @typescript-eslint/no-restricted-types in eslint.stackcrew.mjs bans `object` as a type
+        assert.ok(!/(:\s*|<|extends\s+|,\s*|\|\s*)object\b(?!\s*[:.(])/.test(line), `${name}: object as a type: ${line.trim()}`);
+      }
+      const isTest = name.endsWith('.spec.ts.md') || /^\/\/ (Default location: )?test\//.test(text);
+      if (!isTest) {
+        // @typescript-eslint/no-magic-numbers: a constant is one literal (2_097_152 // 2 MiB), never 2 * 1024 * 1024
+        assert.ok(!/\d\s*\*\s*\d/.test(uncommented.join('\n')), `${name}: a product of numeric literals where one literal belongs`);
+      }
     }
   });
 });

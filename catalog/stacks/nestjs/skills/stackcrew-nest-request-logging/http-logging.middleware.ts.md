@@ -4,12 +4,13 @@ Goes to `src/common/logging/http-logging.middleware.ts`.
 // Default location: src/common/logging/http-logging.middleware.ts
 import { Logger, type RawBodyRequest } from '@nestjs/common';
 import type { NextFunction, Request, RequestHandler, Response } from 'express';
+import type { IncomingMessage, ServerResponse } from 'node:http';
 import { activeTraceFields, bindRequestContext, requestContextOf, REQUEST_ID_HEADER, safeRequestIdOrNew } from '../context/request-context';
 import { bodyPlaceholder, isMaskable, loadLogBodies, loadMaskOptions, maskBody, type MaskOptions } from './body-masker';
 import { elapsedMs, LogEvent, writeCallLine, type CallLogLine } from './log-fields';
 
 /** JSON and form bodies up to this size are masked whole (so a base64 image shrinks to its size); larger ones log their size. */
-const CAPTURE_LIMIT_BYTES = 2 * 1024 * 1024;
+const CAPTURE_LIMIT_BYTES = 2_097_152; // 2 MiB
 const UNMATCHED_ROUTE = 'UNMATCHED';
 const CLIENT_ABORT = 'ClientAbort';
 /** The client closed the connection before the response finished (the nginx convention); logged at WARN. */
@@ -23,11 +24,11 @@ export const SKIPPED_PATHS: readonly string[] = ['/health', '/metrics'];
 
 type ResponseTee = { bytes: number; streamed: boolean; captured?: string | Buffer };
 
-const failures = new WeakMap<object, string>();
-const routeTemplates = new WeakMap<object, string>();
+const failures = new WeakMap<ServerResponse, string>(); // Express responses extend ServerResponse
+const routeTemplates = new WeakMap<IncomingMessage, string>();
 
 /** AllExceptionsFilter records the exception class of a failed request; the line carries it as `error`. */
-export function recordFailure(res: object, error: string): void {
+export function recordFailure(res: ServerResponse, error: string): void {
   failures.set(res, error);
 }
 

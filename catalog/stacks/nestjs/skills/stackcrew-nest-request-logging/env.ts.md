@@ -62,13 +62,17 @@ export class ServerEnv {
 
 export type Env = ServerEnv & LoggingEnv & TenancyEnv & AuthEnv;
 
-type EnvSection<T extends object> = new () => T;
+/** A section class such as LoggingEnv: class-validator decorators on its fields, defaults as initializers. */
+type EnvSection<T> = new () => T;
 
 /** Parses and validates one section from raw environment strings; the error names the variables, never their values. */
-export function parseEnvSection<T extends object>(section: EnvSection<T>, raw: Readonly<Record<string, unknown>>): T {
+export function parseEnvSection<T>(section: EnvSection<T>, raw: Readonly<Record<string, unknown>>): T {
   // numbers need @Type(() => Number): a property without a type annotation has design:type Object, so implicit
   // conversion would leave "2048" a string and @IsInt would fail once the variable is set
   const parsed = plainToInstance(section, raw, { enableImplicitConversion: true, excludeExtraneousValues: false });
+  if (typeof parsed !== 'object' || parsed === null) {
+    throw new Error(`Invalid environment section: ${section.name}`); // a section class always yields an instance
+  }
   const errors = validateSync(parsed, { whitelist: true });
   if (errors.length > 0) {
     // names only: a value can be a secret
