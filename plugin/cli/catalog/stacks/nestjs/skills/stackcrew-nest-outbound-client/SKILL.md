@@ -16,7 +16,7 @@ The example verifies an identity with a provider called Acme. Request logging (`
 
 ## 2. Dependencies (ask the user before adding any)
 
-- `cockatiel` 3.x (MIT, no dependencies) for the retry with backoff and jitter, the circuit breaker and the bulkhead that `core-backend-api` requires. It is TypeScript-first, and its policies compose (`wrap`) around any async call, including `firstValueFrom(this.http.post(...))`. Version 4 needs Node 22; stay on 3.x for Node 18 and 20.
+- `cockatiel` 3.x (MIT, no dependencies) for the retry with backoff and jitter, the circuit breaker and the bulkhead that `core-backend-api` requires. It is TypeScript-first, and its policies compose (`wrap`) around any async call, including `firstValueFrom(this.http.post(...))`. Stay on 3.x: version 4 is ESM-only and needs Node 22, so a CommonJS Nest 10 build on Node 18 or 20, and Jest's CommonJS runtime, cannot load it.
 - If the user declines it: keep the timeout, and retry transient failures with RxJS `retry({ count, delay })` on the `HttpService` observable (RxJS already ships with Nest). There is then no circuit breaker and no bulkhead; record that gap in the SC-PREFLIGHT note.
 - `@nestjs/axios` and `axios` are already in place for `OutboundHttpLogger`. Never add `axios-retry` or a second HTTP client.
 

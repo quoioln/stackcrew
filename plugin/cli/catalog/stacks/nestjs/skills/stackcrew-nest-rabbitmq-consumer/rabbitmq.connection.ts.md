@@ -25,8 +25,9 @@ export class RabbitMqConnection implements OnApplicationShutdown {
   constructor(config: ConfigService<RabbitMqEnv, true>) {
     this.manager = connect([config.get('RABBITMQ_URL', { infer: true })], { heartbeatIntervalInSeconds: HEARTBEAT_SECONDS });
     this.manager.on('connect', () => this.logger.log({ event: CONNECTED }, CONNECTED));
-    this.manager.on('connectFailed', ({ err }: { err: Error }) => this.logger.warn({ event: CONNECT_FAILED, error: err.name }, CONNECT_FAILED));
-    this.manager.on('disconnect', ({ err }: { err: Error }) => this.logger.warn({ event: DISCONNECTED, error: err.name }, DISCONNECTED));
+    // `err` is optional in amqp-connection-manager 5's types; typing it so fits 4.x and 5.x
+    this.manager.on('connectFailed', ({ err }: { err?: Error }) => this.logger.warn({ event: CONNECT_FAILED, error: err?.name }, CONNECT_FAILED));
+    this.manager.on('disconnect', ({ err }: { err?: Error }) => this.logger.warn({ event: DISCONNECTED, error: err?.name }, DISCONNECTED));
   }
 
   /** A confirm channel unless `confirm: false`: its publish() resolves once the broker has the message. */

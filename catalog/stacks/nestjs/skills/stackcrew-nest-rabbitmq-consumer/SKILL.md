@@ -12,9 +12,9 @@ This implements `addon-rabbitmq` for Node. The example consumes `kyc.completed` 
 
 ## 1. Dependencies (ask the user before adding any)
 
-- `amqp-connection-manager` 4.1 or later, with `amqplib`: one connection that reconnects by itself and re-runs each channel's setup. On `amqplib` 0.10 add `@types/amqplib` as a dev dependency; `amqplib` 2.x ships its own types. `amqp-connection-manager` 5 needs Node 22.
+- `amqp-connection-manager` 4.1.x, with `amqplib`: one connection that reconnects by itself and re-runs each channel's setup. On `amqplib` 0.10 add `@types/amqplib` as a dev dependency; `amqplib` 2.x ships its own types. `amqp-connection-manager` 5 needs Node 22 and depends on an ESM-only package: Node 22 loads it, but Jest's CommonJS runtime does not without extra configuration, so a Nest 10 project tested with Jest stays on 4.1.x.
 - Tests: `@testcontainers/rabbitmq` and `@testcontainers/postgresql` (the same major as the project's Testcontainers), with `rabbitmq:4-alpine` and `postgres:16-alpine`.
-- Do not add `@nestjs/microservices` for this: its RMQ transport has no wait queue, parking queue or confirm-before-ack, and hides the ack.
+- Do not switch to the `@nestjs/microservices` RMQ transport for this: it has no built-in wait queue, attempt cap or confirmed parking, and the code below needs the delivering channel for each settlement.
 
 ## 2. Files
 
