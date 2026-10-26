@@ -4,7 +4,7 @@
       "id": "SC-TYPE",
       "globs": ["**/*.ts"],
       "excludeGlobs": ["**/*.spec.ts"],
-      "regex": "\bany\b",
+      "regex": "\\bany\\b",
       "flags": "",
       "message": "Do not use any in typed code."
     }

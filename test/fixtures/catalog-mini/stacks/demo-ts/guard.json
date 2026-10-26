@@ -5,7 +5,7 @@
       "globs": ["**/*.service.ts"],
       "globsFrom": "typeFreeFiles",
       "excludeGlobs": [],
-      "regex": "\bunknown\b",
+      "regex": "\\bunknown\\b",
       "flags": "",
       "message": "Type-free files must not use unknown."
     }

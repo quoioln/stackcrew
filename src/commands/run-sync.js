@@ -5,7 +5,8 @@ import path from 'node:path';
 import { readProfile, writeProfile, validateProfile, PROFILE_FILE } from '../profile.js';
 import { detectProject } from '../detect.js';
 import { planJavaWiring, ARCHUNIT_VERSION } from '../wire/java.js';
-import { StackcrewError } from '../errors.js';
+import { planNodeWiring, FLAT_CONFIG_FILES, LEGACY_CONFIG_FILES } from '../wire/node.js';
+import { readUtf8File } from '../fs/read-utf8.js';
 import { buildContext, loadCustomRules } from '../render/context.js';
 import { renderProject } from '../render/index.js';
 import { applyOps } from '../fs/apply.js';
@@ -40,7 +41,7 @@ export async function runSync(projectDir, { force = false, wire = false, dryRun 
     if (wiring.ok) {
       renderProfile = wiring.profile;
     } else {
-      io.stdout.write('wire: no build file could be wired; add this test dependency and re-run `stackcrew sync --wire`:\n');
+      io.stdout.write(wiring.failHeader);
       for (const n of wiring.notes) io.stdout.write(`${n}\n`);
     }
   }
@@ -77,7 +78,10 @@ export async function runSync(projectDir, { force = false, wire = false, dryRun 
   if (ctx.stack.language === 'java' && renderProfile.java?.wired !== true) {
     io.stdout.write('hint: run `stackcrew sync --wire` to add ArchUnit (test scope) and generate StackcrewArchitectureTest\n');
   }
-  if (wiring?.ok) {
+  if (ctx.stack.language === 'typescript' && renderProfile.node?.wired !== true) {
+    io.stdout.write('hint: run `stackcrew sync --wire` to add the stackcrew rules to your ESLint config\n');
+  }
+  if (wiring?.ok && ctx.stack.language === 'java') {
     io.stdout.write(
       'note: .stackcrew/lint/checkstyle.xml is generated but not wired; '
         + 'add maven-checkstyle-plugin (or the Gradle checkstyle plugin) pointing at it.\n',
@@ -92,31 +96,37 @@ const BUILD_FILES = [
   ['build.gradle.kts', 'buildGradleKts'],
 ];
 
-/** Read a build file as UTF-8 (BOM kept). Undefined if absent. Throws MARKER if not UTF-8. */
-async function readBuildFile(projectDir, rel) {
-  let buf;
-  try {
-    buf = await readFile(path.join(projectDir, rel));
-  } catch (err) {
-    if (err.code === 'ENOENT' || err.code === 'EISDIR') return undefined;
-    throw err;
-  }
-  const utf16 = buf.length >= 2 && ((buf[0] === 0xff && buf[1] === 0xfe) || (buf[0] === 0xfe && buf[1] === 0xff));
-  try {
-    if (utf16) throw new Error('utf-16');
-    return new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(buf);
-  } catch {
-    // Same check as readBlockHost in src/fs/apply.js (not exported there).
-    throw new StackcrewError('MARKER', `${rel}: not UTF-8 text; stackcrew will not edit it (convert it to UTF-8 first)`);
-  }
-}
-
 /** Plan --wire without writing. Returns an exit code (number) on failure. */
 async function planWire(projectDir, catalog, profile, io) {
-  if (catalog.stacks.get(profile.stack)?.language !== 'java') {
-    io.stderr.write('--wire: only supported for Java stacks\n');
+  const language = catalog.stacks.get(profile.stack)?.language;
+  if (language === 'typescript') return planNodeWire(projectDir, profile);
+  if (language !== 'java') {
+    io.stderr.write('--wire: only supported for Java and TypeScript stacks\n');
     return 1;
   }
+  return planJavaWire(projectDir, catalog, profile, io);
+}
+
+async function planNodeWire(projectDir, profile) {
+  const originals = { 'package.json': await readUtf8File(projectDir, 'package.json') };
+  const configs = {};
+  for (const rel of [...FLAT_CONFIG_FILES, ...LEGACY_CONFIG_FILES]) {
+    const text = await readUtf8File(projectDir, rel);
+    if (text === undefined) continue;
+    originals[rel] = text;
+    configs[rel] = text;
+  }
+  const plan = planNodeWiring({ packageJson: originals['package.json'], configs });
+  return {
+    changed: plan.edits.filter((e) => e.content !== originals[e.path]),
+    notes: plan.notes,
+    ok: plan.wired.length > 0,
+    failHeader: 'wire: ESLint could not be wired automatically; add this to your ESLint config and re-run `stackcrew sync --wire`:\n',
+    profile: { ...profile, node: { wired: true } },
+  };
+}
+
+async function planJavaWire(projectDir, catalog, profile, io) {
   let basePackage = profile.java?.basePackage || '';
   if (!basePackage) basePackage = (await detectProject(projectDir, catalog)).basePackage || '';
   if (!basePackage) {
@@ -124,7 +134,7 @@ async function planWire(projectDir, catalog, profile, io) {
     return 1;
   }
   const originals = {};
-  for (const [rel] of BUILD_FILES) originals[rel] = await readBuildFile(projectDir, rel);
+  for (const [rel] of BUILD_FILES) originals[rel] = await readUtf8File(projectDir, rel);
   const input = {};
   for (const [rel, key] of BUILD_FILES) if (originals[rel] !== undefined) input[key] = originals[rel];
   const plan = planJavaWiring(input);
@@ -140,6 +150,7 @@ async function planWire(projectDir, catalog, profile, io) {
     changed: plan.edits.filter((e) => e.content !== originals[e.path]),
     notes,
     ok: plan.wired.length > 0,
+    failHeader: 'wire: no build file could be wired; add this test dependency and re-run `stackcrew sync --wire`:\n',
     profile: { ...profile, java: { ...profile.java, basePackage, wired: true } },
   };
 }
