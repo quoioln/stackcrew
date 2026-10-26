@@ -17,12 +17,12 @@ Search the codebase and the shared libraries ({{sc:sharedLibraries}}) for `maskB
 | `body-masker.ts.md` | The masker: `maskBody`, `maskValue`, `serializeMasked`, `loadMaskOptions`, `loadLogBodies`, `bodyPlaceholder`. |
 | `request-context.ts.md` | `RequestContext`, `runWithRequestContext`, `runAsSystem`, `runCrossTenant`, `requireTenantId`, `currentActor`, `contextFromMessageHeaders`, the two errors. |
 | `request-context.interceptor.ts.md` | Global interceptor: the handler runs inside the request's context. |
-| `log-fields.ts.md` | Event and field names, `levelFor(status)`. |
+| `log-fields.ts.md` | Event and field names, `levelFor(status)`, and `writeCallLine`, the line writer that never throws. |
 | `http-logging.middleware.ts.md`, `route-template.guard.ts.md` | One `http_in` line per request, written when the response finishes; the first global guard records the route template for it. |
 | `problem-details.ts.md`, `all-exceptions.filter.ts.md` | RFC 7807 responses with constant details; `ProblemError` for domain errors. |
 | `outbound-http-logger.ts.md` | `OutboundHttpLogger`: one `http_out` line per call on a module's `HttpService`. |
 | `logging.setup.ts.md`, `common.module.ts.md` | `pinoHttpOptions`, `setupApp(app)`, and the module that registers it all. |
-| `body-masker.spec.ts.md`, `request-context.spec.ts.md`, `env.spec.ts.md` | The masker contract, the identity rules and the env parsing (section 9). |
+| `body-masker.spec.ts.md`, `log-fields.spec.ts.md`, `request-context.spec.ts.md`, `env.spec.ts.md` | The masker contract, the line writer, the identity rules and the env parsing (section 9). |
 
 `common.module.ts` imports the authentication pieces from the stack rule (`src/common/auth/`). The TypeORM base classes that read the context are in `stackcrew-nest-typeorm-entity`.
 
@@ -82,6 +82,7 @@ void bootstrap();
 - JSON (`application/json`, `*+json`) and form bodies are parsed and masked. `multipart/*`, `application/octet-stream`, `image/*`, `application/pdf` log `<binary CT N bytes>`; anything else (XML, SOAP, text, unparseable JSON, no content type) logs `<CT N bytes>`. CT is the media type without parameters, `unknown` when missing. An empty body logs no field.
 - A body nested deeper than 64 objects or arrays logs `<CT N bytes>`: the walk stops at depth 64, so a crafted 10 KB body of brackets cannot exhaust the stack.
 - `maskBody(raw, contentType, opts)` is for bytes and strings; `serializeMasked(value, opts, contentType)` for a body that is already parsed. Never call `maskValue` on a string you have not parsed as JSON.
+- An already-parsed value that cannot be masked is sized without recursion and only up to `LOG_MAX_BODY_BYTES`: `<CT N bytes>`, or `<CT N+ bytes>` with N = `LOG_MAX_BODY_BYTES` when it is larger, cyclic or shares a node (`placeholderFor`). A `toJSON` runs once per value, as in `JSON.stringify`, and its result takes the value's place at the same depth.
 - Logging never throws. The masker returns a placeholder on any failure. Every line is written through `writeCallLine`, which falls back to the same line with size-only bodies and turns a logger failure into a process warning. A request, an outbound call or a message never fails, or changes its result, because of its log line.
 
 ## 6. Inbound: one line per request
@@ -140,13 +141,11 @@ Producers send the headers `x-request-id`, `x-tenant-id` and `x-user-id`. A cons
 // a consumer method (any broker)
 async onMessage(payload: Buffer | undefined, contentType: string | undefined, headers: Readonly<Record<string, unknown>> | undefined): Promise<void> {
   await runWithRequestContext(contextFromMessageHeaders(headers), async () => {
-    try {
-      const reqBody = this.logBodies ? maskBody(payload, contentType ?? JSON_CONTENT_TYPE, this.maskOptions) : undefined;
-      this.logger.log({ event: LogEvent.MESSAGE_IN, ...contextLogFields(), reqBody }, LogEvent.MESSAGE_IN);
-    } catch (failure: unknown) {
-      // logging never changes the result: the message is still handled
-      process.emitWarning(`message_in line not written (${failure instanceof Error ? failure.name : typeof failure})`);
-    }
+    const type = contentType ?? JSON_CONTENT_TYPE;
+    writeCallLine(this.logger, // never throws: the message is handled whatever happens to its line
+      () => ({ event: LogEvent.MESSAGE_IN, ...contextLogFields(), reqBody: this.logBodies ? maskBody(payload, type, this.maskOptions) : undefined }),
+      () => ({ event: LogEvent.MESSAGE_IN, reqBody: this.logBodies && payload !== undefined ? bodyPlaceholder(type, payload.length) : undefined }),
+      'log');
     await this.handler.handle(this.codec.read(payload)); // read() rejects a missing or invalid payload with a non-retryable error
   });
 }
@@ -155,6 +154,7 @@ async onMessage(payload: Buffer | undefined, contentType: string | undefined, he
 ## 9. Tests
 
 - `body-masker.spec.ts` is the masker contract: every row of the `core-logging` table, the configured list, the character-boundary cut, form parsing and placeholders. Keep it next to `body-masker.ts`; it needs no Nest.
+- `log-fields.spec.ts` pins `writeCallLine`: a failing build writes the fallback line, and a failing fallback or logger becomes a process warning, never an exception.
 - `request-context.spec.ts` pins the identity rules: a cross-tenant role reads (read only), other roles are denied, only `runAsSystem` is the system identity (a token or header user named `{{sc:systemUser}}` is denied), unsafe header values are dropped, and concurrent contexts stay apart.
 - `env.spec.ts` pins that numeric variables are converted from the strings the environment holds, and that an error names the variable, never its value.
 - e2e with supertest (ask first) through the harness in `stack-nestjs-testing` (`createTestApp`: `AppModule` imported after the env is set, `createNestApplication({ rawBody: true })`, `setupApp(app)`, a `CapturingLogger`, a local token issuer). Wait for the line: it is written after the client has the response. Cover:

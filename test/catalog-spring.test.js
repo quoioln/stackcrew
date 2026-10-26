@@ -518,6 +518,14 @@ test('spring logging never throws: depth-capped masker and guarded line writers'
     assert.ok(filter.includes('} catch (RuntimeException logFailure) {') && filter.includes('minimalLine('), 'the filter still writes one line when logging fails');
     const interceptor = s.file('LoggingClientInterceptor.java');
     assert.ok(interceptor.includes('} catch (RuntimeException logFailure) {'), 'logging never changes the outbound result');
+    for (const [name, code] of [['HttpLoggingFilter', filter], ['LoggingClientInterceptor', interceptor]]) {
+      assert.ok(code.includes('} catch (RuntimeException minimalFailure) {') && code.includes('logFailure.addSuppressed(minimalFailure);')
+        && code.includes('LogFields.warnLineNotWritten('), `${name}: a failing fallback line never replaces the in-flight exception`);
+    }
+    const fields = s.file('LogFields.java');
+    assert.match(fields, /public static void warnLineNotWritten\(String event, RuntimeException failure\) \{\n\s+try \{\n\s+System\.getLogger\(/,
+      'the last-resort warning goes to the JDK logger');
+    assert.ok(fields.includes('} catch (RuntimeException bridgedToTheSameBackend) {'), 'the warning itself never throws (JUL may be bridged to the failing backend)');
     for (const needle of ['nestingOf64IsMaskedNormally', 'nestingOf65BecomesAPlaceholder', 'nestingOf50000BecomesAPlaceholderWithoutThrowing']) {
       assert.ok(s.body.includes(needle), `BodyMaskerTest missing ${needle}`);
     }

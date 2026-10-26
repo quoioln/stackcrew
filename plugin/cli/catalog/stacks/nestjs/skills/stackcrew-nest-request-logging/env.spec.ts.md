@@ -28,6 +28,9 @@ describe('environment sections', () => {
     expect(() => validateEnv({ ...raw, NODE_ENV: 'production' })).toThrow('JWKS_URI must use https');
     expect(validateEnv({ ...raw, NODE_ENV: 'test' }).JWKS_URI).toBe('http://idp.internal/jwks');
     expect(validateEnv({ ...raw, JWKS_URI: 'https://idp.example.com/jwks' }).JWKS_URI).toBe('https://idp.example.com/jwks');
+    // a value without a scheme fails by name, never echoing the value
+    expect(() => validateEnv({ ...raw, JWKS_URI: 'idp.example.com/jwks' })).toThrow(/^Invalid environment: JWKS_URI$/);
+    expect(() => validateEnv({ ...raw, JWKS_URI: 'ftp://idp.example.com/jwks', NODE_ENV: 'test' })).toThrow(/^Invalid environment: JWKS_URI$/);
   });
 });
 ```

@@ -391,7 +391,28 @@ test('nest logging never throws: depth-capped masker, guarded line writers, 499 
     assert.ok(mw.includes('export function httpLoggingMiddleware(skippedPaths: readonly string[] = SKIPPED_PATHS)') && mw.includes('setGlobalPrefix'),
       'skipped paths are a parameter and the global prefix is documented');
     assert.ok(s.file('outbound-http-logger.ts').includes('writeCallLine(this.logger,'), 'outbound writes through the guard');
-    assert.ok(/try \{[^]*?this\.logger\.log\(\{ event: LogEvent\.MESSAGE_IN[^]*?\} catch \(failure: unknown\)/.test(s.body), 'message_in snippet never throws');
+    assert.ok(/writeCallLine\(this\.logger,[^]*?event: LogEvent\.MESSAGE_IN/.test(s.body), 'message_in snippet writes through the guard too');
+  });
+});
+
+test('nest logging fix round 2: bounded sizing, toJSON at the same depth, guarded fallbacks', async () => {
+  await withRealCatalog(async (c) => {
+    const s = nestSkill(c, LOGGING);
+    const masker = s.file('body-masker.ts');
+    assert.ok(masker.includes('const seen = new WeakSet<object>()') && masker.includes('if (size > limit) {'), 'sizing stops at a cycle, a shared node or the cap');
+    assert.ok(masker.includes('export function placeholderFor('), 'one bounded placeholder for parsed values');
+    assert.match(masker, /function maskWith\(value: unknown, keys: ReadonlySet<string>, depth: number, applyToJson = true\): unknown \{\n\s+if \(typeof value !== 'object' \|\| value === null\) \{/,
+      'primitives first, then one depth check for any object');
+    assert.ok(masker.includes('return maskWith(json, keys, depth, false);'), 'a toJSON result keeps the depth and toJSON runs once');
+    const spec = s.file('body-masker.spec.ts');
+    for (const needle of ['a.self = a', "toJSON(): unknown { return this; }", '16384+ bytes']) assert.ok(spec.includes(needle), `masker spec missing ${needle}`);
+    const fields = s.file('log-fields.ts');
+    assert.match(fields, /\} catch \{\n\s+try \{\n\s+line = fallback\(\);\n\s+\} catch \(failure: unknown\) \{/, 'the fallback has its own guard');
+    const fieldsSpec = s.file('log-fields.spec.ts');
+    assert.ok(fieldsSpec.includes("jest.spyOn(process, 'emitWarning')") && fieldsSpec.includes('fallback throws too'), 'writer branches are specified');
+    assert.ok(!s.file('outbound-http-logger.ts').includes('JSON.stringify(data)'), 'outbound sizes parsed bodies with the bounded sizer');
+    assert.ok(s.file('env.ts').includes("@IsUrl({ require_tld: false, require_protocol: true, protocols: ['http', 'https'] })"));
+    assert.ok(s.file('env.spec.ts').includes("JWKS_URI: 'idp.example.com/jwks'"), 'a scheme-less URL fails by name');
   });
 });
 
@@ -427,7 +448,14 @@ test('nest tenant entities in a transaction go through withManager only', async 
     assert.ok(rules.includes('withManager(manager)') && !rules.includes('all work inside through `manager`'), 'stack rule transaction bullet');
     assert.ok(!rules.includes('@Roles('), 'no reference to a roles decorator that does not exist');
     const addon = c.addons.get('typeorm').rules.body;
-    assert.ok(addon.includes('withManager(manager)') && addon.includes('never `manager.getRepository(Entity)`'), 'add-on transaction bullet');
+    assert.ok(addon.includes('withManager(manager)'), 'add-on transaction bullet');
     assert.ok(!addon.includes('Do all work in the transaction through its manager.'));
+    const ban = 'any manager method on a tenant entity (getRepository, update, delete, increment, decrement, softDelete, restore, upsert, createQueryBuilder…)';
+    for (const [where, text] of [['stack rule', rules], ['add-on', addon], ['skill', s.body], ['repository docstring', repo], ['subscriber docstring', s.file('tenant.subscriber.ts')]]) {
+      assert.ok(text.includes(ban), `${where} states the ban as open-ended`);
+    }
+    assert.ok(s.body.includes('inject `DataSource` only to open a transaction'), 'DataSource is for opening transactions');
+    assert.ok(!s.body.includes('writes two entities'), 'the example and its comment agree');
+    assert.match(spec, /throw new Error\('roll back'\)[^]*?toMatchObject\(\{ status: CustomerProfileStatus\.VERIFIED/, 'withManager joins the transaction: a rollback undoes its write');
   });
 });

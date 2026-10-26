@@ -16,7 +16,8 @@ type Where<T> = FindOptionsWhere<T> | FindOptionsWhere<T>[];
  * and soft delete carries the {{sc:tenantColumn}} condition from the request context; a lookup by id of another
  * tenant's row finds nothing. No tenant in the context throws MissingTenantError. Inside runCrossTenant reads see every
  * tenant and writes throw. Extend it per entity; a bulk write a feature needs becomes a method here, never a
- * QueryBuilder in a service. Inside a transaction use withManager(manager), never manager.getRepository(Entity).
+ * QueryBuilder in a service. Inside a transaction use withManager(manager), never any manager method on a tenant entity
+ * (getRepository, update, delete, increment, decrement, softDelete, restore, upsert, createQueryBuilder…).
  */
 export class TenantScopedRepository<T extends {{sc:baseTenantEntity}}> {
   constructor(protected readonly repository: Repository<T>) {}
@@ -24,8 +25,8 @@ export class TenantScopedRepository<T extends {{sc:baseTenantEntity}}> {
   /**
    * The same scoped API (subclass methods included) on a transaction's manager:
    * dataSource.transaction((manager) => this.profiles.withManager(manager).update({ id }, values)).
-   * manager.getRepository(Entity), manager.update and manager.delete carry no tenant condition: never use them for a
-   * tenant entity.
+   * Never use any manager method on a tenant entity (getRepository, update, delete, increment, decrement, softDelete, restore, upsert, createQueryBuilder…):
+   * none of them carries the tenant condition.
    */
   withManager(manager: EntityManager): this {
     const scoped: this = Object.create(this); // inherits every method of this repository and its subclass

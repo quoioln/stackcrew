@@ -102,7 +102,7 @@ async verify(id: string): Promise<boolean> {
 }
 ```
 
-- Services inject the entity's `TenantScopedRepository` subclass (`CustomerProfileRepository`), never `Repository<T>`, `EntityManager`, `DataSource` or a QueryBuilder for a tenant entity.
+- Services inject the entity's `TenantScopedRepository` subclass (`CustomerProfileRepository`), never `Repository<T>`, `EntityManager` or a QueryBuilder for a tenant entity. They inject `DataSource` only to open a transaction; tenant-entity access inside it goes through `withManager`.
 - `find`, `findOne`, `findOneBy` and `count` add `{{sc:tenantColumn}} = <context tenant>` to the where (every element of an array where). A lookup by id of another tenant's row returns `null`.
 - `update`, `delete` and `softDelete` add the same condition and return the number of rows changed; another tenant's row gives `0`. `update` and `softDelete` skip soft-deleted rows.
 - `save` and `create`: the tenant and the audit fields are assigned on insert. `TenantSubscriber` refuses a save whose row belongs to another tenant (TypeORM loads the row by id before updating it) and refuses to load such a row anywhere.
@@ -112,7 +112,7 @@ async verify(id: string): Promise<boolean> {
 - Transactions: the tenant entity goes through `withManager(manager)`, the same scoped API (your subclass's methods included) on the transaction's manager:
 
 ```ts
-// a service method that writes two entities in one transaction
+// a service method whose writes share one transaction (other entities' writes would use the same manager)
 async approve(id: string): Promise<boolean> {
   return this.dataSource.transaction(async (manager) => {
     const changed = await this.profiles.withManager(manager).update({ id }, { status: CustomerProfileStatus.VERIFIED });
@@ -121,7 +121,7 @@ async approve(id: string): Promise<boolean> {
 }
 ```
 
-- Never `manager.getRepository(CustomerProfile)`, `manager.update(...)` or `manager.delete(...)` for a tenant entity: they carry no tenant condition, and `TenantSubscriber` cannot see the rows an update or delete by criteria touches, so tenant B would change tenant A's rows.
+- Never use any manager method on a tenant entity (getRepository, update, delete, increment, decrement, softDelete, restore, upsert, createQueryBuilder…), for example `manager.getRepository(CustomerProfile).update(...)`: none carries the tenant condition, and `TenantSubscriber` cannot see the rows an update or delete by criteria touches, so tenant B would change tenant A's rows.
 
 ## 6. Where the tenant comes from
 
@@ -157,5 +157,5 @@ const rows = await runCrossTenant('monthly volume report', () => this.profiles.f
 - Do not create a second base class when `{{sc:baseEntity}}` exists in the codebase or a shared library.
 - Do not set `createdAt`, `createdBy`, `updatedAt`, `updatedBy` or `{{sc:tenantColumn}}` in code, DTOs or SQL inserts.
 - Do not read the tenant from a request parameter, a path variable, an HTTP header or the body.
-- Do not inject `Repository<T>`, `EntityManager` or `DataSource` for a tenant entity, and do not write a `where` on `{{sc:tenantColumn}}` by hand.
+- Do not inject `Repository<T>` or `EntityManager` for a tenant entity; inject `DataSource` only to open a transaction, and reach the tenant entity inside it through `withManager`. Do not write a `where` on `{{sc:tenantColumn}}` by hand.
 - Do not return entities from a controller.

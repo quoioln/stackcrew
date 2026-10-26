@@ -7,7 +7,7 @@ import { Inject, Injectable, Logger, type OnModuleInit, type Provider } from '@n
 import { AxiosHeaders, isAxiosError, type AxiosResponse, type InternalAxiosRequestConfig } from 'axios';
 import { Readable } from 'node:stream';
 import { contextLogFields } from '../context/request-context';
-import { bodyPlaceholder, isMaskable, loadLogBodies, loadMaskOptions, maskBody, serializeMasked, type MaskOptions } from './body-masker';
+import { bodyPlaceholder, isMaskable, loadLogBodies, loadMaskOptions, maskBody, placeholderFor, serializeMasked, type MaskOptions } from './body-masker';
 import { elapsedMs, LogEvent, writeCallLine, type CallLogLine } from './log-fields';
 
 export const OUTBOUND_TARGET = Symbol('OUTBOUND_TARGET');
@@ -57,20 +57,29 @@ export class OutboundHttpLogger implements OnModuleInit {
   /** Runs inside axios's promise chain: through writeCallLine, so a logging failure never changes the call's result. */
   private write(config: InternalAxiosRequestConfig, response: AxiosResponse | undefined, error: string | undefined): void {
     const started = this.startedAt.get(config);
+    const url = this.urlOf(config);
     const minimal = (): CallLogLine => ({
       event: LogEvent.HTTP_OUT,
       target: this.target,
       method: (config.method ?? 'get').toUpperCase(),
+      url,
       status: response?.status,
       durationMs: started === undefined ? undefined : elapsedMs(started),
       error,
     });
     writeCallLine(this.logger, () => ({
       ...minimal(),
-      url: sanitizeUrl(this.http.axiosRef.getUri(config)),
       ...contextLogFields(),
       ...(this.logBodies ? { reqBody: requestBody(config, this.opts), resBody: response && responseBody(response, this.opts) } : {}),
     }), minimal);
+  }
+
+  private urlOf(config: InternalAxiosRequestConfig): string | undefined {
+    try {
+      return sanitizeUrl(this.http.axiosRef.getUri(config));
+    } catch {
+      return undefined; // a config axios cannot turn into a URL: the line goes out without it
+    }
   }
 }
 
@@ -110,8 +119,8 @@ function responseBody(response: AxiosResponse, opts: MaskOptions): string | unde
   if (data instanceof ArrayBuffer) {
     return maskBody(Buffer.from(data), contentType, opts);
   }
-  // axios parsed it as JSON; log it only when the response declares JSON or form
-  return isMaskable(contentType) ? serializeMasked(data, opts, contentType) : bodyPlaceholder(contentType, Buffer.byteLength(JSON.stringify(data)));
+  // axios parsed it as JSON; log it only when the response declares JSON or form, else its bounded size
+  return isMaskable(contentType) ? serializeMasked(data, opts, contentType) : placeholderFor(data, contentType, opts);
 }
 
 function declaredSize(contentType: string | undefined, contentLength: string | undefined): string | undefined {

@@ -81,13 +81,27 @@ export function maskValue(value: unknown, opts: MaskOptions): unknown {
   try {
     return maskWith(value, maskedKeys(opts), 1);
   } catch {
-    return bodyPlaceholder(JSON_TYPE, serializedSize(value));
+    return placeholderFor(value, JSON_TYPE, opts);
   }
 }
 
 /** maskValue, then compact JSON capped at maxBodyBytes: the log field for an already-parsed body. Never throws. */
 export function serializeMasked(value: unknown, opts: MaskOptions, contentType: string = JSON_TYPE): string {
-  return maskAndSerialize(value, opts) ?? bodyPlaceholder(contentType, serializedSize(value));
+  return maskAndSerialize(value, opts) ?? placeholderFor(value, contentType, opts);
+}
+
+/**
+ * The size placeholder of an already-parsed value: `<CT N bytes>`, or `<CT N+ bytes>` with N = maxBodyBytes when it is
+ * larger, cyclic or shares a node. The sizing is bounded, so it always returns; a getter that throws gives 0 bytes.
+ */
+export function placeholderFor(value: unknown, contentType: string | undefined, opts: MaskOptions): string {
+  let size: number | undefined;
+  try {
+    size = boundedSize(value, opts.maxBodyBytes);
+  } catch {
+    size = 0;
+  }
+  return size === undefined ? placeholderText(contentType, `${opts.maxBodyBytes}+`) : bodyPlaceholder(contentType, size);
 }
 
 /** True for the bodies the masker parses (JSON, *+json, form); everything else only ever logs its size. */
@@ -98,6 +112,10 @@ export function isMaskable(contentType: string | undefined): boolean {
 
 /** Size-only placeholder: `<binary CT N bytes>` for files, `<CT N bytes>` for everything else. */
 export function bodyPlaceholder(contentType: string | undefined, size: number): string {
+  return placeholderText(contentType, String(size));
+}
+
+function placeholderText(contentType: string | undefined, size: string): string {
   const type = mediaType(contentType);
   const binary = BINARY_TYPES.includes(type) || BINARY_PREFIXES.some((prefix) => type.startsWith(prefix));
   return `<${binary ? 'binary ' : ''}${type} ${size} bytes>`;
@@ -131,59 +149,62 @@ function maskAndSerialize(value: unknown, opts: MaskOptions): string | undefined
 }
 
 /**
- * The UTF-8 size of the value as compact JSON, for a placeholder. Computed without recursion, because JSON.stringify
- * itself overflows on a value nested tens of thousands deep. 0 when a getter throws.
+ * The UTF-8 size of the value as compact JSON, for a placeholder. Iterative, because JSON.stringify itself overflows on
+ * a value nested tens of thousands deep. It gives up (undefined: "more than limit") past `limit` bytes, and at a node
+ * seen before: a cycle never ends, and JSON.stringify would write a shared node twice.
  */
-function serializedSize(root: unknown): number {
-  try {
-    let size = 0;
-    const pending: unknown[] = [root];
-    while (pending.length > 0) {
-      const value = pending.pop();
-      if (Array.isArray(value)) {
-        size += CONTAINER_MARKS + Math.max(value.length - 1, 0); // [ ] and the commas
-        for (const item of value) pending.push(item);
-      } else if (typeof value === 'object' && value !== null) {
-        const entries = Object.entries(value);
-        size += CONTAINER_MARKS + Math.max(entries.length - 1, 0); // { } and the commas
-        for (const [key, item] of entries) {
-          size += Buffer.byteLength(JSON.stringify(key)) + 1; // "key":
-          pending.push(item);
+function boundedSize(root: unknown, limit: number): number | undefined {
+  const seen = new WeakSet<object>();
+  const pending: unknown[] = [root];
+  let size = 0;
+  while (pending.length > 0) {
+    const value = pending.pop();
+    if (typeof value !== 'object' || value === null) {
+      size += Buffer.byteLength(JSON.stringify(value) ?? 'null');
+    } else if (seen.has(value)) {
+      return undefined;
+    } else {
+      seen.add(value);
+      const children: unknown[] = Array.isArray(value) ? value : Object.entries(value);
+      size += CONTAINER_MARKS + Math.max(children.length - 1, 0); // [ ] or { } and the commas
+      for (const child of children) {
+        if (Array.isArray(value)) {
+          pending.push(child);
+        } else if (Array.isArray(child)) {
+          size += Buffer.byteLength(JSON.stringify(child[0])) + 1; // "key":
+          pending.push(child[1]);
         }
-      } else {
-        size += Buffer.byteLength(JSON.stringify(value) ?? 'null');
       }
     }
-    return size;
-  } catch {
-    return 0;
+    if (size > limit) {
+      return undefined;
+    }
   }
+  return size;
 }
 
-/** Recursive, but never deeper than MAX_NESTING_DEPTH: depth 1 is the body itself. */
-function maskWith(value: unknown, keys: ReadonlySet<string>, depth: number): unknown {
+/**
+ * Recursive, but never deeper than MAX_NESTING_DEPTH: depth 1 is the body itself. Like JSON.stringify, toJSON runs once
+ * per value and its result takes the value's place at the same depth (so a toJSON that returns `this` stops).
+ */
+function maskWith(value: unknown, keys: ReadonlySet<string>, depth: number, applyToJson = true): unknown {
+  if (typeof value !== 'object' || value === null) {
+    const base64 = typeof value === 'string' && value.length > BASE64_MIN_EXCLUSIVE_LENGTH && BASE64.test(value);
+    return base64 ? `<base64 ${decodedSize(value)} bytes>` : value;
+  }
+  if (depth > MAX_NESTING_DEPTH) {
+    throw new NestingTooDeep();
+  }
+  if (applyToJson && 'toJSON' in value && typeof value.toJSON === 'function') {
+    const json: unknown = value.toJSON(); // a Date or a DTO with toJSON: mask what JSON.stringify would write
+    return maskWith(json, keys, depth, false);
+  }
   if (Array.isArray(value)) {
-    if (depth > MAX_NESTING_DEPTH) {
-      throw new NestingTooDeep();
-    }
     return value.map((item: unknown) => maskWith(item, keys, depth + 1));
   }
-  if (typeof value === 'object' && value !== null && 'toJSON' in value && typeof value.toJSON === 'function') {
-    const json: unknown = value.toJSON(); // a Date or a DTO with toJSON: mask what JSON.stringify would write
-    return maskWith(json, keys, depth + 1);
-  }
-  if (typeof value === 'object' && value !== null) {
-    if (depth > MAX_NESTING_DEPTH) {
-      throw new NestingTooDeep();
-    }
-    // Object.fromEntries defines own properties, so a "__proto__" key stays a plain key
-    return Object.fromEntries(Object.entries(value).map(([key, item]: [string, unknown]) =>
-      [key, isMaskedKey(key, keys) ? MASK : maskWith(item, keys, depth + 1)]));
-  }
-  if (typeof value === 'string' && value.length > BASE64_MIN_EXCLUSIVE_LENGTH && BASE64.test(value)) {
-    return `<base64 ${decodedSize(value)} bytes>`;
-  }
-  return value;
+  // Object.fromEntries defines own properties, so a "__proto__" key stays a plain key
+  return Object.fromEntries(Object.entries(value).map(([key, item]: [string, unknown]) =>
+    [key, isMaskedKey(key, keys) ? MASK : maskWith(item, keys, depth + 1)]));
 }
 
 /** True when any contiguous run of the key's words, joined, is in the list. */

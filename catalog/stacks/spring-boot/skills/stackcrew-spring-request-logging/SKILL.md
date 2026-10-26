@@ -15,7 +15,7 @@ Search the codebase and the shared libraries ({{sc:sharedLibraries}}) for `BodyM
 |---|---|
 | `MaskingProperties.java.md` | `@ConfigurationProperties("app.logging")`: `mask-fields`, `max-body-bytes`, `log-bodies`. |
 | `BodyMasker.java.md` | The masker: `String mask(byte[] body, String contentType)` and `placeholder(contentType, size)`. |
-| `LogFields.java.md` | Field, MDC and header names (`event`, `reqBody`, `requestId`, `x-tenant-id`...). |
+| `LogFields.java.md` | Field, MDC and header names (`event`, `reqBody`, `requestId`, `x-tenant-id`...), and `warnLineNotWritten`, the last-resort warning. |
 | `HttpLoggingFilter.java.md` | `OncePerRequestFilter` with `ContentCachingRequestWrapper` and the response wrapper below: one `http_in` line, MDC `requestId`, `userId`, `tenantId`; its nested `UserMdc` filter fills the user after authentication. |
 | `TeeResponseWrapper.java.md` | Write-through response wrapper: every byte and header goes straight to the client; a JSON or form body is also copied, up to 2 MiB, for masking; everything else is only counted. |
 | `LoggingClientInterceptor.java.md` | `ClientHttpRequestInterceptor`: one `http_out` line per outbound call. |
@@ -48,7 +48,7 @@ logging:
 - After masking the body is serialized compactly; above `max-body-bytes` it keeps the first bytes (cut on a character) and appends `...[truncated T bytes]`.
 - JSON (`application/json`, `*+json`) and form bodies are parsed and masked. `multipart/*`, `application/octet-stream`, `image/*`, `application/pdf` log `<binary CT N bytes>`; anything else (XML, SOAP, text, unparseable JSON, no content type) logs `<CT N bytes>`. CT is the media type without parameters, `unknown` when missing. An empty body logs no field.
 - A body nested deeper than 64 objects or arrays logs `<CT N bytes>`: the walk stops at depth 64. Jackson 2.15+ (Boot 3.1+) also refuses nesting beyond 1000 by itself; Jackson 2.14 (Boot 3.0) has no limit, so the masker also catches a stack overflow while parsing.
-- Logging never throws. `mask` returns a placeholder on any failure; the filter and the interceptor write the line again without bodies if building it fails. A request or an outbound call never fails, or changes its result, because of its log line.
+- Logging never throws. `mask` returns a placeholder on any failure; the filter and the interceptor write the line again without bodies if building it fails, and when that fails too (the logging backend itself throws) they emit one warning through `LogFields.warnLineNotWritten`, which never throws. A request or an outbound call never fails, or changes its result, because of its log line.
 
 ## 4. Inbound: the filter in the security chain
 

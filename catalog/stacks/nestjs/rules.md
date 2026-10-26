@@ -191,7 +191,7 @@ Per `addon-typeorm` and skill `stackcrew-nest-typeorm-entity`:
 - Services inject the entity's `TenantScopedRepository` subclass; a lookup by id of another tenant's row returns `null` and becomes 404.
 - `AuditSubscriber` fills `createdBy`/`updatedBy` from the request context; `TenantSubscriber` assigns the tenant and refuses other tenants' rows.
 - Jobs and migrations run inside `runAsSystem(tenantId, work)`; consumers inside `runWithRequestContext(contextFromMessageHeaders(headers), work)`. Cross-tenant reads only through `runCrossTenant(reason, work)`, allowed for `CROSS_TENANT_ROLES` (default {{sc:crossTenantRoles}}) and the system job entry.
-- Transactions: `dataSource.transaction(async (manager) => ...)`. Inside, a tenant entity goes only through its repository's `withManager(manager)` (`this.profiles.withManager(manager).update(...)`); `manager.getRepository(Entity)`, `manager.update` and `manager.delete` carry no tenant condition and let tenant B change tenant A's rows. Never a remote call inside a transaction.
+- Transactions: `dataSource.transaction(async (manager) => ...)`. Inside, a tenant entity goes only through its repository's `withManager(manager)` (`this.profiles.withManager(manager).update(...)`). Never use any manager method on a tenant entity (getRepository, update, delete, increment, decrement, softDelete, restore, upsert, createQueryBuilder…): none carries the tenant condition, so tenant B would change tenant A's rows. Never a remote call inside a transaction.
 
 ## Errors (RFC 7807)
 

@@ -38,7 +38,7 @@ export class TenancyEnv {
 
 /** JWT verification through the identity provider's JWKS. */
 export class AuthEnv {
-  @IsUrl({ require_tld: false })
+  @IsUrl({ require_tld: false, require_protocol: true, protocols: ['http', 'https'] })
   JWKS_URI!: string;
 
   @IsString()

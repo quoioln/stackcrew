@@ -11,8 +11,9 @@ import { {{sc:baseTenantEntity}} } from './base-tenant.entity';
  * the tenant of the context, a row of another tenant is refused when it is loaded (afterLoad) or saved over (save
  * loads the row first), and no tenant in the context throws MissingTenantError. It cannot see the rows that an
  * update() or delete() by criteria touches: those are tenant-safe only through TenantScopedRepository (withManager
- * inside a transaction), never through Repository, EntityManager or a QueryBuilder. Inside runCrossTenant loads pass
- * and writes throw (there is no tenant to write with).
+ * inside a transaction), never through Repository, a QueryBuilder or
+ * any manager method on a tenant entity (getRepository, update, delete, increment, decrement, softDelete, restore, upsert, createQueryBuilder…).
+ * Inside runCrossTenant loads pass and writes throw (there is no tenant to write with).
  */
 @EventSubscriber()
 export class TenantSubscriber implements EntitySubscriberInterface<{{sc:baseTenantEntity}}> {

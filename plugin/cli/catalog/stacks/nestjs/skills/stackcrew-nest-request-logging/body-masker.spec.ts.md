@@ -85,7 +85,28 @@ describe('maskBody (core-logging masker contract)', () => {
     expect(mask(nest(50000))).toBe('<application/json 100000 bytes>');
     expect(mask(`{"a":${nest(70)}}`)).toBe('<application/json 146 bytes>');
     expect(maskValue(JSON.parse(nest(65)), DEFAULTS)).toBe('<application/json 130 bytes>');
-    expect(serializeMasked(JSON.parse(nest(50000)), DEFAULTS, 'application/problem+json')).toBe('<application/problem+json 100000 bytes>');
+    // an already-parsed value is sized only up to maxBodyBytes: N+ means "larger than that"
+    expect(serializeMasked(JSON.parse(nest(50000)), DEFAULTS, 'application/problem+json')).toBe('<application/problem+json 16384+ bytes>');
+  });
+
+  it('returns for a cyclic value and for a toJSON that returns itself', () => {
+    const a: Record<string, unknown> = { name: 'x' };
+    a.self = a;
+    expect(serializeMasked(a, DEFAULTS)).toBe('<application/json 16384+ bytes>');
+    expect(maskValue(a, DEFAULTS)).toBe('<application/json 16384+ bytes>');
+    const self = { a: 1, password: 'p', toJSON(): unknown { return this; } };
+    expect(serializeMasked(self, DEFAULTS)).toBe('{"a":1,"password":"***"}');
+  });
+
+  it('masks a toJSON result in place: a DTO whose JSON is 64 deep is masked like the plain value', () => {
+    let dto: unknown = { toJSON: () => ({ password: 'p' }) };
+    let plain: unknown = { password: 'p' };
+    for (let i = 1; i < 64; i++) {
+      dto = [dto];
+      plain = [plain];
+    }
+    expect(serializeMasked(dto, DEFAULTS)).toBe(serializeMasked(plain, DEFAULTS));
+    expect(serializeMasked(plain, DEFAULTS)).toContain('{"password":"***"}');
   });
 
   it('never throws, even for a value whose getter throws', () => {

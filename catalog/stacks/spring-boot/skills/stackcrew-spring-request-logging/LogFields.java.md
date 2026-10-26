@@ -52,5 +52,18 @@ public final class LogFields {
     public static String safeIdOrNull(String incoming) {
         return incoming != null && SAFE_ID.matcher(incoming).matches() ? incoming : null;
     }
+
+    /**
+     * The last resort when the logging backend itself throws, even for the fallback line: a warning on the JDK
+     * platform logger. It never throws, also when that logger is bridged to the same failing backend (Spring Boot
+     * routes java.util.logging to SLF4J), so a request or an outbound call keeps its own outcome.
+     */
+    public static void warnLineNotWritten(String event, RuntimeException failure) {
+        try {
+            System.getLogger(LogFields.class.getName()).log(System.Logger.Level.WARNING, event + " line not written", failure);
+        } catch (RuntimeException bridgedToTheSameBackend) {
+            // nothing is left to write to; the request or the call is unaffected
+        }
+    }
 }
 ```

@@ -112,7 +112,13 @@ public class HttpLoggingFilter extends OncePerRequestFilter {
             }
             line.log();
         } catch (RuntimeException logFailure) {
-            minimalLine(request, response, failure).log();
+            try {
+                minimalLine(request, response, failure).log();
+            } catch (RuntimeException minimalFailure) {
+                // the logging backend itself fails: never replace the request's own outcome
+                logFailure.addSuppressed(minimalFailure);
+                LogFields.warnLineNotWritten(LogFields.HTTP_IN, logFailure);
+            }
         }
     }
 

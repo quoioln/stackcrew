@@ -50,20 +50,30 @@ export function elapsedMs(startedNs: bigint): number {
 
 /**
  * Logging never throws (core-logging). When build() fails, fallback() is written instead: the same line with size-only
- * bodies, built from plain values. A logger that throws becomes a process warning. A request, an outbound call or a
- * message never fails, or changes its result, because of its log line.
+ * bodies, built from plain values. When the fallback or the logger fails too, a process warning is emitted. A request,
+ * an outbound call or a message never fails, or changes its result, because of its log line. `level` defaults to the
+ * level of the line's status (a message_in line has none: pass 'log').
  */
-export function writeCallLine(logger: LineLogger, build: () => CallLogLine, fallback: () => CallLogLine): void {
+export function writeCallLine(logger: LineLogger, build: () => CallLogLine, fallback: () => CallLogLine, level?: LogLevel): void {
   let line: CallLogLine;
   try {
     line = build();
   } catch {
-    line = fallback();
+    try {
+      line = fallback();
+    } catch (failure: unknown) {
+      process.emitWarning(`log line not built (${errorName(failure)})`);
+      return;
+    }
   }
   try {
-    logger[levelFor(line.status)](line, line.event);
+    logger[level ?? levelFor(line.status)](line, line.event);
   } catch (failure: unknown) {
-    process.emitWarning(`${line.event} line not written (${failure instanceof Error ? failure.name : typeof failure})`);
+    process.emitWarning(`${line.event} line not written (${errorName(failure)})`);
   }
+}
+
+function errorName(failure: unknown): string {
+  return failure instanceof Error ? failure.name : typeof failure;
 }
 ```

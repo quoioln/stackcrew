@@ -75,12 +75,18 @@ public class LoggingClientInterceptor implements ClientHttpRequestInterceptor {
         try {
             line.get().log();
         } catch (RuntimeException logFailure) {
-            LoggingEventBuilder minimal = log.atLevel(level).setMessage(LogFields.HTTP_OUT)
-                    .addKeyValue(LogFields.EVENT, LogFields.HTTP_OUT)
-                    .addKeyValue(LogFields.TARGET, target)
-                    .addKeyValue(LogFields.METHOD, request.getMethod().name())
-                    .addKeyValue(LogFields.DURATION_MS, TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - start));
-            (status == null ? minimal : minimal.addKeyValue(LogFields.STATUS, status)).log();
+            try {
+                LoggingEventBuilder minimal = log.atLevel(level).setMessage(LogFields.HTTP_OUT)
+                        .addKeyValue(LogFields.EVENT, LogFields.HTTP_OUT)
+                        .addKeyValue(LogFields.TARGET, target)
+                        .addKeyValue(LogFields.METHOD, request.getMethod().name())
+                        .addKeyValue(LogFields.DURATION_MS, TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - start));
+                (status == null ? minimal : minimal.addKeyValue(LogFields.STATUS, status)).log();
+            } catch (RuntimeException minimalFailure) {
+                // the logging backend itself fails: never replace the call's own result or exception
+                logFailure.addSuppressed(minimalFailure);
+                LogFields.warnLineNotWritten(LogFields.HTTP_OUT, logFailure);
+            }
         }
     }
 

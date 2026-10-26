@@ -120,6 +120,15 @@ describe('CustomerProfile persistence (Postgres)', () => {
     expect(rowA).toMatchObject({ status: CustomerProfileStatus.PENDING, updatedBy: 'alice' });
     const rowB = await as('bob', TENANT_B, () => profiles.findOneBy({ reference: 'ref-b' }));
     expect(rowB).toMatchObject({ status: CustomerProfileStatus.VERIFIED, updatedBy: 'bob' });
+
+    // withManager writes inside the transaction: a rollback undoes them
+    const attempt = as('bob', TENANT_B, () => dataSource.transaction(async (manager) => {
+      expect(await profiles.withManager(manager).update({ reference: 'ref-b' }, { status: CustomerProfileStatus.REJECTED })).toBe(1);
+      throw new Error('roll back');
+    }));
+    await expect(attempt).rejects.toThrow('roll back');
+    const afterRollback = await as('bob', TENANT_B, () => profiles.findOneBy({ reference: 'ref-b' }));
+    expect(afterRollback).toMatchObject({ status: CustomerProfileStatus.VERIFIED, updatedBy: 'bob' });
   });
 
   it('throws MissingTenantError without a tenant, and never returns unfiltered rows', async () => {
