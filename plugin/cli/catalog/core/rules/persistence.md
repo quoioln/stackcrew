@@ -9,15 +9,13 @@ Applies to every stack that persists data. The stack rules and skills hold the m
 
 ## Essentials
 
-- Every persisted entity extends `{{sc:baseEntity}}`. A tenant-scoped entity extends `{{sc:baseTenantEntity}}`, which extends `{{sc:baseEntity}}` and adds the column `{{sc:tenantColumn}}`.
-- Search {{sc:sharedLibraries}} and the codebase for an existing base class first. Create the base classes once, in the shared location, only when none exists. The base holds the four audit fields and no `id`: the id strategy is the project's choice.
-- The framework fills `createdAt`, `createdBy`, `updatedAt`, `updatedBy`. Code never sets them by hand, and request DTOs never carry them. Times are UTC (`timestamptz`).
+- Every persisted entity extends `{{sc:baseEntity}}`; a tenant-scoped entity extends `{{sc:baseTenantEntity}}`, which extends `{{sc:baseEntity}}` and adds the column `{{sc:tenantColumn}}`. The framework fills `createdAt`, `createdBy`, `updatedAt`, `updatedBy`: code and request DTOs never set them. Times are UTC (`timestamptz`).
+- The tenant comes from the JWT claim `{{sc:tenantClaim}}`, never from a request parameter or body. The framework mechanism (a tenant-scoped repository or the ORM's tenant filter) applies the tenant condition to every read, count, update, delete and soft delete, and assigns the tenant on every write. Never hand-write a `where` on `{{sc:tenantColumn}}`, and never use a raw repository or raw SQL on a tenant entity.
+- A tenant entity touched with no tenant in context fails closed: throw where the framework allows it, otherwise return no rows. Never return or modify unfiltered rows.
 - `createdBy` and `updatedBy` hold the JWT `sub`. With no user (job, consumer, migration) they hold `{{sc:systemUser}}`.
-- The tenant comes from the JWT claim `{{sc:tenantClaim}}`, never from a request parameter or body.
-- Every query on a tenant entity is filtered by the framework mechanism (a tenant-scoped repository or the ORM's tenant filter), never by a hand-written `where` on `{{sc:tenantColumn}}`. Never use a raw repository or raw SQL on a tenant entity.
-- A tenant entity touched with no tenant in context fails closed: throw where the framework allows it, otherwise return no rows. Never return unfiltered rows.
-- Cross-tenant access goes through one explicit call, `runCrossTenant(reason, work)`. It runs only for roles {{sc:crossTenantRoles}} (read from the claim `{{sc:rolesClaim}}`) or for the `{{sc:systemUser}}` identity, otherwise it throws. Every use logs who and why.
+- Cross-tenant access goes through one explicit call, `runCrossTenant(reason, work)`. Roles allowed to read across tenants: {{sc:crossTenantRoles}} (from claim `{{sc:rolesClaim}}`); the `{{sc:systemUser}}` identity is also allowed. Anyone else gets an error. Every use logs who and why.
 - Every stack's tests include an "audit fields filled" test and a "tenant A cannot read tenant B" test.
+- Shared libraries to search first for an existing base class: {{sc:sharedLibraries}}. Search the codebase too. Create the base classes once, in the shared location, only when none exists. The base holds the four audit fields and no `id`: the id strategy is the project's choice.
 
 ## Where the context comes from
 
@@ -36,5 +34,5 @@ Applies to every stack that persists data. The stack rules and skills hold the m
 ## Tenant isolation
 
 - Tenant filtering is in place before a new tenant entity ships. A test pins that tenant A cannot read tenant B, and that a missing tenant does not return rows.
-- Writes assign the current tenant automatically. A caller cannot choose another tenant's id.
+- Writes assign the current tenant automatically, and updates, deletes and soft deletes are filtered by tenant like reads. A caller cannot choose another tenant's id or modify another tenant's row. A QueryBuilder write on a tenant entity goes through the tenant repository, or adds the tenant condition explicitly.
 - `runCrossTenant` is the only way to switch the filter off. Its reason is a short, human-readable string, and it is logged with the user and tenant. Do not add a second bypass.

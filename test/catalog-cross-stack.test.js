@@ -47,11 +47,17 @@ test('persistence rule renders the project conventions', async () => {
     profile.conventions = { baseEntity: 'AuditedEntity', baseTenantEntity: 'AuditedTenantEntity', crossTenantRoles: ['ops'], sharedLibraries: ['@acme/core'] };
     const rule = buildContext(c, profile, OPTS).rules.find((r) => r.id === 'core-persistence');
     assert.ok(rule, 'rule present');
-    for (const needle of ['AuditedEntity', 'AuditedTenantEntity', '`ops`', '`@acme/core`', 'tenant_id', 'tenantId', 'system', 'roles', 'x-tenant-id', 'x-user-id', 'x-request-id', 'runCrossTenant']) {
+    for (const needle of ['AuditedEntity', 'AuditedTenantEntity', 'Roles allowed to read across tenants: `ops` (from claim `roles`)', 'Shared libraries to search first for an existing base class: `@acme/core`', 'they hold `system`', 'the `system` identity is also allowed', 'claim `tenant_id`', 'column `tenantId`', 'x-tenant-id', 'x-user-id', 'x-request-id', 'runCrossTenant', 'every read, count, update, delete and soft delete']) {
       assert.ok(rule.body.includes(needle), `missing ${needle}`);
     }
     for (const field of ['createdAt', 'createdBy', 'updatedAt', 'updatedBy']) assert.ok(rule.body.includes(field), field);
     assert.ok(!rule.body.includes('{{sc:'));
+    const dflt = buildContext(c, createProfile({ stack: 'spring-boot', tools: ['claude'], mode: 'greenfield', basePackage: 'com.acme' }, c), OPTS).rules.find((r) => r.id === 'core-persistence');
+    assert.ok(dflt.body.includes('Roles allowed to read across tenants: `super_admin` (from claim `roles`)'));
+    assert.ok(dflt.body.includes('Shared libraries to search first for an existing base class: none declared (set conventions.sharedLibraries in stackcrew.json).'));
+    // the first three Essentials survive the AGENTS.md degrade
+    const top = rule.essentials.split(/\r?\n/).filter((l) => /^- /.test(l)).slice(0, 3).join(' ');
+    assert.ok(top.includes('AuditedEntity') && top.includes('every read, count, update, delete and soft delete') && top.includes('fails closed'));
     assert.ok(/audit fields filled/i.test(rule.body) && /tenant A cannot read tenant B/i.test(rule.body));
   });
 });
@@ -60,9 +66,18 @@ test('core-logging logs masked bodies and names both config keys', async () => {
   await withRealCatalog(async (c) => {
     const log = c.coreRules.find((r) => r.id === 'core-logging');
     assert.ok(!/do not log full bodies/i.test(log.body), 'old no-body rule is gone');
-    for (const needle of ['LOG_MASK_FIELDS', 'app.logging.mask-fields', 'LOG_BODIES', 'app.logging.log-bodies', 'LOG_MAX_BODY_BYTES', 'app.logging.max-body-bytes', 'http_in', 'http_out', 'message_in', 'durationMs', '<base64 N bytes>', '16 KB', 'content-type', 'user-agent']) {
+    for (const needle of ['LOG_MASK_FIELDS', 'app.logging.mask-fields', 'LOG_BODIES', 'app.logging.log-bodies', 'LOG_MAX_BODY_BYTES', 'app.logging.max-body-bytes', 'http_in', 'http_out', 'message_in', 'durationMs', '<base64 N bytes>', '16 KB', 'content-type', 'user-agent', '"***"', 'unset or empty', '<binary CT N bytes>', 'There is no substring matching', 'in `reqBody`']) {
       assert.ok(log.body.includes(needle), `missing ${needle}`);
     }
+    const SECRET = ['password', 'passwd', 'secret', 'token', 'accessToken', 'refreshToken', 'idToken', 'apiKey', 'clientSecret', 'privateKey', 'authorization', 'cookie', 'setCookie', 'otp', 'pin', 'cvv', 'cvc'];
+    const PII = ['email', 'phone', 'phoneNumber', 'mobile', 'fullName', 'dob', 'dateOfBirth', 'address', 'nationalId', 'idNumber', 'cccd', 'cmnd', 'passport', 'passportNumber', 'cardNumber', 'pan', 'accountNumber'];
+    const secretLine = log.body.split('the secret list is always masked')[1].split('. The PII list')[0];
+    for (const f of SECRET) assert.ok(secretLine.includes(f), `secret ${f}`);
+    const piiLine = log.body.split('replaces the default list:')[1].split('. When the setting')[0];
+    for (const f of PII) assert.ok(piiLine.includes(f), `pii ${f}`);
+    assert.ok(!/never the body/i.test(log.body) && !/partially/.test(log.body.replace('never partially mask', '')));
+    const top3 = log.essentials.split(String.fromCharCode(10)).filter((l) => l.startsWith('- ')).slice(0, 3).join(' ');
+    assert.ok(top3.includes('shared masker') && top3.includes('always masked'), 'masked-body contract is in the first 3 Essentials');
     assert.ok(/release gate/i.test(log.body), 'release gate kept');
     assert.ok(bullets(log.essentials) <= 15);
     const obs = c.addons.get('observability').rules.body;
@@ -77,7 +92,8 @@ test('typeorm add-on is detected from package.json for typescript only', async (
     assert.deepEqual(a.languages, ['typescript']);
     assert.deepEqual(a.detect, { files: [], contains: [], excludeContains: [], packageDeps: ['typeorm'] });
     assert.equal(a.rules.id, 'addon-typeorm');
-    assert.ok(/AuditSubscriber/.test(a.rules.body) && /TenantScopedRepository/.test(a.rules.body) && /synchronize: false/.test(a.rules.body));
+    const b = a.rules.body;
+    for (const n of ['AuditSubscriber', 'TenantScopedRepository', 'synchronize: false', '@EventSubscriber', '`upsert`', '`softDelete`', '.callListeners(false)', 'every read, count, update, delete and soft delete']) assert.ok(b.includes(n), n);
     const nest = { ...c.stacks.get('spring-boot'), id: 'nest', language: 'typescript', detect: { files: [], contains: [], excludeContains: [], packageDeps: ['@nestjs/core'] } };
     const cat = { ...c, stacks: new Map([['nest', nest]]) };
     const dir = await mkdtemp(path.join(os.tmpdir(), 'sc-typeorm-'));

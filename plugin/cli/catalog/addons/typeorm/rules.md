@@ -11,7 +11,7 @@ Applies when the profile lists the `typeorm` add-on (TypeORM 0.3 with NestJS or 
 - Entities extend the project base entity (`{{sc:baseEntity}}`, or `{{sc:baseTenantEntity}}` for tenant tables). Never extend TypeORM's own `BaseEntity` (Active Record), and never import it.
 - Audit fields are filled by one `AuditSubscriber`, which reads the user from the request context (`{{sc:systemUser}}` when there is none). Code never sets `createdBy` or `updatedBy`.
 - Tenant entities are read and written only through `TenantScopedRepository`. Never inject a raw `Repository`, `EntityManager` or QueryBuilder for a tenant entity.
-- Write with `save`, `insert`, `update` or a QueryBuilder `insert()`/`update()`: TypeORM 0.3.31 calls the subscriber on each. `upsert` (its update branch), `softDelete`, `restore` and raw SQL do not set the audit fields: avoid them on audited entities, or set the fields in the same statement and prove it with a test.
+- Write with `save`, `insert`, `update` or a QueryBuilder `insert()`/`update()`: TypeORM 0.3.31 calls the subscriber on each. `upsert` (its update branch), `softDelete`, `restore` and raw SQL do not set the audit fields: avoid them on audited entities, or set the fields in the same statement and prove it with a test. `.callListeners(false)` on a QueryBuilder skips subscribers: never use it on audited entities.
 - Every write path an entity uses has an "audit fields filled" test. This pins the behavior across TypeORM upgrades.
 - `synchronize: false` everywhere except local development. Schema changes go through migrations only; never edit an applied migration.
 - Transactions use `DataSource.transaction(...)` or a `QueryRunner` (connect, start, commit or rollback, release in `finally`). Do all work in the transaction through its manager.
@@ -30,7 +30,8 @@ Applies when the profile lists the `typeorm` add-on (TypeORM 0.3 with NestJS or 
 
 ## Tenant repository
 
-- `TenantScopedRepository<T extends {{sc:baseTenantEntity}}>` adds the `{{sc:tenantColumn}}` condition to every read and count, and assigns the tenant on every write, taking the tenant from the request context.
+- `TenantScopedRepository<T extends {{sc:baseTenantEntity}}>` adds the `{{sc:tenantColumn}}` condition to every read, count, update, delete and soft delete, and assigns the tenant on every write, taking the tenant from the request context. Without that condition on updates and deletes, tenant A could modify tenant B's row.
+- A QueryBuilder write on a tenant entity goes through the tenant repository, or adds the tenant condition explicitly.
 - A missing tenant throws. Never fall back to an unfiltered query.
 - Cross-tenant reads use `runCrossTenant(reason, work)` and nothing else.
 

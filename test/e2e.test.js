@@ -100,7 +100,8 @@ test('init all tools renders the expected spring-boot file set', (t) => {
 test('budgets hold on the real render', (t) => {
   const dir = project(t);
   const r = initAll(dir);
-  assert.ok(!r.stdout.includes('agents-md-essentials-reduced'), r.stdout);
+  // spring-boot + kafka, camel, observability exceeds 16000 bytes at full Essentials: the R24 degrade is expected (3 bullets per rule).
+  assert.ok(r.stdout.includes('agents-md-essentials-reduced: 3 bullet(s) per rule'), r.stdout);
 
   const agents = read(dir, 'AGENTS.md');
   const begin = agents.indexOf(BEGIN);

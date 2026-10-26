@@ -187,7 +187,11 @@ test('spring-boot with all addons and all four tools stays inside the AGENTS.md 
     const { ops } = renderProject(ctx); // throws StackcrewError BUDGET when over a budget
     const { op: agents, warnings } = renderAgentsMdBlock(ctx);
     // core-persistence made the block exceed 16000 bytes at the full Essentials count: the R24 degrade warning is expected and allowed.
-    t.diagnostic(`warnings: ${warnings.join('; ') || 'none'}`);
+    const reduced = warnings.filter((w) => w.includes('agents-md-essentials-reduced'));
+    assert.equal(reduced.length, 1, 'exactly one degrade warning');
+    const level = Number(/: (\d+) bullet/.exec(reduced[0])[1]);
+    assert.equal(level, 3, `degrade level for spring-boot + 4 add-ons (got ${level}: ${reduced[0]})`);
+    assert.ok(level >= 1);
     const size = Buffer.byteLength(agents.content);
     assert.ok(size <= 16000, `AGENTS block ${size}`);
     t.diagnostic(`AGENTS block with all four addons: ${size} bytes`);

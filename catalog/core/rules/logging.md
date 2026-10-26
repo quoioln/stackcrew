@@ -6,14 +6,14 @@ title: Logging and observability
 
 ## Essentials
 
+- Bodies are logged only through the one shared masker, never by hand in a service: secret keys are always masked, PII keys come from config (`LOG_MASK_FIELDS` or `app.logging.mask-fields`), keys match by whole word runs with no substring matching, bodies are capped at 16 KB, base64 and binary become size placeholders, and non-JSON bodies become a placeholder.
+- Redact secrets, tokens, `Authorization` headers, cookies and PII in the logging layer, deeply and by default. Log only the headers `content-type`, `content-length` and `user-agent`.
+- Log one line per HTTP call, inbound and outbound, from one place each (never from services): method, templated route or sanitized URL, status, `durationMs`, ids, and the request and response bodies after the shared masker.
 - Emit one structured event per line: a stable message plus key/value fields, never data interpolated into the message.
 - Use text format locally and JSON in staging and prod, switched by config or env, never by editing call sites.
 - Use levels correctly: ERROR actionable failure, WARN recoverable or degraded, INFO lifecycle and business events, DEBUG diagnostics (off in prod), TRACE verbose.
 - Put requestId, traceId, spanId, correlationId, userId and username (when authenticated) on every line, set at request entry and cleared at exit.
 - Forward W3C Trace Context (`traceparent`, `tracestate`) and the correlationId on every outbound HTTP and message call.
-- Redact secrets, tokens, `Authorization` headers, cookies and PII in the logging layer, deeply and by default. Log only the headers `content-type`, `content-length` and `user-agent`.
-- Log one line per HTTP call, inbound and outbound, from one place each (never from services): method, templated route or sanitized URL, status, `durationMs`, ids, and the request and response bodies after the shared masker.
-- Mask bodies in the logging layer only: secret keys always, PII keys from config (`LOG_MASK_FIELDS` or `app.logging.mask-fields`), word-run key matching, 16 KB cap, base64 and binary as size placeholders, non-JSON bodies as a placeholder.
 - Never enable full SQL or bound-parameter logging in prod; rely on slow-query logs and metrics.
 - Write logs to stdout and let the platform ship them.
 - Treat "no PII or secret in logs" as a release gate.
@@ -31,7 +31,7 @@ title: Logging and observability
 ## Deep redaction
 
 - Deny by default: passwords, tokens, API keys, `Authorization`, cookies, and PII (email, phone, national id, full card PAN, CVV, health and financial data).
-- Redact nested objects and arrays recursively, matching key-name patterns and typed annotations. Mask fully (`***`) or partially (card last 4).
+- Redact nested objects and arrays recursively, matching key names by word run (see the body masker) and typed annotations. Replace every masked value with `"***"`; never partially mask.
 - Redact stack traces too. Bodies are logged only through the shared masker (see Request and response logging), never by hand.
 - Strip or escape CR/LF in user-supplied values to prevent log injection.
 - Align redaction with the project's data classification (GDPR, PCI).
@@ -44,7 +44,7 @@ One JSON line per call. Fields: `event` (`http_in`, `http_out` or `message_in`),
 - Use the templated route (not the raw path with ids) to avoid cardinality blow-up.
 - Log completion at INFO (2xx/3xx), WARN (4xx), ERROR (5xx); on failure include exception type and redacted message. The error path logs through the same writer as the success path.
 - Skip health checks, metrics and streaming (SSE) responses. Emit a latency metric and error counter alongside the log.
-- Message consumers log `message_in` with the payload through the same masker.
+- Message consumers log a `message_in` line with the payload in `reqBody`, through the same masker.
 - Log only the headers `content-type`, `content-length` and `user-agent`. `Authorization` and cookies never appear.
 
 ### Body masker
@@ -56,7 +56,7 @@ One masker, shared by inbound, outbound and consumers. Behavior (the same in eve
 - **Masking:** replace the value of a masked key, of any type, with `"***"`. Recurse into objects and arrays.
 - **Base64:** a string longer than 1024 characters that is base64 (optionally a `data:` URI) becomes `<base64 N bytes>` with N the decoded size.
 - **Size:** serialize compactly. Above 16 KB (`LOG_MAX_BODY_BYTES` or `app.logging.max-body-bytes`, default 16384) keep the first bytes, cut at a character boundary, and append `...[truncated T bytes]` with T the full size.
-- **Content types:** parse and mask `application/json` (and `*+json`) and `application/x-www-form-urlencoded`. `multipart/*`, `application/octet-stream`, `image/*` and `application/pdf` log `<binary CT N bytes>`. Everything else (XML, SOAP, `text/*`, a missing content type, JSON that does not parse) logs `<CT N bytes>` and never the body.
+- **Content types:** parse and mask `application/json` (and `*+json`) and `application/x-www-form-urlencoded`. `multipart/*`, `application/octet-stream`, `image/*` and `application/pdf` log the placeholder `<binary CT N bytes>`, where CT is the content type and N the size in bytes. Everything else (XML, SOAP, `text/*`, a missing content type, JSON that does not parse) logs only the placeholder `<CT N bytes>` (content type, or `unknown` when missing, and size in bytes); the content is not logged.
 - **Switch:** `LOG_BODIES` or `app.logging.log-bodies` (default on). Off drops `reqBody` and `resBody` and keeps the one-line log.
 - Strip or escape CR and LF in logged values.
 
