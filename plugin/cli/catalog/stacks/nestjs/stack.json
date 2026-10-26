@@ -1,0 +1,22 @@
+{
+  "id": "nestjs",
+  "name": "NestJS",
+  "category": "backend",
+  "language": "typescript",
+  "minVersion": "10.0",
+  "globs": [
+    "**/*.ts"
+  ],
+  "aliases": [
+    "nest"
+  ],
+  "priority": 20,
+  "detect": {
+    "files": [],
+    "contains": [],
+    "excludeContains": [],
+    "packageDeps": [
+      "@nestjs/core"
+    ]
+  }
+}
