@@ -36,6 +36,15 @@ test('conventionVars serializes arrays and empty lists', () => {
   assert.deepEqual(Object.keys(v), CONVENTION_VAR_NAMES);
 });
 
+test('crossTenantRolesCsv is the plain comma-joined role list, empty for no roles', () => {
+  assert.ok(CONVENTION_VAR_NAMES.includes('crossTenantRolesCsv'));
+  assert.ok(!Object.keys(CONVENTION_DEFAULTS).includes('crossTenantRolesCsv'), 'a variable, not a convention key');
+  assert.equal(conventionVars(resolveConventions({})).crossTenantRolesCsv, 'super_admin');
+  assert.equal(conventionVars(resolveConventions({ conventions: { crossTenantRoles: ['ops', 'report_admin'] } })).crossTenantRolesCsv, 'ops,report_admin');
+  assert.equal(conventionVars(resolveConventions({ conventions: { crossTenantRoles: [] } })).crossTenantRolesCsv, '');
+  assert.ok(validateConventions({ crossTenantRolesCsv: 'x' }).some((m) => m.includes('unknown key "crossTenantRolesCsv"')), 'not settable in stackcrew.json');
+});
+
 test('validateConventions rejects unknown key, bad identifier, unsafe path', () => {
   const e = validateConventions({ baseEnity: 'X', baseEntity: 'Base Entity', sharedComponents: '../ui' });
   assert.ok(e.some((m) => m.includes('unknown key "baseEnity"')));

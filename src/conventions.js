@@ -15,8 +15,11 @@ export const CONVENTION_DEFAULTS = Object.freeze({
 
 export const CONVENTION_KEYS = Object.keys(CONVENTION_DEFAULTS);
 
-/** Convention keys exposed to catalog content as `{{sc:name}}` (typeFreeFiles only feeds guard globs). */
-export const CONVENTION_VAR_NAMES = CONVENTION_KEYS.filter((k) => k !== 'typeFreeFiles');
+/**
+ * Variables exposed to catalog content as `{{sc:name}}`: the convention keys (typeFreeFiles only feeds guard globs),
+ * plus crossTenantRolesCsv, a derived form of crossTenantRoles for config files (not a key of stackcrew.json).
+ */
+export const CONVENTION_VAR_NAMES = [...CONVENTION_KEYS.filter((k) => k !== 'typeFreeFiles'), 'crossTenantRolesCsv'];
 
 const IDENT_KEYS = ['baseEntity', 'baseTenantEntity', 'tenantColumn'];
 const TOKEN_KEYS = ['tenantClaim', 'rolesClaim', 'systemUser'];
@@ -69,6 +72,8 @@ const ticks = (list) => list.map((x) => `\`${x}\``).join(', ');
 
 /** Display form of a convention value (as used by the template variables). */
 export function conventionDisplay(c, key) {
+  // Config-file form: plain roles joined with "," (no spaces, no backticks); no roles gives "" (grants nothing).
+  if (key === 'crossTenantRolesCsv') return c.crossTenantRoles.join(',');
   if (key === 'crossTenantRoles') return c.crossTenantRoles.length === 0 ? 'none (cross-tenant access is disabled)' : ticks(c.crossTenantRoles);
   if (key === 'sharedLibraries') return c.sharedLibraries.length === 0 ? 'none declared (set conventions.sharedLibraries in stackcrew.json)' : ticks(c.sharedLibraries);
   if (key === 'typeFreeFiles') return c.typeFreeFiles.length === 0 ? '_none_' : ticks(c.typeFreeFiles);

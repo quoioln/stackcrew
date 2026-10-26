@@ -456,8 +456,12 @@ test('only the system job entry grants the system identity, and roles come from 
     assert.ok(s.body.includes('TenantContext.runAsSystem(tenantId, ...)') && !s.body.includes('runAs(tenantId, TenantContext.SYSTEM_USER'));
     const props = s.file('TenancyProperties.java');
     assert.ok(props.includes('crossTenantRoles == null ? List.of()') && props.includes('{{sc:crossTenantRoles}}'), 'no code default; yml is the source');
-    assert.ok(s.body.includes('cross-tenant-roles: []       # write the roles from conventions.crossTenantRoles here: {{sc:crossTenantRoles}}'));
-    assert.ok(s.body.includes('`cross-tenant-roles: [super_admin]`') && !s.body.includes('- super_admin'), 'default stated in prose, not hardcoded in the yml');
+    assert.ok(s.body.includes('cross-tenant-roles: "{{sc:crossTenantRolesCsv}}"'), 'the yml renders the convention roles');
+    assert.ok(!s.body.includes('- super_admin') && !s.body.includes('[super_admin]'), 'no role hardcoded in the skill');
+    const yml = (conventions) => renderedSkills(c, conventions).find((k) => k.name === 'stackcrew-spring-jpa-entity').body;
+    assert.ok(yml().includes('cross-tenant-roles: "super_admin"'), 'default conventions render super_admin');
+    assert.ok(yml({ crossTenantRoles: ['ops', 'report_admin'] }).includes('cross-tenant-roles: "ops,report_admin"'));
+    assert.ok(yml({ crossTenantRoles: [] }).includes('cross-tenant-roles: ""'), 'an empty list renders an empty string, which grants no role');
     const t = c.stacks.get('spring-boot').testing.body;
     for (const needle of ['aTokenWhoseSubIsTheSystemUserIsNotTheSystemIdentity', 'runAsWithTheSystemUserIdIsNotTheSystemIdentity',
       'TenantContext.runAsSystem(null, () -> transactions.execute(']) {

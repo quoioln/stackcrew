@@ -26,7 +26,7 @@ Search the codebase and the shared libraries ({{sc:sharedLibraries}}) for `{{sc:
 
 ## 2. Configuration
 
-The roles allowed to read across tenants are `conventions.crossTenantRoles` in `stackcrew.json`: {{sc:crossTenantRoles}}. Write them into `app.tenancy.cross-tenant-roles`; with stackcrew's default conventions that is `cross-tenant-roles: [super_admin]`. This yml list is the single source: `TenancyProperties` has no default in code, and an empty or missing list grants no role, so then only `runAsSystem` jobs can read across tenants.
+The roles allowed to read across tenants are `conventions.crossTenantRoles` in `stackcrew.json`: {{sc:crossTenantRoles}}. The yml below already carries them as one comma-separated string, which Spring binds to the list. This yml value is the single source: `TenancyProperties` has no default in code, and an empty string or a missing key grants no role, so then only `runAsSystem` jobs can read across tenants.
 
 ```yaml
 spring:
@@ -36,7 +36,7 @@ spring:
       ddl-auto: validate         # the migration owns the schema
 app:
   tenancy:
-    cross-tenant-roles: []       # write the roles from conventions.crossTenantRoles here: {{sc:crossTenantRoles}}
+    cross-tenant-roles: "{{sc:crossTenantRolesCsv}}"   # conventions.crossTenantRoles, comma-separated; "" grants no role
 ```
 
 ## 3. The entity
