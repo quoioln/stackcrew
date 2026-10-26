@@ -193,15 +193,17 @@ test('nestjs with typeorm and all four tools renders within every budget', async
 });
 
 const NEST_SKILLS = [LOGGING, ENTITY];
-const DEFAULT_LOCATION = /^\/\/ Default location: (\S+)/;
+const GOES_TO = /^Goes to `((?:src|test)\/[^`]+\.ts)`\.\n\n```ts\n/;
+/** The code of a sibling `<rel>.md`: its one fenced block. */
+const codeOfSibling = (md) => /```ts\n([\s\S]*?)```\n$/.exec(md ?? '')?.[1] ?? '';
 const nestSkill = (c, name) => {
   const k = c.stacks.get('nestjs').skills.find((s) => s.name === name);
-  return { body: k.body, files: k.files, file: (rel) => k.files.find((f) => f.relPath === rel)?.content ?? '' };
+  return { body: k.body, files: k.files, file: (rel) => codeOfSibling(k.files.find((f) => f.relPath === `${rel}.md`)?.content) };
 };
-const renderedFile = (c, skill, rel, conventions) =>
-  nestCtx(c, { addons: ['typeorm'], conventions }).skills.find((k) => k.name === skill).files.find((f) => f.relPath === rel).content;
+const renderedFile = (c, skill, rel, conventions) => codeOfSibling(
+  nestCtx(c, { addons: ['typeorm'], conventions }).skills.find((k) => k.name === skill).files.find((f) => f.relPath === `${rel}.md`).content);
 
-test('nest skills are task skills under 350 lines; siblings are .ts files with a default location and no test-runner name', async () => {
+test('nest skills are task skills under 350 lines; siblings are <file>.ts.md with a "Goes to" line and one code block', async () => {
   await withRealCatalog(async (c) => {
     for (const name of NEST_SKILLS) {
       const k = c.stacks.get('nestjs').skills.find((s) => s.name === name);
@@ -210,9 +212,12 @@ test('nest skills are task skills under 350 lines; siblings are .ts files with a
       assert.ok(!/always|proactively/i.test(k.description));
       assert.ok(k.files.length > 0, `${name} has sibling files`);
       for (const f of k.files) {
-        assert.ok(f.relPath.endsWith('.ts') && !f.relPath.includes('/'), `${name}/${f.relPath}`);
+        assert.ok(f.relPath.endsWith('.ts.md') && !f.relPath.includes('/'), `${name}/${f.relPath}`);
         assert.ok(!/\.test\.|[-_]test\.|^test[.-]/.test(f.relPath), `${name}/${f.relPath} matches a node --test pattern`);
-        assert.match(f.content, DEFAULT_LOCATION, `${name}/${f.relPath} names its default location`);
+        const goesTo = GOES_TO.exec(f.content);
+        assert.ok(goesTo, `${name}/${f.relPath} starts with "Goes to" and the code block`);
+        assert.equal(f.content.split('```').length, 3, `${name}/${f.relPath}: exactly one fenced block`);
+        assert.ok(codeOfSibling(f.content).startsWith(`// Default location: ${goesTo[1]}`), `${name}/${f.relPath}: the code names the same location`);
         assert.ok(!f.content.includes('\r'), `${name}/${f.relPath} is LF`);
       }
     }
@@ -226,7 +231,7 @@ test('every nest sibling file and code block passes the TypeScript and NestJS gu
     const skills = ctx.skills.filter((s) => NEST_SKILLS.includes(s.name));
     const sources = [];
     for (const k of skills) {
-      for (const f of k.files) sources.push({ name: `${k.name}/${f.relPath}`, path: DEFAULT_LOCATION.exec(f.content)[1], text: f.content });
+      for (const f of k.files) sources.push({ name: `${k.name}/${f.relPath}`, path: GOES_TO.exec(f.content)[1], text: codeOfSibling(f.content) });
     }
     const docs = [...skills.map((s) => [s.name, s.body]),
       ['stack-nestjs', ctx.rules.find((r) => r.id === 'stack-nestjs').body], ['stack-nestjs-testing', ctx.rules.find((r) => r.id === 'stack-nestjs-testing').body]];
@@ -362,10 +367,11 @@ test('nest testing rule carries the harness: rawBody, setupApp, a local issuer a
     const t = c.stacks.get('nestjs').testing.body;
     for (const needle of ['createNestApplication<NestExpressApplication>({ rawBody: true })', 'setupApp(app)', "await import('../../src/app.module')",
       'class TestIssuer', "sign('RSA-SHA256'", 'CapturingLogger', '@testcontainers/postgresql', 'supertest', 'node:http',
-      "testPathIgnorePatterns: ['/node_modules/', '/\\\\.claude/', '/\\\\.agents/']", '*.spec.ts', 'MissingTenantError', 'CROSS_TENANT_ROLES', '{{sc:systemUser}}',
-      '{{sc:tenantClaim}}']) {
+      "roots: ['<rootDir>/src', '<rootDir>/test']", '*.spec.ts', 'MissingTenantError', 'CROSS_TENANT_ROLES', '{{sc:systemUser}}',
+      '{{sc:tenantClaim}}', 'customer-profile.persistence.spec.ts.md']) {
       assert.ok(t.includes(needle), `testing.md missing ${needle}`);
     }
+    assert.ok(!t.includes('testPathIgnorePatterns'), 'skill folders hold no runnable spec any more');
     assert.ok(/ask the user/i.test(t));
   });
 });

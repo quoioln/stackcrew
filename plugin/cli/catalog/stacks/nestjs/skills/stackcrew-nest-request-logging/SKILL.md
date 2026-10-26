@@ -9,20 +9,20 @@ Implements `core-logging` ("Request and response logging", "Body masker") and th
 
 ## 1. Find the shared pieces before writing any
 
-Search the codebase and the shared libraries ({{sc:sharedLibraries}}) for `maskBody`, `AsyncLocalStorage`, `runWithRequestContext`, an `@Catch()` filter and `axiosRef.interceptors`. Extend what exists; replace a logger that writes bodies without masking. Create the missing pieces once, from the files next to this skill. The first line of each file names its default location:
+Search the codebase and the shared libraries ({{sc:sharedLibraries}}) for `maskBody`, `AsyncLocalStorage`, `runWithRequestContext`, an `@Catch()` filter and `axiosRef.interceptors`. Extend what exists; replace a logger that writes bodies without masking. Create the missing pieces once, from the files next to this skill. Each `<file>.md` holds one source file: its first line says where the file goes, and the code block is the file's content.
 
 | File | What it does |
 |---|---|
-| `env.ts` | `LOG_MASK_FIELDS`, `LOG_MAX_BODY_BYTES`, `LOG_BODIES`, `LOG_LEVEL`, `CROSS_TENANT_ROLES`, the JWKS settings; `validateEnv` for `ConfigModule`, lazy `loggingEnv()` and `tenancyEnv()` for code outside the injector. |
-| `body-masker.ts` | The masker: `maskBody`, `maskValue`, `serializeMasked`, `loadMaskOptions`, `loadLogBodies`, `bodyPlaceholder`. |
-| `request-context.ts` | `RequestContext`, `runWithRequestContext`, `runAsSystem`, `runCrossTenant`, `requireTenantId`, `currentActor`, `contextFromMessageHeaders`, the two errors. |
-| `request-context.interceptor.ts` | Global interceptor: the handler runs inside the request's context. |
-| `log-fields.ts` | Event and field names, `levelFor(status)`. |
-| `http-logging.middleware.ts`, `route-template.guard.ts` | One `http_in` line per request, written when the response finishes; the first global guard records the route template for it. |
-| `problem-details.ts`, `all-exceptions.filter.ts` | RFC 7807 responses with constant details; `ProblemError` for domain errors. |
-| `outbound-http-logger.ts` | `OutboundHttpLogger`: one `http_out` line per call on a module's `HttpService`. |
-| `logging.setup.ts`, `common.module.ts` | `pinoHttpOptions`, `setupApp(app)`, and the module that registers it all. |
-| `body-masker.spec.ts`, `request-context.spec.ts`, `env.spec.ts` | The masker contract, the identity rules and the env parsing (section 9). |
+| `env.ts.md` | `LOG_MASK_FIELDS`, `LOG_MAX_BODY_BYTES`, `LOG_BODIES`, `LOG_LEVEL`, `CROSS_TENANT_ROLES`, the JWKS settings; `validateEnv` for `ConfigModule`, lazy `loggingEnv()` and `tenancyEnv()` for code outside the injector. |
+| `body-masker.ts.md` | The masker: `maskBody`, `maskValue`, `serializeMasked`, `loadMaskOptions`, `loadLogBodies`, `bodyPlaceholder`. |
+| `request-context.ts.md` | `RequestContext`, `runWithRequestContext`, `runAsSystem`, `runCrossTenant`, `requireTenantId`, `currentActor`, `contextFromMessageHeaders`, the two errors. |
+| `request-context.interceptor.ts.md` | Global interceptor: the handler runs inside the request's context. |
+| `log-fields.ts.md` | Event and field names, `levelFor(status)`. |
+| `http-logging.middleware.ts.md`, `route-template.guard.ts.md` | One `http_in` line per request, written when the response finishes; the first global guard records the route template for it. |
+| `problem-details.ts.md`, `all-exceptions.filter.ts.md` | RFC 7807 responses with constant details; `ProblemError` for domain errors. |
+| `outbound-http-logger.ts.md` | `OutboundHttpLogger`: one `http_out` line per call on a module's `HttpService`. |
+| `logging.setup.ts.md`, `common.module.ts.md` | `pinoHttpOptions`, `setupApp(app)`, and the module that registers it all. |
+| `body-masker.spec.ts.md`, `request-context.spec.ts.md`, `env.spec.ts.md` | The masker contract, the identity rules and the env parsing (section 9). |
 
 `common.module.ts` imports the authentication pieces from the stack rule (`src/common/auth/`). The TypeORM base classes that read the context are in `stackcrew-nest-typeorm-entity`.
 

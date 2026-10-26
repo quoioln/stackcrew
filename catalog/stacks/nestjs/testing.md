@@ -21,7 +21,7 @@ Jest with `ts-jest` and `@nestjs/testing`; Postgres in Testcontainers for integr
 
 ## Jest configuration
 
-- Point Jest at the project's code only: `roots: ['<rootDir>/src', '<rootDir>/test']`, or `rootDir: 'src'` as the Nest CLI generates. The stackcrew skill folders (`.claude/skills/`, `.agents/skills/`) hold example `*.spec.ts` files that import paths of a real project and fail where they are. With `rootDir: '.'` and no `roots`, add `testPathIgnorePatterns: ['/node_modules/', '/\\.claude/', '/\\.agents/']`.
+- Jest runs the `*.spec.ts` files under `src/` and `test/`: `roots: ['<rootDir>/src', '<rootDir>/test']`, or `rootDir: 'src'` for unit tests and a separate e2e config, as the Nest CLI generates.
 - `ts-jest` uses the project's `tsconfig.json` (strict, `emitDecoratorMetadata`, `experimentalDecorators`).
 
 ## Unit tests
@@ -38,7 +38,7 @@ const service = module.get(CustomerProfilesService);
 
 ## Entity base, audit and tenant isolation
 
-Skill `stackcrew-nest-typeorm-entity` ships `customer-profile.persistence.spec.ts`; copy it for every tenant entity. It starts one container per file in `beforeAll`, runs the migrations, and calls the repository inside `runWithRequestContext` (a signed-in user) or `runAsSystem` (a job). Required cases:
+Skill `stackcrew-nest-typeorm-entity` ships `customer-profile.persistence.spec.ts.md`; save it as `customer-profile.persistence.spec.ts` and copy it for every tenant entity. It starts one container per file in `beforeAll`, runs the migrations, and calls the repository inside `runWithRequestContext` (a signed-in user) or `runAsSystem` (a job). Required cases:
 
 - `createdAt`, `createdBy`, `updatedAt`, `updatedBy` on insert, `update`, `save` of a loaded row and `softDelete`; `{{sc:systemUser}}` inside `runAsSystem`;
 - tenant B cannot read, count, find by id, update, delete, soft delete or save over tenant A's row, and the row is unchanged;

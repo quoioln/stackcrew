@@ -9,17 +9,17 @@ Implements `core-logging` ("Request and response logging", "Body masker"): one l
 
 ## 1. Find the shared pieces before writing any
 
-Search the codebase and the shared libraries ({{sc:sharedLibraries}}) for `BodyMasker`, `HttpLoggingFilter`, `LoggingClientInterceptor` and any filter that fills MDC. Extend what exists; replace a filter that logs bodies without masking. Create the missing pieces once, in `{{sc:basePackage}}.common.logging` by default, from the files next to this skill:
+Search the codebase and the shared libraries ({{sc:sharedLibraries}}) for `BodyMasker`, `HttpLoggingFilter`, `LoggingClientInterceptor` and any filter that fills MDC. Extend what exists; replace a filter that logs bodies without masking. Create the missing pieces once, in `{{sc:basePackage}}.common.logging` by default, from the files next to this skill. Each `<File>.java.md` holds one source file: its first line says where it goes, and the code block is the file's content.
 
 | File | What it does |
 |---|---|
-| `MaskingProperties.java` | `@ConfigurationProperties("app.logging")`: `mask-fields`, `max-body-bytes`, `log-bodies`. |
-| `BodyMasker.java` | The masker: `String mask(byte[] body, String contentType)` and `placeholder(contentType, size)`. |
-| `LogFields.java` | Field, MDC and header names (`event`, `reqBody`, `requestId`, `x-tenant-id`...). |
-| `HttpLoggingFilter.java` | `OncePerRequestFilter` with `ContentCachingRequestWrapper` and the response wrapper below: one `http_in` line, MDC `requestId`, `userId`, `tenantId`; its nested `UserMdc` filter fills the user after authentication. |
-| `TeeResponseWrapper.java` | Write-through response wrapper: every byte and header goes straight to the client; a JSON or form body is also copied, up to 2 MiB, for masking; everything else is only counted. |
-| `LoggingClientInterceptor.java` | `ClientHttpRequestInterceptor`: one `http_out` line per outbound call. |
-| `LoggingConfig.java` | The beans; keeps the filter out of the plain servlet chain. |
+| `MaskingProperties.java.md` | `@ConfigurationProperties("app.logging")`: `mask-fields`, `max-body-bytes`, `log-bodies`. |
+| `BodyMasker.java.md` | The masker: `String mask(byte[] body, String contentType)` and `placeholder(contentType, size)`. |
+| `LogFields.java.md` | Field, MDC and header names (`event`, `reqBody`, `requestId`, `x-tenant-id`...). |
+| `HttpLoggingFilter.java.md` | `OncePerRequestFilter` with `ContentCachingRequestWrapper` and the response wrapper below: one `http_in` line, MDC `requestId`, `userId`, `tenantId`; its nested `UserMdc` filter fills the user after authentication. |
+| `TeeResponseWrapper.java.md` | Write-through response wrapper: every byte and header goes straight to the client; a JSON or form body is also copied, up to 2 MiB, for masking; everything else is only counted. |
+| `LoggingClientInterceptor.java.md` | `ClientHttpRequestInterceptor`: one `http_out` line per outbound call. |
+| `LoggingConfig.java.md` | The beans; keeps the filter out of the plain servlet chain. |
 
 The filter reads `userId` (JWT `sub`) and `tenantId` (claim `{{sc:tenantClaim}}`) from the `Jwt` in Spring Security's context, so it needs no JPA. Message consumers also use `TenantContext` from `stackcrew-spring-jpa-entity` (section 6).
 

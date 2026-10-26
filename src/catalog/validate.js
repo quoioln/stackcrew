@@ -1,4 +1,5 @@
 import { CONVENTION_VAR_NAMES } from '../conventions.js';
+import { matchesAny } from '../util/glob.js';
 
 /** Banned in any catalog markdown (case-insensitive): the catalog must not orchestrate workflows. */
 export const BANNED_ORCHESTRATION = [
@@ -223,6 +224,13 @@ export function validateCatalog(catalog) {
     const names = new Set(sharedNames);
     for (const s of st.skills) {
       checkSkill(s, STACK_SKILL_KINDS, 'stack', st.name, catalog.addons, errs);
+      // Rendered skills sit inside the user's project (.claude/skills/...), where a file that matches the stack's
+      // globs would be compiled, run as a test, linted and guard-checked by the project's own tools.
+      const prefix = s.source.replace(/SKILL\.md$/, '');
+      for (const f of s.files.filter((x) => matchesAny(x.relPath, st.globs))) {
+        errs.push(`${prefix}${f.relPath}: sibling file matches the stack globs (${st.globs.join(', ')}); `
+          + `save it as "${f.relPath}.md": a first line saying where the file goes, then the code in one fenced block`);
+      }
       if (names.has(s.name)) errs.push(`${s.source}: duplicate skill name "${s.name}"`);
       names.add(s.name);
     }

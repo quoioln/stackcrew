@@ -11,6 +11,17 @@ const MINI = path.join(path.dirname(fileURLToPath(import.meta.url)), 'fixtures',
 const demo = (c) => c.stacks.get('demo-java');
 const task = (c) => demo(c).skills.find((s) => s.name === 'stackcrew-demo-task');
 
+test('a stack skill sibling file that matches the stack globs is a catalog error; its .md form is fine', async () => {
+  const c = await loadCatalog(MINI);
+  task(c).files.push({ relPath: 'BodyMasker.java', content: 'class BodyMasker {}\n' }, { relPath: 'examples/Repo.java', content: 'class Repo {}\n' });
+  task(c).files.push({ relPath: 'BodyMasker.java.md', content: 'Goes to `src/main/java/BodyMasker.java`.\n\n```java\nclass BodyMasker {}\n```\n' });
+  const errs = validateCatalog(c).filter((e) => e.includes('matches the stack globs'));
+  assert.equal(errs.length, 2, errs.join('\n'));
+  assert.ok(errs[0].startsWith('stacks/demo-java/skills/stackcrew-demo-task/BodyMasker.java: '), errs[0]);
+  assert.ok(errs[0].includes('**/*.java') && errs[0].includes('BodyMasker.java.md'), errs[0]);
+  assert.ok(errs[1].includes('examples/Repo.java') && errs[1].includes('examples/Repo.java.md'), errs[1]);
+});
+
 test('loads mini catalog', async () => {
   const c = await loadCatalog(MINI);
   assert.equal(demo(c).skills.length, 3);

@@ -10,18 +10,18 @@ Implements `core-persistence` and `addon-typeorm`. Write the SC-PREFLIGHT note f
 
 ## 1. Find the shared pieces before writing any
 
-Search the codebase and the shared libraries ({{sc:sharedLibraries}}) for `{{sc:baseEntity}}`, `{{sc:baseTenantEntity}}`, an `EntitySubscriberInterface` that fills `createdBy`, and `TenantScopedRepository`. Use what exists. Create only what is missing, once, from the files next to this skill (the first line of each names its default location):
+Search the codebase and the shared libraries ({{sc:sharedLibraries}}) for `{{sc:baseEntity}}`, `{{sc:baseTenantEntity}}`, an `EntitySubscriberInterface` that fills `createdBy`, and `TenantScopedRepository`. Use what exists. Create only what is missing, once, from the files next to this skill. Each `<file>.md` holds one source file: its first line says where the file goes, and the code block is the file's content.
 
 | File | What it does |
 |---|---|
-| `base.entity.ts` | `{{sc:baseEntity}}`: `createdAt`, `createdBy`, `updatedAt`, `updatedBy`, readonly, no id. |
-| `base-tenant.entity.ts` | `{{sc:baseTenantEntity}}`: adds `{{sc:tenantColumn}}` (`update: false`). |
-| `audit.subscriber.ts` | `AuditSubscriber`: `createdBy`/`updatedBy` = the context user, or `{{sc:systemUser}}`. |
-| `tenant.subscriber.ts` | `TenantSubscriber`: assigns the tenant on insert; refuses a row of another tenant when it is loaded or saved. |
-| `tenant-scoped.repository.ts` | `TenantScopedRepository<T>`: the tenant condition on every read, count, update, delete and soft delete. |
-| `customer-profile.entity.ts`, `customer-profile.repository.ts` | An example tenant entity and its repository. |
-| `create-customer-profile.migration.ts` | Its migration, saved as `src/database/migrations/<timestamp>-create-customer-profile.ts`. |
-| `customer-profile.persistence.spec.ts` | The audit and tenant tests (section 7). |
+| `base.entity.ts.md` | `{{sc:baseEntity}}`: `createdAt`, `createdBy`, `updatedAt`, `updatedBy`, readonly, no id. |
+| `base-tenant.entity.ts.md` | `{{sc:baseTenantEntity}}`: adds `{{sc:tenantColumn}}` (`update: false`). |
+| `audit.subscriber.ts.md` | `AuditSubscriber`: `createdBy`/`updatedBy` = the context user, or `{{sc:systemUser}}`. |
+| `tenant.subscriber.ts.md` | `TenantSubscriber`: assigns the tenant on insert; refuses a row of another tenant when it is loaded or saved. |
+| `tenant-scoped.repository.ts.md` | `TenantScopedRepository<T>`: the tenant condition on every read, count, update, delete and soft delete. |
+| `customer-profile.entity.ts.md`, `customer-profile.repository.ts.md` | An example tenant entity and its repository. |
+| `create-customer-profile.migration.ts.md` | Its migration, saved as `src/database/migrations/<timestamp>-create-customer-profile.ts`. |
+| `customer-profile.persistence.spec.ts.md` | The audit and tenant tests (section 7). |
 
 Never extend or import TypeORM's own `BaseEntity` (Active Record); the stackcrew ESLint config refuses it.
 
@@ -76,7 +76,7 @@ export class DatabaseEnv {
 
 ## 3. The entity
 
-`customer-profile.entity.ts` is the shape to copy:
+`customer-profile.entity.ts.md` is the shape to copy:
 
 - Tenant data extends `{{sc:baseTenantEntity}}`; everything else extends `{{sc:baseEntity}}`. The stackcrew ESLint config fails on an `@Entity()` class that extends nothing.
 - Never redeclare the audit fields or `{{sc:tenantColumn}}`, never assign them, never put them in a request DTO. They are `readonly`; the subscribers write them.
@@ -86,7 +86,7 @@ export class DatabaseEnv {
 
 ## 4. The migration
 
-`create-customer-profile.migration.ts`: columns are named like the properties (TypeORM's default naming), so they are quoted camelCase: `"{{sc:tenantColumn}}"`, `"createdAt"`. With a snake_case naming strategy in the project, write them snake_case.
+`create-customer-profile.migration.ts.md`: columns are named like the properties (TypeORM's default naming), so they are quoted camelCase: `"{{sc:tenantColumn}}"`, `"createdAt"`. With a snake_case naming strategy in the project, write them snake_case.
 
 - Times are `TIMESTAMP WITH TIME ZONE`; `createdAt` and `updatedAt` default to `now()`.
 - The tenant column leads every index a hot query uses (`("{{sc:tenantColumn}}", "status")` rather than `("status")`).
@@ -130,7 +130,7 @@ const rows = await runCrossTenant('monthly volume report', () => this.profiles.f
 
 ## 8. Tests
 
-`customer-profile.persistence.spec.ts` runs against a real Postgres in Testcontainers (`@testcontainers/postgresql`; ask the user before adding it) with the real migration and both subscribers. Write the same tests for every new tenant entity:
+`customer-profile.persistence.spec.ts.md` (saved as `customer-profile.persistence.spec.ts`) runs against a real Postgres in Testcontainers (`@testcontainers/postgresql`; ask the user before adding it) with the real migration and both subscribers. Write the same tests for every new tenant entity:
 
 - the four audit fields on insert, on `update`, on a `save` of a loaded row and on `softDelete`, and `{{sc:systemUser}}` inside `runAsSystem`;
 - tenant B cannot read, count, find by id, update, delete, soft delete or save over tenant A's row, and the row is unchanged afterwards;

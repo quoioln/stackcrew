@@ -369,7 +369,11 @@ test('new spring skills are task skills under 350 lines with sibling code that i
       assert.ok(k.body.split('\n').length <= 350, `${name} SKILL.md is ${k.body.split('\n').length} lines`);
       for (const f of k.files) {
         assert.ok(!/test/i.test(f.relPath), `${name}/${f.relPath}: sibling files are not named like tests`);
-        assert.ok(/\.(java|sql)$/.test(f.relPath), `${name}/${f.relPath}`);
+        assert.ok(/^[A-Za-z]+\.java\.md$/.test(f.relPath), `${name}/${f.relPath}: Java siblings ship as <File>.java.md`);
+        assert.match(f.content, /^Goes to `src\/main\/java`, package `\{\{sc:basePackage\}\}\.common\.(logging|context|persistence)`, as `[^`]+\.java`\.\n\n```java\n/,
+          `${name}/${f.relPath}: a "Goes to" line, then the code`);
+        assert.equal(f.content.split('```').length, 3, `${name}/${f.relPath}: exactly one fenced block`);
+        assert.ok(f.content.endsWith('```\n'), `${name}/${f.relPath}: nothing after the block`);
       }
     }
     const entity = skills['stackcrew-spring-jpa-entity'];
@@ -403,9 +407,12 @@ test('spring testing guidance has the audit, tenant isolation and cross-tenant t
   });
 });
 
+/** The code of a sibling `<rel>.md`: its one fenced block. */
+const codeOfSibling = (md) => /```[a-z]*\n([\s\S]*?)```\n$/.exec(md ?? '')?.[1] ?? '';
+
 const skillText = (c, name) => {
   const k = c.stacks.get('spring-boot').skills.find((s) => s.name === name);
-  return { body: k.body, file: (rel) => k.files.find((f) => f.relPath === rel)?.content ?? '' };
+  return { body: k.body, file: (rel) => codeOfSibling(k.files.find((f) => f.relPath === `${rel}.md`)?.content) };
 };
 
 test('request logging logs every request, clears MDC on every exit and never holds a response back', async () => {

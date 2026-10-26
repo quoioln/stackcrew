@@ -9,17 +9,17 @@ Implements `core-persistence` with Spring Data JPA auditing and Hibernate `@Tena
 
 ## 1. Find the shared pieces before writing any
 
-Search the codebase and the shared libraries ({{sc:sharedLibraries}}) for `{{sc:baseEntity}}`, `{{sc:baseTenantEntity}}`, `TenantContext`, an `AuditorAware` bean, `@EnableJpaAuditing` and a `CurrentTenantIdentifierResolver`. Use what exists. Create only what is missing, once, in the shared packages (defaults: `{{sc:basePackage}}.common.persistence` and `{{sc:basePackage}}.common.context`), from the files next to this skill:
+Search the codebase and the shared libraries ({{sc:sharedLibraries}}) for `{{sc:baseEntity}}`, `{{sc:baseTenantEntity}}`, `TenantContext`, an `AuditorAware` bean, `@EnableJpaAuditing` and a `CurrentTenantIdentifierResolver`. Use what exists. Create only what is missing, once, in the shared packages (defaults: `{{sc:basePackage}}.common.persistence` and `{{sc:basePackage}}.common.context`), from the files next to this skill. Each `<File>.java.md` holds one source file: its first line says where it goes, and the code block is the file's content.
 
 | File | What it does |
 |---|---|
-| `BaseEntity.java`, saved as `{{sc:baseEntity}}.java` | `@MappedSuperclass` + `@EntityListeners(AuditingEntityListener.class)` with `createdAt`, `createdBy`, `updatedAt`, `updatedBy`. No id, no setters. |
-| `BaseTenantEntity.java`, saved as `{{sc:baseTenantEntity}}.java` | Extends `{{sc:baseEntity}}`, adds the `@TenantId` field `{{sc:tenantColumn}}`; refuses inserts without a tenant and loads of another tenant's row. |
-| `PersistenceConfig.java` | `@EnableJpaAuditing`, a UTC `DateTimeProvider` from the `Clock`, and the `HibernatePropertiesCustomizer` that registers the resolver. |
-| `JwtAuditorAware.java` | `createdBy`/`updatedBy` = JWT `sub`, the `runAs` user, or `{{sc:systemUser}}` (jobs, and work without a user). |
-| `JwtTenantIdentifierResolver.java` | Tenant for each Hibernate session; a no-tenant marker instead of null; `isRoot` for cross-tenant reads. |
-| `TenantContext.java`, `TenancyProperties.java` | Tenant, user and roles from the JWT (claims `{{sc:tenantClaim}}`, `sub`, `{{sc:rolesClaim}}`); `runAs` for consumers, `runAsSystem` for jobs; `runCrossTenant`. |
-| `MissingTenantException.java`, `CrossTenantDeniedException.java` | The two fail-closed errors. |
+| `BaseEntity.java.md`, saved as `{{sc:baseEntity}}.java` | `@MappedSuperclass` + `@EntityListeners(AuditingEntityListener.class)` with `createdAt`, `createdBy`, `updatedAt`, `updatedBy`. No id, no setters. |
+| `BaseTenantEntity.java.md`, saved as `{{sc:baseTenantEntity}}.java` | Extends `{{sc:baseEntity}}`, adds the `@TenantId` field `{{sc:tenantColumn}}`; refuses inserts without a tenant and loads of another tenant's row. |
+| `PersistenceConfig.java.md` | `@EnableJpaAuditing`, a UTC `DateTimeProvider` from the `Clock`, and the `HibernatePropertiesCustomizer` that registers the resolver. |
+| `JwtAuditorAware.java.md` | `createdBy`/`updatedBy` = JWT `sub`, the `runAs` user, or `{{sc:systemUser}}` (jobs, and work without a user). |
+| `JwtTenantIdentifierResolver.java.md` | Tenant for each Hibernate session; a no-tenant marker instead of null; `isRoot` for cross-tenant reads. |
+| `TenantContext.java.md`, `TenancyProperties.java.md` | Tenant, user and roles from the JWT (claims `{{sc:tenantClaim}}`, `sub`, `{{sc:rolesClaim}}`); `runAs` for consumers, `runAsSystem` for jobs; `runCrossTenant`. |
+| `MissingTenantException.java.md`, `CrossTenantDeniedException.java.md` | The two fail-closed errors. |
 
 - `TenantContext` reads the `Jwt` that Spring Security put in the security context (`spring-boot-starter-oauth2-resource-server`). Persistence code never decodes a token.
 - **Spring Boot 3.0 and 3.1** (Hibernate 6.1, 6.2): `CurrentTenantIdentifierResolver` is not generic there. Write `implements CurrentTenantIdentifierResolver` and keep the rest, both `@Override` annotations included. On Boot 3.2+ keep `CurrentTenantIdentifierResolver<String>`: the raw form compiles there only without `@Override`, and then Hibernate never calls `isRoot(String)`.

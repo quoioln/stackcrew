@@ -85,10 +85,10 @@ test('init all tools renders the expected spring-boot file set', (t) => {
     '.claude/skills/stackcrew-spring-integration-provider/SKILL.md',
     '.agents/skills/stackcrew-spring-integration-provider/SKILL.md',
     '.claude/skills/stackcrew-spring-jpa-entity/SKILL.md',
-    '.claude/skills/stackcrew-spring-jpa-entity/TenantContext.java',
+    '.claude/skills/stackcrew-spring-jpa-entity/TenantContext.java.md',
     '.agents/skills/stackcrew-spring-jpa-entity/SKILL.md',
     '.claude/skills/stackcrew-spring-request-logging/SKILL.md',
-    '.claude/skills/stackcrew-spring-request-logging/BodyMasker.java',
+    '.claude/skills/stackcrew-spring-request-logging/BodyMasker.java.md',
     '.agents/skills/stackcrew-spring-request-logging/SKILL.md',
     '.claude/agents/stackcrew-spring-boot-developer.md',
     '.codex/agents/stackcrew-spring-boot-developer.toml',
@@ -99,6 +99,8 @@ test('init all tools renders the expected spring-boot file set', (t) => {
     '.stackcrew/ci/Jenkinsfile.stackcrew.groovy',
   ];
   for (const p of expected) assert.ok(existsSync(path.join(dir, p)), `missing ${p}`);
+  // skill code ships as .java.md, so the project's compiler and the guard never see it as Java
+  assert.deepEqual(walk(dir).filter((p) => /^\.(claude|agents|cursor)\/skills\/.*\.java$/.test(p)), []);
   assert.ok(r.stdout.includes('cursor-duplicate-skills'), r.stdout);
   assert.deepEqual(walk(dir).filter((p) => p.startsWith('docs/sdlc/')), []);
 });
