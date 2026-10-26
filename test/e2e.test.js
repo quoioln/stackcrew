@@ -75,8 +75,11 @@ test('init all tools renders the expected spring-boot file set', (t) => {
   const r = initAll(dir);
   const expected = [
     '.claude/rules/stackcrew/core.md',
+    '.claude/rules/stackcrew/core-persistence.md',
     '.claude/rules/stackcrew/stack-spring-boot.md',
+    '.cursor/rules/stackcrew/core-persistence.mdc',
     '.cursor/rules/stackcrew/stack-spring-boot.mdc',
+    '.agents/rules/stackcrew-core-persistence.md',
     '.agents/rules/stackcrew-stack-spring-boot.md',
     '.agents/skills/stackcrew-spring-boot-rules/SKILL.md',
     '.claude/skills/stackcrew-spring-integration-provider/SKILL.md',

@@ -11,8 +11,9 @@ title: Logging and observability
 - Use levels correctly: ERROR actionable failure, WARN recoverable or degraded, INFO lifecycle and business events, DEBUG diagnostics (off in prod), TRACE verbose.
 - Put requestId, traceId, spanId, correlationId, userId and username (when authenticated) on every line, set at request entry and cleared at exit.
 - Forward W3C Trace Context (`traceparent`, `tracestate`) and the correlationId on every outbound HTTP and message call.
-- Redact secrets, tokens, `Authorization` headers, cookies and PII in the logging layer, deeply and by default.
-- Log one line per request from a single middleware: method, templated route, status, duration in ms, ids and outcome.
+- Redact secrets, tokens, `Authorization` headers, cookies and PII in the logging layer, deeply and by default. Log only the headers `content-type`, `content-length` and `user-agent`.
+- Log one line per HTTP call, inbound and outbound, from one place each (never from services): method, templated route or sanitized URL, status, `durationMs`, ids, and the request and response bodies after the shared masker.
+- Mask bodies in the logging layer only: secret keys always, PII keys from config (`LOG_MASK_FIELDS` or `app.logging.mask-fields`), word-run key matching, 16 KB cap, base64 and binary as size placeholders, non-JSON bodies as a placeholder.
 - Never enable full SQL or bound-parameter logging in prod; rely on slow-query logs and metrics.
 - Write logs to stdout and let the platform ship them.
 - Treat "no PII or secret in logs" as a release gate.
@@ -31,15 +32,33 @@ title: Logging and observability
 
 - Deny by default: passwords, tokens, API keys, `Authorization`, cookies, and PII (email, phone, national id, full card PAN, CVV, health and financial data).
 - Redact nested objects and arrays recursively, matching key-name patterns and typed annotations. Mask fully (`***`) or partially (card last 4).
-- Redact stack traces and request/response bodies too. Do not log full bodies; allowlist safe fields and log ids or sizes.
+- Redact stack traces too. Bodies are logged only through the shared masker (see Request and response logging), never by hand.
 - Strip or escape CR/LF in user-supplied values to prevent log injection.
 - Align redaction with the project's data classification (GDPR, PCI).
 
 ## Request and response logging
 
+One JSON line per call. Fields: `event` (`http_in`, `http_out` or `message_in`), `method`, `route` (inbound, templated) or `url` (outbound, sanitized), `target` (outbound service name), `status`, `durationMs`, `reqBody`, `resBody` (absent when body logging is off), and the context ids `requestId`, `traceId`, `userId`, `tenantId`.
+
+- Log inbound calls in one place (a filter, interceptor or wrapper) and outbound calls in one shared HTTP client or client interceptor. Services, adapters and controllers never log bodies themselves.
 - Use the templated route (not the raw path with ids) to avoid cardinality blow-up.
-- Log completion at INFO (2xx/3xx), WARN (4xx), ERROR (5xx); on failure include exception type and redacted message.
-- Skip or sample health checks and other noise. Emit a latency metric and error counter alongside the log.
+- Log completion at INFO (2xx/3xx), WARN (4xx), ERROR (5xx); on failure include exception type and redacted message. The error path logs through the same writer as the success path.
+- Skip health checks, metrics and streaming (SSE) responses. Emit a latency metric and error counter alongside the log.
+- Message consumers log `message_in` with the payload through the same masker.
+- Log only the headers `content-type`, `content-length` and `user-agent`. `Authorization` and cookies never appear.
+
+### Body masker
+
+One masker, shared by inbound, outbound and consumers. Behavior (the same in every stack):
+
+- **Keys:** split a key into words on camelCase boundaries, `_`, `-` and spaces, lowercase them, and compare to the list with list entries normalized the same way and joined without a separator (`accessToken` becomes `accesstoken`). A key is masked when any contiguous run of its words, joined, is in the list. So `newPassword`, `customerEmail` and `national_id` are masked, while `shipping`, `company` and `spanId` are not. There is no substring matching.
+- **Lists:** the secret list is always masked and cannot be turned off: password, passwd, secret, token, accessToken, refreshToken, idToken, apiKey, clientSecret, privateKey, authorization, cookie, setCookie, otp, pin, cvv, cvc. The PII list is configured (`LOG_MASK_FIELDS`, comma-separated, or `app.logging.mask-fields`) and replaces the default list: email, phone, phoneNumber, mobile, fullName, dob, dateOfBirth, address, nationalId, idNumber, cccd, cmnd, passport, passportNumber, cardNumber, pan, accountNumber. When the setting is unset or empty, the default list is used.
+- **Masking:** replace the value of a masked key, of any type, with `"***"`. Recurse into objects and arrays.
+- **Base64:** a string longer than 1024 characters that is base64 (optionally a `data:` URI) becomes `<base64 N bytes>` with N the decoded size.
+- **Size:** serialize compactly. Above 16 KB (`LOG_MAX_BODY_BYTES` or `app.logging.max-body-bytes`, default 16384) keep the first bytes, cut at a character boundary, and append `...[truncated T bytes]` with T the full size.
+- **Content types:** parse and mask `application/json` (and `*+json`) and `application/x-www-form-urlencoded`. `multipart/*`, `application/octet-stream`, `image/*` and `application/pdf` log `<binary CT N bytes>`. Everything else (XML, SOAP, `text/*`, a missing content type, JSON that does not parse) logs `<CT N bytes>` and never the body.
+- **Switch:** `LOG_BODIES` or `app.logging.log-bodies` (default on). Off drops `reqBody` and `resBody` and keeps the one-line log.
+- Strip or escape CR and LF in logged values.
 
 ## ORM and database logging
 
@@ -47,8 +66,8 @@ title: Logging and observability
 
 ## HTTP client and service-to-service logging
 
-- Log each outbound call: target service, method, sanitized URL (no secrets or PII in the query string), status, duration, retry count, traceId.
-- On failure log status and a sanitized response body, correlated with timeout and circuit-breaker state. Never log full bearer tokens.
+- Log each outbound call as an `http_out` line, from the one shared client: target service, method, sanitized URL (no secrets or PII in the query string), status, duration, retry count, traceId, and the bodies through the shared masker.
+- On failure log status, correlated with timeout and circuit-breaker state. Never log full bearer tokens.
 
 ## Operability gates
 

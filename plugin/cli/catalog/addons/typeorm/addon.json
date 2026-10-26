@@ -1,0 +1,11 @@
+{
+  "id": "typeorm",
+  "name": "TypeORM",
+  "languages": ["typescript"],
+  "detect": {
+    "files": [],
+    "contains": [],
+    "excludeContains": [],
+    "packageDeps": ["typeorm"]
+  }
+}

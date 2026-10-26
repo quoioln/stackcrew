@@ -176,7 +176,7 @@ histogram_quantile(0.99, sum by (le, provider) (rate(provider_call_seconds_bucke
 
 ## Operability gates
 
-- No PII or secret in logs is a release gate (scan or review). Deep redaction: passwords, tokens, API keys, `Authorization` headers, cookies and PII (email, phone, national id, card number) are masked in the logging layer, including nested objects and stack traces. Strip CR and LF from user-supplied values to prevent log injection.
+- No PII or secret in logs is a release gate (scan or review). Request, response and message bodies are logged only through the shared masker, never by hand. Deep redaction: passwords, tokens, API keys, `Authorization` headers, cookies and PII (email, phone, national id, card number) are masked in the logging layer, including nested objects and stack traces. Strip CR and LF from user-supplied values to prevent log injection.
 - Logs, traces and metrics correlate by `traceId`: the same id appears in the log line, the span and the exemplar.
 - Retention and sampling are written down per environment.
 - Logs go to stdout; the platform ships them. The application does not rotate or upload log files.

@@ -7,7 +7,7 @@ import { loadCatalog } from '../src/catalog/load.js';
 import { validateCatalog } from '../src/catalog/validate.js';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
-const CORE_IDS = ['type-safety', 'error-handling', 'logging', 'testing', 'performance', 'security', 'backend-api', 'frontend', 'delivery', 'brownfield'].map((n) => `core-${n}`);
+const CORE_IDS = ['type-safety', 'error-handling', 'logging', 'testing', 'performance', 'security', 'backend-api', 'persistence', 'frontend', 'delivery', 'brownfield'].map((n) => `core-${n}`);
 
 async function withRealCatalog(fn) {
   const saved = process.env.STACKCREW_CATALOG_DIR;
