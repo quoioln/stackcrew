@@ -108,6 +108,20 @@ test('typeorm add-on is detected from package.json for typescript only', async (
   });
 });
 
+test('tenant-entity writes have one path: no hand-written tenant condition in persistence or typeorm', async () => {
+  await withRealCatalog(async (c) => {
+    const persistence = c.coreRules.find((r) => r.id === 'core-persistence').body;
+    const typeorm = c.addons.get('typeorm').rules.body;
+    for (const [id, body] of [['core-persistence', persistence], ['addon-typeorm', typeorm]]) {
+      assert.ok(!/tenant condition explicitly/i.test(body), `${id}: the explicit-condition escape hatch is gone`);
+      assert.ok(!/or adds the tenant condition/i.test(body), `${id}: no "or adds the tenant condition"`);
+    }
+    assert.ok(persistence.includes('A bulk or QueryBuilder write on a tenant entity goes through the tenant mechanism too'), 'core rule names the single path');
+    assert.ok(typeorm.includes('add the method to `TenantScopedRepository`'), 'typeorm: bulk writes become repository methods');
+    assert.ok(typeorm.includes('Never inject a raw `Repository`, `EntityManager` or QueryBuilder for a tenant entity'), 'raw access ban kept');
+  });
+});
+
 test('cross-stack content has no banned phrases and bounded essentials', async () => {
   await withRealCatalog(async (c) => {
     assert.deepEqual(validateCatalog(c), []);

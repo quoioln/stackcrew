@@ -31,7 +31,8 @@ Applies when the profile lists the `typeorm` add-on (TypeORM 0.3 with NestJS or 
 ## Tenant repository
 
 - `TenantScopedRepository<T extends {{sc:baseTenantEntity}}>` adds the `{{sc:tenantColumn}}` condition to every read, count, update, delete and soft delete, and assigns the tenant on every write, taking the tenant from the request context. Without that condition on updates and deletes, tenant A could modify tenant B's row.
-- A QueryBuilder write on a tenant entity goes through the tenant repository, or adds the tenant condition explicitly.
+- A feature that needs a bulk or QueryBuilder write on a tenant entity does not build it in a service: add the method to `TenantScopedRepository`, where the tenant condition is applied in one place.
+- Soft delete through `TenantScopedRepository.softDelete`, which sets the delete date column with a tenant-filtered `update`, so the subscriber fills `updatedBy`. TypeORM's own `softDelete` skips the subscriber.
 - A missing tenant throws. Never fall back to an unfiltered query.
 - Cross-tenant reads use `runCrossTenant(reason, work)` and nothing else.
 

@@ -34,5 +34,5 @@ Applies to every stack that persists data. The stack rules and skills hold the m
 ## Tenant isolation
 
 - Tenant filtering is in place before a new tenant entity ships. A test pins that tenant A cannot read tenant B, and that a missing tenant does not return rows.
-- Writes assign the current tenant automatically, and updates, deletes and soft deletes are filtered by tenant like reads. A caller cannot choose another tenant's id or modify another tenant's row. A QueryBuilder write on a tenant entity goes through the tenant repository, or adds the tenant condition explicitly.
+- Writes assign the current tenant automatically, and updates, deletes and soft deletes are filtered by tenant like reads. A caller cannot choose another tenant's id or modify another tenant's row. A bulk or QueryBuilder write on a tenant entity goes through the tenant mechanism too: give the tenant repository a method for it (or rely on the ORM's tenant filter). Never add the tenant condition by hand.
 - `runCrossTenant` is the only way to switch the filter off. Its reason is a short, human-readable string, and it is logged with the user and tenant. Do not add a second bypass.
