@@ -96,6 +96,7 @@ function checkGuard(guard, source, errs) {
     if (!isStr(r.id)) err('id is required');
     if (!isStrArray(r.globs) || r.globs.length === 0) err('globs must be a non-empty string array');
     if (!isStrArray(r.excludeGlobs)) err('excludeGlobs must be a string array');
+    if ('globsFrom' in r && r.globsFrom !== 'typeFreeFiles') err('globsFrom must be "typeFreeFiles"');
     if (!isStr(r.regex)) {
       err('regex is required');
     } else {
@@ -167,6 +168,7 @@ export function validateCatalog(catalog) {
     checkRule(l.rule, `lang-${lang}`, errs);
     claimId(l.rule);
     checkGuard(l.guard, `languages/${lang}/guard.json`, errs);
+    for (const f of l.lintFiles) checkPlaceholders(f.content, RENDER_PLACEHOLDERS, `languages/${lang}/lint/${f.relPath}`, errs);
   }
 
   for (const [folder, a] of catalog.addons) {
@@ -211,6 +213,11 @@ export function validateCatalog(catalog) {
     checkGuard(st.guard, `stacks/${folder}/guard.json`, errs);
     for (const [dir, files] of [['lint', st.lintFiles], ['wire', st.wireFiles]]) {
       for (const f of files) checkPlaceholders(f.content, RENDER_PLACEHOLDERS, `stacks/${folder}/${dir}/${f.relPath}`, errs);
+    }
+    // Both render into .stackcrew/lint/, so a shared name would silently overwrite the language file.
+    const langLint = new Set((catalog.languages.get(st.language)?.lintFiles ?? []).map((f) => f.relPath));
+    for (const f of st.lintFiles) {
+      if (langLint.has(f.relPath)) err(`lint/${f.relPath} has the same name as a lint file of language "${st.language}"`);
     }
 
     const names = new Set(sharedNames);

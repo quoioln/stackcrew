@@ -10,13 +10,14 @@
 /** @typedef {{ relPath: string, content: string }} SkillFile */
 /** @typedef {{ name: string, description: string, kind: 'task'|'testing'|'advisor'|'command'|'rules',
  *   paths: string[], requiresAddons: string[], body: string, files: SkillFile[], source: string }} SkillDoc */
-/** @typedef {{ id: string, globs: string[], excludeGlobs: string[], regex: string, flags: string, message: string }} GuardRule */
+/** @typedef {{ id: string, globs: string[], excludeGlobs: string[], regex: string, flags: string, message: string,
+ *   globsFrom?: 'typeFreeFiles' }} GuardRule   // globsFrom: catalog only, resolved at render time */
 /** @typedef {{ id: string, name: string, category: 'backend'|'frontend'|'fullstack', language: string,
  *   minVersion: string, globs: string[], aliases: string[], priority: number, detect: DetectSpec,
  *   rules: RuleDoc, testing: RuleDoc, skills: SkillDoc[], guard: GuardRule[],
  *   lintFiles: SkillFile[], wireFiles: SkillFile[] }} Stack */
 /** @typedef {{ id: string, name: string, languages: string[], detect: DetectSpec, rules: RuleDoc }} Addon */
-/** @typedef {{ id: string, rule: RuleDoc, guard: GuardRule[] }} Language */
+/** @typedef {{ id: string, rule: RuleDoc, guard: GuardRule[], lintFiles: SkillFile[] }} Language */
 /** @typedef {{ id: 'tech-lead'|'developer'|'tester', model: 'opus'|'sonnet'|'haiku',
  *   skillKinds: ('task'|'testing'|'advisor')[], description: string, body: string }} RoleDoc */
 /** @typedef {{ name: string, description: string, body: string }} PluginCommandDoc */

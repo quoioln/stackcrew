@@ -1,0 +1,12 @@
+{
+  "rules": [
+    {
+      "id": "SC-TYPE",
+      "globs": ["**/*.ts"],
+      "excludeGlobs": ["**/*.spec.ts"],
+      "regex": "\bany\b",
+      "flags": "",
+      "message": "Do not use any in typed code."
+    }
+  ]
+}

@@ -113,6 +113,8 @@ async function loadGuard(dir, source) {
     regex: str(r && r.regex),
     flags: str(r && r.flags),
     message: str(r && r.message),
+    // Kept only when written; the validator rejects any value but 'typeFreeFiles'.
+    ...(r && r.globsFrom !== undefined ? { globsFrom: r.globsFrom } : {}),
   }));
 }
 
@@ -217,6 +219,7 @@ export async function loadCatalog(dir = getCatalogDir()) {
       id: lang,
       rule: await loadRule(dir, `languages/${lang}/rule.md`),
       guard: await loadGuard(dir, `languages/${lang}/guard.json`),
+      lintFiles: await readTree(abs(dir, `languages/${lang}/lint`)),
     });
   }
 

@@ -1,0 +1,16 @@
+{
+  "id": "demo-ts",
+  "name": "Demo TS",
+  "category": "backend",
+  "language": "typescript",
+  "minVersion": "5",
+  "globs": ["**/*.ts"],
+  "aliases": [],
+  "priority": 10,
+  "detect": {
+    "files": [],
+    "contains": [],
+    "excludeContains": [],
+    "packageDeps": ["demo-ts-core"]
+  }
+}

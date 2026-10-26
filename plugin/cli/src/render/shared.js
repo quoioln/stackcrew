@@ -56,10 +56,14 @@ export function renderShared(ctx) {
   /** @type {import('../types.js').FileOp[]} */
   const ops = [{ path: 'docs/stackcrew/architecture-profile.md', kind: 'owned', content: renderProfileDoc(ctx) }];
 
-  const guard = { version: 1, enabled: profile.guard, rules: [...language.guard, ...stack.guard] };
+  const rules = [...language.guard, ...stack.guard].map(({ globsFrom, globs, ...rest }) => {
+    const override = globsFrom === 'typeFreeFiles' ? ctx.conventions.typeFreeFiles : [];
+    return { id: rest.id, globs: override.length > 0 ? [...override] : globs, excludeGlobs: rest.excludeGlobs, regex: rest.regex, flags: rest.flags, message: rest.message };
+  });
+  const guard = { version: 1, enabled: profile.guard, rules };
   ops.push({ path: '.stackcrew/guard.json', kind: 'owned', content: JSON.stringify(guard, null, 2) + '\n' });
 
-  for (const f of stack.lintFiles) {
+  for (const f of [...language.lintFiles, ...stack.lintFiles]) {
     ops.push({ path: `.stackcrew/lint/${f.relPath}`, kind: 'owned', content: fillTemplate(f.content, vars) });
   }
 
