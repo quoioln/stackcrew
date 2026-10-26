@@ -173,6 +173,8 @@ Mỗi pattern một file, theo khuôn cố định:
   - [Đoán] "pub/sub" người dùng nói là RabbitMQ, Redis hoặc cloud Pub/Sub nói chung. Guide phủ cả ba.
 
 ### 5.5 Observability [User: logging, Grafana, Loki]
+> **Đổi ngày 2026-10-26:** mọi lượt gọi HTTP vào và ra log **cả body request và response**, PII bị che theo danh sách cấu hình được [User]. Chi tiết và phần thay thế quy tắc "không log toàn bộ body": [`2026-10-26-stackcrew-nest-next-design.md`](2026-10-26-stackcrew-nest-next-design.md) §4.2.
+
 - Log JSON có cấu trúc ra stdout. Promtail hoặc Grafana Alloy thu log về **Loki**.
 - **Label Loki ít giá trị (low-cardinality)**: `service`, `env`, `level`. `traceId`/`requestId` nằm **trong dòng log**, không làm label.
 - **Grafana**: dashboard theo RED (Rate, Errors, Duration) cho từng service và từng provider bên thứ ba. Alert theo tỉ lệ lỗi, latency, consumer lag, số lượng DLQ.
@@ -420,7 +422,7 @@ Mọi quyết định mới đều được cập nhật vào hồ sơ.
    - log có traceId; có circuit breaker;
    - có test WireMock;
    - có ghi chú pre-flight trước khi code.
-2. **NestJS 10**. Task "consumer Kafka cho `kyc.completed`". Kỳ vọng:
+2. **NestJS 10**. Task "consumer Kafka cho `kyc.completed`" (**đổi ngày 2026-10-26** sang consumer RabbitMQ, thêm một golden task endpoint: xem [`2026-10-26-stackcrew-nest-next-design.md`](2026-10-26-stackcrew-nest-next-design.md) §11.2). Kỳ vọng:
    - consumer idempotent, có DLQ;
    - event có type/schema rõ ràng;
    - không `any`.
