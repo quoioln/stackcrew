@@ -4,9 +4,10 @@ Goes to `src/config/env.ts`.
 // Default location: src/config/env.ts (merge these classes into the project's env validation if it has one)
 import 'reflect-metadata'; // @Type reads decorator metadata, also in unit tests that never boot Nest
 import { plainToInstance, Type } from 'class-transformer';
-import { IsIn, IsInt, IsString, IsUrl, Min, validateSync } from 'class-validator';
+import { IsIn, IsInt, IsOptional, IsString, IsUrl, Min, validateSync } from 'class-validator';
 
 const DEFAULT_MAX_BODY_BYTES = 16384;
+const HTTPS_PROTOCOL = 'https:';
 const LOG_LEVELS = ['fatal', 'error', 'warn', 'info', 'debug', 'trace'] as const;
 
 /** Request and response logging (core-logging). */
@@ -52,6 +53,11 @@ export class ServerEnv {
   @IsInt()
   @Min(1)
   PORT = 3000;
+
+  /** Unset counts as production. No default here: ConfigModule would write it back into process.env. */
+  @IsOptional()
+  @IsIn(['development', 'test', 'production'])
+  NODE_ENV?: 'development' | 'test' | 'production';
 }
 
 export type Env = ServerEnv & LoggingEnv & TenancyEnv & AuthEnv;
@@ -71,9 +77,17 @@ export function parseEnvSection<T extends object>(section: EnvSection<T>, raw: R
   return parsed;
 }
 
-/** For ConfigModule.forRoot({ validate: validateEnv }): fails the boot on a missing or invalid variable. */
+/**
+ * For ConfigModule.forRoot({ validate: validateEnv }): fails the boot on a missing or invalid variable. The JWKS keys
+ * must come over https except in development and test (a local issuer in an e2e test serves http).
+ */
 export function validateEnv(raw: Record<string, unknown>): Env {
-  return Object.assign(parseEnvSection(ServerEnv, raw), parseEnvSection(LoggingEnv, raw), parseEnvSection(TenancyEnv, raw), parseEnvSection(AuthEnv, raw));
+  const env = Object.assign(parseEnvSection(ServerEnv, raw), parseEnvSection(LoggingEnv, raw), parseEnvSection(TenancyEnv, raw), parseEnvSection(AuthEnv, raw));
+  const httpAllowed = env.NODE_ENV === 'development' || env.NODE_ENV === 'test';
+  if (!httpAllowed && new URL(env.JWKS_URI).protocol !== HTTPS_PROTOCOL) {
+    throw new Error('Invalid environment: JWKS_URI must use https outside development and test');
+  }
+  return env;
 }
 
 let logging: LoggingEnv | undefined;

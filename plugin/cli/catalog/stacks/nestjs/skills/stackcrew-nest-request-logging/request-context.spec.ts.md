@@ -4,9 +4,10 @@ Goes to `src/common/context/request-context.spec.ts`.
 // Default location: src/common/context/request-context.spec.ts
 process.env.CROSS_TENANT_ROLES = 'report_admin'; // read once, on the first cross-tenant check of this test file
 
+import { trace, TraceFlags } from '@opentelemetry/api';
 import {
-  contextFromMessageHeaders, CrossTenantDeniedError, currentActor, currentContext, MissingTenantError, requireTenantId,
-  runAsSystem, runCrossTenant, runWithRequestContext, SYSTEM_USER, type RequestContext,
+  contextFromMessageHeaders, contextLogFields, CrossTenantDeniedError, currentActor, currentContext, MissingTenantError,
+  requireTenantId, runAsSystem, runCrossTenant, runWithRequestContext, SYSTEM_USER, type RequestContext,
 } from './request-context';
 
 const user = (userId: string, tenantId: string, ...roles: string[]): RequestContext => ({ requestId: 'req-1', userId, tenantId, roles });
@@ -74,6 +75,20 @@ describe('request context', () => {
     expect(seen).toEqual(['alice@tenant-0', 'bob@tenant-1']);
     expect(currentContext()).toBeUndefined();
     expect(currentActor()).toBe(SYSTEM_USER);
+  });
+
+  it('adds traceId and spanId of the active OpenTelemetry span to the log fields', async () => {
+    expect(contextLogFields()).toEqual({}); // no SDK and no span: nothing is added
+    const span = trace.wrapSpanContext({ traceId: '4bf92f3577b34da6a3ce929d0e0e4736', spanId: '00f067aa0ba902b7', traceFlags: TraceFlags.SAMPLED });
+    const active = jest.spyOn(trace, 'getActiveSpan').mockReturnValue(span);
+    try {
+      await runWithRequestContext(user('alice', 'tenant-a'), async () => {
+        expect(contextLogFields()).toEqual({ requestId: 'req-1', userId: 'alice', tenantId: 'tenant-a',
+          traceId: '4bf92f3577b34da6a3ce929d0e0e4736', spanId: '00f067aa0ba902b7' });
+      });
+    } finally {
+      active.mockRestore();
+    }
   });
 });
 ```

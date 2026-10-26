@@ -5,6 +5,7 @@ Goes to `src/common/context/request-context.ts`.
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { randomUUID } from 'node:crypto';
 import { Logger } from '@nestjs/common';
+import { isSpanContextValid, trace } from '@opentelemetry/api';
 import { tenancyEnv } from '../../config/env';
 
 /**
@@ -157,10 +158,17 @@ export function bindAuthenticatedUser(req: object, user: { userId: string; tenan
   bindRequestContext(req, { requestId, userId: user.userId, tenantId: user.tenantId, roles: user.roles });
 }
 
-/** Fields for every log line (pino mixin): the ids of the current context. */
-export function contextLogFields(): { requestId?: string; userId?: string; tenantId?: string } {
+/** Fields for every log line (pino mixin): the ids of the current context and the active OpenTelemetry span. */
+export function contextLogFields(): { requestId?: string; userId?: string; tenantId?: string; traceId?: string; spanId?: string } {
   const ctx = storage.getStore();
-  return ctx === undefined ? {} : { requestId: ctx.requestId, userId: ctx.userId, tenantId: ctx.tenantId };
+  const ids = ctx === undefined ? {} : { requestId: ctx.requestId, userId: ctx.userId, tenantId: ctx.tenantId };
+  return { ...ids, ...activeTraceFields() };
+}
+
+/** traceId and spanId of the active OpenTelemetry span; empty when there is none (no SDK, or outside a span). */
+export function activeTraceFields(): { traceId?: string; spanId?: string } {
+  const span = trace.getActiveSpan()?.spanContext();
+  return span !== undefined && isSpanContextValid(span) ? { traceId: span.traceId, spanId: span.spanId } : {};
 }
 
 function crossTenantRoles(): readonly string[] {

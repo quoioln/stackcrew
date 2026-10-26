@@ -7,9 +7,12 @@ import { CrossTenantDeniedError, isCrossTenant, requireTenantId } from '../conte
 import { {{sc:baseTenantEntity}} } from './base-tenant.entity';
 
 /**
- * The guard behind TenantScopedRepository, for every path that reaches TypeORM: inserts get the tenant of the context,
- * a row of another tenant is refused when it is loaded or saved, and no tenant in the context throws
- * MissingTenantError. Inside runCrossTenant loads pass and writes throw (there is no tenant to write with).
+ * A second line of defence behind TenantScopedRepository. It guards what TypeORM tells subscribers about: inserts get
+ * the tenant of the context, a row of another tenant is refused when it is loaded (afterLoad) or saved over (save
+ * loads the row first), and no tenant in the context throws MissingTenantError. It cannot see the rows that an
+ * update() or delete() by criteria touches: those are tenant-safe only through TenantScopedRepository (withManager
+ * inside a transaction), never through Repository, EntityManager or a QueryBuilder. Inside runCrossTenant loads pass
+ * and writes throw (there is no tenant to write with).
  */
 @EventSubscriber()
 export class TenantSubscriber implements EntitySubscriberInterface<{{sc:baseTenantEntity}}> {

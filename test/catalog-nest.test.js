@@ -256,7 +256,7 @@ test('nest request logging writes one line per request from a middleware ahead o
   await withRealCatalog(async (c) => {
     const s = nestSkill(c, LOGGING);
     const setup = s.file('logging.setup.ts');
-    for (const needle of ['app.use(httpLoggingMiddleware())', 'autoLogging: false', 'quietReqLogger: true', 'mixin: () => contextLogFields()']) {
+    for (const needle of ['app.use(httpLoggingMiddleware(skippedPaths))', 'autoLogging: false', 'quietReqLogger: true', 'mixin: () => contextLogFields()']) {
       assert.ok(setup.includes(needle), `logging.setup.ts missing ${needle}`);
     }
     const mw = s.file('http-logging.middleware.ts');
@@ -373,5 +373,61 @@ test('nest testing rule carries the harness: rawBody, setupApp, a local issuer a
     }
     assert.ok(!t.includes('testPathIgnorePatterns'), 'skill folders hold no runnable spec any more');
     assert.ok(/ask the user/i.test(t));
+  });
+});
+
+test('nest logging never throws: depth-capped masker, guarded line writers, 499 for a client abort', async () => {
+  await withRealCatalog(async (c) => {
+    const s = nestSkill(c, LOGGING);
+    const masker = s.file('body-masker.ts');
+    assert.ok(masker.includes('MAX_NESTING_DEPTH = 64') && masker.includes('class NestingTooDeep'), 'nesting is capped at 64');
+    assert.match(masker, /if \(depth > MAX_NESTING_DEPTH\) \{\n\s+throw new NestingTooDeep\(\);/, 'the walk stops past the cap');
+    const spec = s.file('body-masker.spec.ts');
+    for (const needle of ['nest(64)', 'nest(65)', 'nest(50000)', '<application/json 130 bytes>']) assert.ok(spec.includes(needle), `masker spec missing ${needle}`);
+    const fields = s.file('log-fields.ts');
+    assert.ok(fields.includes('export function writeCallLine(') && fields.includes('process.emitWarning('), 'one guarded writer');
+    const mw = s.file('http-logging.middleware.ts');
+    assert.ok(mw.includes('writeCallLine(logger,') && mw.includes('CLIENT_ABORT_STATUS = 499'), 'middleware writes through the guard; abort is 499');
+    assert.ok(mw.includes('export function httpLoggingMiddleware(skippedPaths: readonly string[] = SKIPPED_PATHS)') && mw.includes('setGlobalPrefix'),
+      'skipped paths are a parameter and the global prefix is documented');
+    assert.ok(s.file('outbound-http-logger.ts').includes('writeCallLine(this.logger,'), 'outbound writes through the guard');
+    assert.ok(/try \{[^]*?this\.logger\.log\(\{ event: LogEvent\.MESSAGE_IN[^]*?\} catch \(failure: unknown\)/.test(s.body), 'message_in snippet never throws');
+  });
+});
+
+test('nest context carries the OpenTelemetry trace ids and binds the handler on every Nest 10 release', async () => {
+  await withRealCatalog(async (c) => {
+    const s = nestSkill(c, LOGGING);
+    const ctx = s.file('request-context.ts');
+    assert.ok(ctx.includes("import { isSpanContextValid, trace } from '@opentelemetry/api';") && ctx.includes('trace.getActiveSpan()'));
+    assert.ok(ctx.includes('...activeTraceFields()'), 'contextLogFields adds traceId and spanId');
+    const interceptor = s.file('request-context.interceptor.ts');
+    assert.ok(interceptor.includes('new Observable<unknown>((subscriber) =>') && interceptor.includes('next.handle().subscribe(subscriber)'),
+      'the subscription itself runs inside the context');
+    assert.ok(s.file('request-context.spec.ts').includes("jest.spyOn(trace, 'getActiveSpan')"));
+    const env = s.file('env.ts');
+    assert.ok(env.includes("NODE_ENV?: 'development' | 'test' | 'production';") && env.includes('JWKS_URI must use https'), 'https outside development and test');
+    assert.ok(s.file('env.spec.ts').includes('JWKS_URI must use https'));
+    assert.ok(/`jwks-rsa`[^\n]*ask/.test(s.body) || s.body.includes('Dependencies (ask the user before adding any)'));
+    assert.ok(/`pino-pretty` as a dev dependency/.test(s.body));
+  });
+});
+
+test('nest tenant entities in a transaction go through withManager only', async () => {
+  await withRealCatalog(async (c) => {
+    const s = nestSkill(c, ENTITY);
+    const repo = s.file('tenant-scoped.repository.ts');
+    assert.ok(repo.includes('withManager(manager: EntityManager): this {'), 'withManager keeps the subclass API');
+    assert.ok(!s.file('tenant.subscriber.ts').includes('every path that reaches TypeORM'), 'the subscriber claims no more than it guards');
+    const spec = s.file('customer-profile.persistence.spec.ts');
+    assert.ok(spec.includes('inside a transaction') && spec.includes('profiles.withManager(manager)'));
+    assert.ok(spec.includes('toBeGreaterThanOrEqual(inserted?.updatedAt.getTime()'), 'no millisecond race on updatedAt');
+    assert.ok(s.body.includes('withManager(manager)') && s.body.includes('manager.getRepository('), 'skill shows the path and names the banned one');
+    const rules = c.stacks.get('nestjs').rules.body;
+    assert.ok(rules.includes('withManager(manager)') && !rules.includes('all work inside through `manager`'), 'stack rule transaction bullet');
+    assert.ok(!rules.includes('@Roles('), 'no reference to a roles decorator that does not exist');
+    const addon = c.addons.get('typeorm').rules.body;
+    assert.ok(addon.includes('withManager(manager)') && addon.includes('never `manager.getRepository(Entity)`'), 'add-on transaction bullet');
+    assert.ok(!addon.includes('Do all work in the transaction through its manager.'));
   });
 });

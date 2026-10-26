@@ -67,7 +67,8 @@ describe('CustomerProfile persistence (Postgres)', () => {
     const updated = await as('bob', TENANT_A, () => profiles.findOneBy({ id: rowOfTenantA }));
     expect(updated).toMatchObject({ createdBy: 'alice', updatedBy: 'bob', status: CustomerProfileStatus.VERIFIED });
     expect(updated?.createdAt).toEqual(inserted?.createdAt);
-    expect(updated?.updatedAt.getTime()).toBeGreaterThan(inserted?.updatedAt.getTime() ?? Infinity);
+    // updatedAt is set by the database clock; both writes can land in the same millisecond, so equal is allowed
+    expect(updated?.updatedAt.getTime()).toBeGreaterThanOrEqual(inserted?.updatedAt.getTime() ?? Infinity);
 
     await as('carol', TENANT_A, async () => {
       const loaded = await profiles.findOneBy({ id: rowOfTenantA });
@@ -103,6 +104,22 @@ describe('CustomerProfile persistence (Postgres)', () => {
     });
     const rowA = await as('alice', TENANT_A, () => profiles.findOneBy({ id: rowOfTenantA }));
     expect(rowA).toMatchObject({ reference: 'ref-a', status: CustomerProfileStatus.PENDING, updatedBy: 'alice', deletedAt: null });
+  });
+
+  it('keeps tenant B away from tenant A rows inside a transaction too (withManager)', async () => {
+    const changed = await as('bob', TENANT_B, () => dataSource.transaction(async (manager) => {
+      const scoped = profiles.withManager(manager);
+      return [
+        await scoped.update({ id: rowOfTenantA }, { status: CustomerProfileStatus.REJECTED }),
+        await scoped.delete({ id: rowOfTenantA }),
+        await scoped.update({ reference: 'ref-b' }, { status: CustomerProfileStatus.VERIFIED }),
+      ];
+    }));
+    expect(changed).toEqual([0, 0, 1]);
+    const rowA = await as('alice', TENANT_A, () => profiles.findOneBy({ id: rowOfTenantA }));
+    expect(rowA).toMatchObject({ status: CustomerProfileStatus.PENDING, updatedBy: 'alice' });
+    const rowB = await as('bob', TENANT_B, () => profiles.findOneBy({ reference: 'ref-b' }));
+    expect(rowB).toMatchObject({ status: CustomerProfileStatus.VERIFIED, updatedBy: 'bob' });
   });
 
   it('throws MissingTenantError without a tenant, and never returns unfiltered rows', async () => {

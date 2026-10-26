@@ -109,6 +109,19 @@ async verify(id: string): Promise<boolean> {
 - `softDelete` sets the `@DeleteDateColumn` through `update()`, so `updatedBy` is filled. Do not call TypeORM's own `softDelete`, `restore`, `upsert` (its update branch) or raw SQL on an audited entity; they skip the subscriber. `.callListeners(false)` skips it too.
 - A bulk or QueryBuilder write a feature needs becomes a method of the entity's repository class, built on `writeScope` the same way, with an "audit fields filled" test. Raw SQL on a tenant table is banned.
 - Every list query is paginated (`take`/`skip` or keyset) with a maximum page size and a stable `order`.
+- Transactions: the tenant entity goes through `withManager(manager)`, the same scoped API (your subclass's methods included) on the transaction's manager:
+
+```ts
+// a service method that writes two entities in one transaction
+async approve(id: string): Promise<boolean> {
+  return this.dataSource.transaction(async (manager) => {
+    const changed = await this.profiles.withManager(manager).update({ id }, { status: CustomerProfileStatus.VERIFIED });
+    return changed === 1;
+  });
+}
+```
+
+- Never `manager.getRepository(CustomerProfile)`, `manager.update(...)` or `manager.delete(...)` for a tenant entity: they carry no tenant condition, and `TenantSubscriber` cannot see the rows an update or delete by criteria touches, so tenant B would change tenant A's rows.
 
 ## 6. Where the tenant comes from
 

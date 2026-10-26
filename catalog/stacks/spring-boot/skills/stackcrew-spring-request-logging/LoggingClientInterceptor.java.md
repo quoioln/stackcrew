@@ -17,6 +17,7 @@ import org.springframework.web.util.UriComponentsBuilder;
 import java.io.IOException;
 import java.net.URI;
 import java.util.concurrent.TimeUnit;
+import java.util.function.Supplier;
 
 /**
  * One http_out line per outbound call, with masked bodies. One instance per client, named after the target service.
@@ -43,26 +44,44 @@ public class LoggingClientInterceptor implements ClientHttpRequestInterceptor {
         try {
             response = execution.execute(request, body);
         } catch (IOException | RuntimeException e) {
-            line(request, body, start, Level.ERROR).addKeyValue(LogFields.ERROR, e.getClass().getName()).log();
+            logSafely(() -> line(request, body, start, Level.ERROR).addKeyValue(LogFields.ERROR, e.getClass().getName()),
+                    request, start, Level.ERROR, null);
             throw e;
         }
         int status = response.getStatusCode().value();
-        LoggingEventBuilder line = line(request, body, start, HttpLoggingFilter.levelFor(status))
-                .addKeyValue(LogFields.STATUS, status);
+        Level level = HttpLoggingFilter.levelFor(status);
+        byte[] responseBody = null;
         if (masker.logBodies()) {
-            byte[] responseBody;
             try {
                 responseBody = response.getBody().readAllBytes();
             } catch (IOException | RuntimeException e) {
                 // the body broke off (connection reset, read timeout): still one line, with the status and no body
-                line(request, body, start, Level.ERROR).addKeyValue(LogFields.STATUS, status)
-                        .addKeyValue(LogFields.ERROR, e.getClass().getName()).log();
+                logSafely(() -> line(request, body, start, Level.ERROR).addKeyValue(LogFields.STATUS, status)
+                        .addKeyValue(LogFields.ERROR, e.getClass().getName()), request, start, Level.ERROR, status);
                 throw e;
             }
-            line = withBody(line, LogFields.RES_BODY, responseBody, response.getHeaders().getContentType());
         }
-        line.log();
+        byte[] readBody = responseBody;
+        logSafely(() -> withBody(line(request, body, start, level).addKeyValue(LogFields.STATUS, status), LogFields.RES_BODY, readBody,
+                response.getHeaders().getContentType()), request, start, level, status);
         return response;
+    }
+
+    /**
+     * Logging never throws (core-logging): when building or writing the line fails, a line without bodies is written,
+     * and the call's result is unchanged.
+     */
+    private void logSafely(Supplier<LoggingEventBuilder> line, HttpRequest request, long start, Level level, Integer status) {
+        try {
+            line.get().log();
+        } catch (RuntimeException logFailure) {
+            LoggingEventBuilder minimal = log.atLevel(level).setMessage(LogFields.HTTP_OUT)
+                    .addKeyValue(LogFields.EVENT, LogFields.HTTP_OUT)
+                    .addKeyValue(LogFields.TARGET, target)
+                    .addKeyValue(LogFields.METHOD, request.getMethod().name())
+                    .addKeyValue(LogFields.DURATION_MS, TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - start));
+            (status == null ? minimal : minimal.addKeyValue(LogFields.STATUS, status)).log();
+        }
     }
 
     private LoggingEventBuilder line(HttpRequest request, byte[] body, long start, Level level) {

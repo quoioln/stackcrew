@@ -506,3 +506,20 @@ test('kafka consumer restores sanitized context headers, survives tombstones, ne
     assert.ok(fields.includes('Pattern.compile("[A-Za-z0-9._-]{1,64}")') && fields.includes('Pattern.compile("\\\\p{Graph}{1,128}")'));
   });
 });
+
+test('spring logging never throws: depth-capped masker and guarded line writers', async () => {
+  await withRealCatalog(async (c) => {
+    const s = skillText(c, 'stackcrew-spring-request-logging');
+    const masker = s.file('BodyMasker.java');
+    assert.ok(masker.includes('MAX_NESTING_DEPTH = 64') && masker.includes('NestingTooDeep'), 'nesting is capped at 64');
+    assert.match(masker, /if \(depth > MAX_NESTING_DEPTH\) \{\n\s+throw new NestingTooDeep\(\);/, 'the walk stops past the cap');
+    assert.match(masker, /catch \(NestingTooDeep \| StackOverflowError tooDeep\)/, 'a too-deep body becomes a placeholder');
+    const filter = s.file('HttpLoggingFilter.java');
+    assert.ok(filter.includes('} catch (RuntimeException logFailure) {') && filter.includes('minimalLine('), 'the filter still writes one line when logging fails');
+    const interceptor = s.file('LoggingClientInterceptor.java');
+    assert.ok(interceptor.includes('} catch (RuntimeException logFailure) {'), 'logging never changes the outbound result');
+    for (const needle of ['nestingOf64IsMaskedNormally', 'nestingOf65BecomesAPlaceholder', 'nestingOf50000BecomesAPlaceholderWithoutThrowing']) {
+      assert.ok(s.body.includes(needle), `BodyMaskerTest missing ${needle}`);
+    }
+  });
+});

@@ -2,7 +2,7 @@ Goes to `src/common/logging/body-masker.spec.ts`.
 
 ```ts
 // Default location: src/common/logging/body-masker.spec.ts
-import { DEFAULT_PII_FIELDS, loadLogBodies, loadMaskOptions, maskBody, maskValue, type MaskOptions } from './body-masker';
+import { DEFAULT_PII_FIELDS, loadLogBodies, loadMaskOptions, maskBody, maskValue, serializeMasked, type MaskOptions } from './body-masker';
 
 const JSON_TYPE = 'application/json';
 const DEFAULTS: MaskOptions = { piiFields: DEFAULT_PII_FIELDS, maxBodyBytes: 16384 };
@@ -76,6 +76,22 @@ describe('maskBody (core-logging masker contract)', () => {
   it('keeps a __proto__ key as data and masks already-parsed values', () => {
     expect(mask('{"__proto__":{"password":"p"}}')).toBe('{"__proto__":{"password":"***"}}');
     expect(maskValue({ when: new Date(0), otp: 1 }, DEFAULTS)).toEqual({ when: '1970-01-01T00:00:00.000Z', otp: '***' });
+  });
+
+  it('masks a body nested 64 deep and logs only the size past that, without throwing', () => {
+    const nest = (depth: number): string => `${'['.repeat(depth)}${']'.repeat(depth)}`;
+    expect(mask(nest(64))).toBe(nest(64));
+    expect(mask(nest(65))).toBe('<application/json 130 bytes>');
+    expect(mask(nest(50000))).toBe('<application/json 100000 bytes>');
+    expect(mask(`{"a":${nest(70)}}`)).toBe('<application/json 146 bytes>');
+    expect(maskValue(JSON.parse(nest(65)), DEFAULTS)).toBe('<application/json 130 bytes>');
+    expect(serializeMasked(JSON.parse(nest(50000)), DEFAULTS, 'application/problem+json')).toBe('<application/problem+json 100000 bytes>');
+  });
+
+  it('never throws, even for a value whose getter throws', () => {
+    const hostile = { get email(): string { throw new Error('boom'); } };
+    expect(serializeMasked(hostile, DEFAULTS)).toBe('<application/json 0 bytes>');
+    expect(maskValue(hostile, DEFAULTS)).toBe('<application/json 0 bytes>');
   });
 });
 ```

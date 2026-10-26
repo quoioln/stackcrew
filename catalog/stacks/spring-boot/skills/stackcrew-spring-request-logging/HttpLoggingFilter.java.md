@@ -101,8 +101,22 @@ public class HttpLoggingFilter extends OncePerRequestFilter {
         }
     }
 
+    /** Logging never throws (core-logging): when building the line fails, the same line with size-only bodies is written. */
     private void writeLine(ContentCachingRequestWrapper request, TeeResponseWrapper response, Throwable failure) {
         putUserContext();
+        try {
+            LoggingEventBuilder line = baseLine(request, response, failure);
+            if (masker.logBodies()) {
+                line = addIfPresent(line, LogFields.REQ_BODY, requestBody(request));
+                line = addIfPresent(line, LogFields.RES_BODY, responseBody(response));
+            }
+            line.log();
+        } catch (RuntimeException logFailure) {
+            minimalLine(request, response, failure).log();
+        }
+    }
+
+    private LoggingEventBuilder baseLine(ContentCachingRequestWrapper request, TeeResponseWrapper response, Throwable failure) {
         int status = failure == null ? response.getStatus() : HttpStatus.INTERNAL_SERVER_ERROR.value();
         long durationMs = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - (Long) request.getAttribute(START_ATTRIBUTE));
         Object route = request.getAttribute(HandlerMapping.BEST_MATCHING_PATTERN_ATTRIBUTE);
@@ -112,14 +126,19 @@ public class HttpLoggingFilter extends OncePerRequestFilter {
                 .addKeyValue(LogFields.ROUTE, route == null ? UNMATCHED_ROUTE : route.toString())
                 .addKeyValue(LogFields.STATUS, status)
                 .addKeyValue(LogFields.DURATION_MS, durationMs);
-        if (failure != null) {
-            line = line.addKeyValue(LogFields.ERROR, failure.getClass().getName());
+        return failure == null ? line : line.addKeyValue(LogFields.ERROR, failure.getClass().getName());
+    }
+
+    /** The fallback line: sizes only, no parsing and no masking. */
+    private LoggingEventBuilder minimalLine(ContentCachingRequestWrapper request, TeeResponseWrapper response, Throwable failure) {
+        LoggingEventBuilder line = baseLine(request, response, failure);
+        if (!masker.logBodies()) {
+            return line;
         }
-        if (masker.logBodies()) {
-            line = addIfPresent(line, LogFields.REQ_BODY, requestBody(request));
-            line = addIfPresent(line, LogFields.RES_BODY, responseBody(response));
-        }
-        line.log();
+        long declared = request.getContentLengthLong();
+        long written = response.bytesWritten();
+        line = addIfPresent(line, LogFields.REQ_BODY, declared > 0 ? masker.placeholder(request.getContentType(), declared) : null);
+        return addIfPresent(line, LogFields.RES_BODY, written > 0 ? masker.placeholder(response.getContentType(), written) : null);
     }
 
     /** The cached bytes, or a size placeholder when the app did not read the body or it passed the cache limit. */

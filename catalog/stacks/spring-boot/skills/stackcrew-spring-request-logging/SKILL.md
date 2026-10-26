@@ -47,6 +47,8 @@ logging:
 - A string over 1024 characters that is base64 (or a `data:` URI) becomes `<base64 N bytes>`.
 - After masking the body is serialized compactly; above `max-body-bytes` it keeps the first bytes (cut on a character) and appends `...[truncated T bytes]`.
 - JSON (`application/json`, `*+json`) and form bodies are parsed and masked. `multipart/*`, `application/octet-stream`, `image/*`, `application/pdf` log `<binary CT N bytes>`; anything else (XML, SOAP, text, unparseable JSON, no content type) logs `<CT N bytes>`. CT is the media type without parameters, `unknown` when missing. An empty body logs no field.
+- A body nested deeper than 64 objects or arrays logs `<CT N bytes>`: the walk stops at depth 64. Jackson 2.15+ (Boot 3.1+) also refuses nesting beyond 1000 by itself; Jackson 2.14 (Boot 3.0) has no limit, so the masker also catches a stack overflow while parsing.
+- Logging never throws. `mask` returns a placeholder on any failure; the filter and the interceptor write the line again without bodies if building it fails. A request or an outbound call never fails, or changes its result, because of its log line.
 
 ## 4. Inbound: the filter in the security chain
 
@@ -193,6 +195,25 @@ class BodyMaskerTest {
         assertThat(masker.mask(new byte[5000], "image/jpeg")).isEqualTo("<binary image/jpeg 5000 bytes>");
         assertThat(masker.mask("email=a%40b.c&amount=10".getBytes(StandardCharsets.UTF_8), "application/x-www-form-urlencoded"))
                 .isEqualTo("{\"email\":\"***\",\"amount\":\"10\"}");
+    }
+
+    @Test
+    void nestingOf64IsMaskedNormally() {
+        assertThat(mask(masker, nest(64))).isEqualTo(nest(64));
+    }
+
+    @Test
+    void nestingOf65BecomesAPlaceholder() {
+        assertThat(mask(masker, nest(65))).isEqualTo("<application/json 130 bytes>");
+    }
+
+    @Test
+    void nestingOf50000BecomesAPlaceholderWithoutThrowing() {
+        assertThat(mask(masker, nest(50000))).isEqualTo("<application/json 100000 bytes>");
+    }
+
+    private static String nest(int depth) {
+        return "[".repeat(depth) + "]".repeat(depth);
     }
 }
 ```

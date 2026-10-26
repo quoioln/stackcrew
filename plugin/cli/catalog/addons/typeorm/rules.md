@@ -14,7 +14,7 @@ Applies when the profile lists the `typeorm` add-on (TypeORM 0.3 with NestJS or 
 - Write with `save`, `insert`, `update` or a QueryBuilder `insert()`/`update()`: TypeORM 0.3.31 calls the subscriber on each. `upsert` (its update branch), `softDelete`, `restore` and raw SQL do not set the audit fields: avoid them on audited entities, or set the fields in the same statement and prove it with a test. `.callListeners(false)` on a QueryBuilder skips subscribers: never use it on audited entities.
 - Every write path an entity uses has an "audit fields filled" test. This pins the behavior across TypeORM upgrades.
 - `synchronize: false` everywhere except local development. Schema changes go through migrations only; never edit an applied migration.
-- Transactions use `DataSource.transaction(...)` or a `QueryRunner` (connect, start, commit or rollback, release in `finally`). Do all work in the transaction through its manager.
+- Transactions use `DataSource.transaction(...)` or a `QueryRunner` (connect, start, commit or rollback, release in `finally`). Inside, reach a tenant entity only through its repository's `withManager(manager)`; never `manager.getRepository(Entity)`, `manager.update` or `manager.delete`, which carry no tenant condition. Other entities use the transaction's manager.
 - Avoid N+1: load relations with `relations` or an intentional join, never inside a loop. Select only the columns a list needs.
 - Every list query is paginated (`take`/`skip` or keyset) with a hard maximum page size and a stable `order`.
 - Entities never leave the service layer: map to a response DTO (or a plain type) before returning.

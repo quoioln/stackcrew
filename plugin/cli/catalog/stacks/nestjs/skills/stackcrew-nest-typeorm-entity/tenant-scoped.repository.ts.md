@@ -2,7 +2,9 @@ Goes to `src/common/database/tenant-scoped.repository.ts`.
 
 ```ts
 // Default location: src/common/database/tenant-scoped.repository.ts
-import { IsNull, type DeepPartial, type FindManyOptions, type FindOneOptions, type FindOptionsWhere, type Repository } from 'typeorm';
+import {
+  IsNull, type DeepPartial, type EntityManager, type FindManyOptions, type FindOneOptions, type FindOptionsWhere, type Repository,
+} from 'typeorm';
 import type { QueryDeepPartialEntity } from 'typeorm/query-builder/QueryPartialEntity';
 import { isCrossTenant, requireTenantId } from '../context/request-context';
 import { {{sc:baseTenantEntity}} } from './base-tenant.entity';
@@ -14,10 +16,22 @@ type Where<T> = FindOptionsWhere<T> | FindOptionsWhere<T>[];
  * and soft delete carries the {{sc:tenantColumn}} condition from the request context; a lookup by id of another
  * tenant's row finds nothing. No tenant in the context throws MissingTenantError. Inside runCrossTenant reads see every
  * tenant and writes throw. Extend it per entity; a bulk write a feature needs becomes a method here, never a
- * QueryBuilder in a service.
+ * QueryBuilder in a service. Inside a transaction use withManager(manager), never manager.getRepository(Entity).
  */
 export class TenantScopedRepository<T extends {{sc:baseTenantEntity}}> {
   constructor(protected readonly repository: Repository<T>) {}
+
+  /**
+   * The same scoped API (subclass methods included) on a transaction's manager:
+   * dataSource.transaction((manager) => this.profiles.withManager(manager).update({ id }, values)).
+   * manager.getRepository(Entity), manager.update and manager.delete carry no tenant condition: never use them for a
+   * tenant entity.
+   */
+  withManager(manager: EntityManager): this {
+    const scoped: this = Object.create(this); // inherits every method of this repository and its subclass
+    Object.defineProperty(scoped, 'repository', { value: manager.getRepository<T>(this.repository.target) });
+    return scoped;
+  }
 
   async find(options: FindManyOptions<T> = {}): Promise<T[]> {
     return this.repository.find({ ...options, where: this.readScope(options.where) });

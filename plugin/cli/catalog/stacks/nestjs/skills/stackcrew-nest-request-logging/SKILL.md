@@ -30,6 +30,7 @@ Search the codebase and the shared libraries ({{sc:sharedLibraries}}) for `maskB
 
 - `nestjs-pino` **4.x** with `pino` and `pino-http`: the logger. Nest's built-in JSON logger needs Nest 11, and `nestjs-pino` 5 needs Nest 11 too.
 - `@nestjs/axios` 3.x and `axios` for outbound calls; `jwks-rsa` for the JWKS keys (stack rule, Authentication).
+- `@opentelemetry/api` for `traceId` and `spanId` (`activeTraceFields`); it comes with the OpenTelemetry SDK. Without OpenTelemetry in the project, ask before adding it, or leave `activeTraceFields` out.
 - Local text output: `pino-pretty` as a dev dependency with `transport: { target: 'pino-pretty' }` in `pinoHttpOptions`, only when a local flag is set. JSON everywhere else.
 
 ## 3. Configuration
@@ -69,7 +70,7 @@ void bootstrap();
 
 - `rawBody: true` keeps the bytes of JSON and form request bodies, which Nest's two body parsers read anyway. Nothing else is buffered for logging.
 - `setupApp` registers the middleware with `app.use()`. Before `init()` that puts it ahead of the body parsers that `init()` adds, so a malformed JSON body still gets its line. Call `app.enableCors()` after `setupApp`. If the app uses `compression`, register it before `setupApp` so the line sees the uncompressed body.
-- `pinoHttpOptions` turns pino-http's own request lines off (`autoLogging: false`; they would be a second line), keeps the request object and its headers off every line (`quietReqLogger`), and adds `requestId`, `userId` and `tenantId` from the request context to every line (`mixin`).
+- `pinoHttpOptions` turns pino-http's own request lines off (`autoLogging: false`; they would be a second line), keeps the request object and its headers off every line (`quietReqLogger`), and adds `requestId`, `userId`, `tenantId`, `traceId` and `spanId` from the request context and the active OpenTelemetry span to every line (`mixin`).
 
 ## 5. The masker contract
 
@@ -79,13 +80,15 @@ void bootstrap();
 - A string over 1024 characters that is base64 (or a `data:` URI) becomes `<base64 N bytes>`.
 - After masking the body is serialized compactly; above `LOG_MAX_BODY_BYTES` it keeps the first bytes (cut on a character) and appends `...[truncated T bytes]`.
 - JSON (`application/json`, `*+json`) and form bodies are parsed and masked. `multipart/*`, `application/octet-stream`, `image/*`, `application/pdf` log `<binary CT N bytes>`; anything else (XML, SOAP, text, unparseable JSON, no content type) logs `<CT N bytes>`. CT is the media type without parameters, `unknown` when missing. An empty body logs no field.
-- `maskBody(raw, contentType, opts)` is for bytes and strings; `serializeMasked(value, opts)` for a body that is already parsed. Never call `maskValue` on a string you have not parsed as JSON.
+- A body nested deeper than 64 objects or arrays logs `<CT N bytes>`: the walk stops at depth 64, so a crafted 10 KB body of brackets cannot exhaust the stack.
+- `maskBody(raw, contentType, opts)` is for bytes and strings; `serializeMasked(value, opts, contentType)` for a body that is already parsed. Never call `maskValue` on a string you have not parsed as JSON.
+- Logging never throws. The masker returns a placeholder on any failure. Every line is written through `writeCallLine`, which falls back to the same line with size-only bodies and turns a logger failure into a process warning. A request, an outbound call or a message never fails, or changes its result, because of its log line.
 
 ## 6. Inbound: one line per request
 
-The line: `event=http_in`, `method`, `route` (the Express route template, such as `/v1/customer-profiles/:id`, recorded by `RouteTemplateGuard`; `UNMATCHED` when no handler matched), `status`, `durationMs`, `reqBody`, `resBody`, `requestId`, `userId`, `tenantId`, and `error` with the exception class when the filter handled one (`ClientAbort` when the client closed the connection first). INFO for 2xx/3xx, WARN for 4xx, ERROR for 5xx.
+The line: `event=http_in`, `method`, `route` (the Express route template, such as `/v1/customer-profiles/:id`, recorded by `RouteTemplateGuard`; `UNMATCHED` when no handler matched), `status`, `durationMs`, `reqBody`, `resBody`, `requestId`, `userId`, `tenantId`, `traceId` and `spanId` (the server span of OpenTelemetry's HTTP instrumentation, when there is one), and `error` with the exception class when the filter handled one. When the client closes the connection first, the line has `status` 499 and `error` `ClientAbort`. INFO for 2xx/3xx, WARN for 4xx, ERROR for 5xx.
 
-- Every request gets exactly one line, written when the response finishes or the connection closes: success, 401 for a missing or invalid token, 403 from a guard, 404 for an unknown route, 400 from the `ValidationPipe` or a malformed body, 413 for a body over the parser limit, 500. Only `SKIPPED_PATHS` (`/health`, `/metrics` and the paths below them) are skipped; `/health-records` is logged.
+- Every request gets exactly one line, written when the response finishes or the connection closes: success, 401 for a missing or invalid token, 403 from a guard, 404 for an unknown route, 400 from the `ValidationPipe` or a malformed body, 413 for a body over the parser limit, 500. Only `SKIPPED_PATHS` (`/health`, `/metrics` and the paths below them) are skipped; `/health-records` is logged. They are matched against `req.path`, which includes a global prefix: with `app.setGlobalPrefix('api')` call `setupApp(app, ['/api/health', '/api/metrics'])`.
 - `userId` and `tenantId` are read from the request when the line is written, so a 403 after authentication carries them and a 401 does not. They are set even when undefined, so the pino mixin cannot fill them from another context.
 - The response is never held back. Every byte goes straight to the client. A JSON, `*+json` or form body that `res.json`/`res.send` writes in one piece (up to 2 MiB) is kept by reference and masked. Streams, `StreamableFile`, SSE and downloads are only counted and log `<CT N bytes>`.
 - Request bodies: JSON and form bodies are masked from `req.rawBody` (up to 2 MiB). Other types, and bodies the parser rejected, log `<CT N bytes>` from `Content-Length`.
@@ -95,7 +98,7 @@ The line: `event=http_in`, `method`, `route` (the Express route template, such a
 ### The request context
 
 - `httpLoggingMiddleware` binds `{ requestId }` to the request. `JwtStrategy.validate` (stack rule) binds the user, `{{sc:tenantClaim}}` and `{{sc:rolesClaim}}` with `bindAuthenticatedUser`. It does not use AsyncLocalStorage there, because callbacks inside passport and jwks-rsa can run in another request's async context.
-- `RequestContextInterceptor` then runs the pipes, the handler and everything they await inside `runWithRequestContext`. Persistence, `runCrossTenant` and the log mixin read it with `currentContext()`; nothing reads the token again.
+- `RequestContextInterceptor` then runs the pipes, the handler and everything they await inside `runWithRequestContext`. Persistence, `runCrossTenant` and the log mixin read it with `currentContext()`; nothing reads the token again. It subscribes to the handler inside the context, so it works on every NestJS 10 release, including those before 10.0.4, which lack Nest's own async-context binding.
 - `runWithRequestContext` never grants the system identity or cross-tenant reads, whatever the context object says, and refuses to replace the context of another user.
 - `runAsSystem(tenantId, fn)` is the system job entry: the only way to act as `{{sc:systemUser}}` and to call `runCrossTenant` without a role. Call it from scheduled jobs and migrations only. A token `sub`, an `x-user-id` header or a `runWithRequestContext` user equal to `{{sc:systemUser}}` stays an ordinary user.
 
@@ -137,8 +140,13 @@ Producers send the headers `x-request-id`, `x-tenant-id` and `x-user-id`. A cons
 // a consumer method (any broker)
 async onMessage(payload: Buffer | undefined, contentType: string | undefined, headers: Readonly<Record<string, unknown>> | undefined): Promise<void> {
   await runWithRequestContext(contextFromMessageHeaders(headers), async () => {
-    const reqBody = this.logBodies ? maskBody(payload, contentType ?? JSON_CONTENT_TYPE, this.maskOptions) : undefined;
-    this.logger.log({ event: LogEvent.MESSAGE_IN, ...contextLogFields(), reqBody }, LogEvent.MESSAGE_IN);
+    try {
+      const reqBody = this.logBodies ? maskBody(payload, contentType ?? JSON_CONTENT_TYPE, this.maskOptions) : undefined;
+      this.logger.log({ event: LogEvent.MESSAGE_IN, ...contextLogFields(), reqBody }, LogEvent.MESSAGE_IN);
+    } catch (failure: unknown) {
+      // logging never changes the result: the message is still handled
+      process.emitWarning(`message_in line not written (${failure instanceof Error ? failure.name : typeof failure})`);
+    }
     await this.handler.handle(this.codec.read(payload)); // read() rejects a missing or invalid payload with a non-retryable error
   });
 }

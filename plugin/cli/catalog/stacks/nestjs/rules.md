@@ -13,7 +13,7 @@ NestJS 10 on Express with TypeScript strict. Applies with the TypeScript rule (S
 - Never return an entity from a controller, not even with `ClassSerializerInterceptor` and `@Exclude()`. A response DTO class has `@Expose()` and `@ApiProperty()` on every field and is built with `plainToInstance(XResponse, source, { excludeExtraneousValues: true })` or a mapper.
 - Request DTOs are classes with class-validator decorators. One global `ValidationPipe({ whitelist: true, forbidNonWhitelisted: true, transform: true })` registered as `APP_PIPE`.
 - Configuration comes from `@nestjs/config` with `validate` at boot (class-validator); `process.env` is read only in `src/config/` (SC-ENV). Inject `ConfigService<Env, true>`; never read a variable in a service.
-- Authentication: passport-jwt verifying the signature through the identity provider's JWKS (`jwks-rsa`), checking `issuer`, `audience` and the algorithm; one global `JwtAuthGuard` (`APP_GUARD`) with a `@Public()` decorator for open routes. The strategy binds `sub`, claim `{{sc:tenantClaim}}` and claim `{{sc:rolesClaim}}` to the request; `RequestContextInterceptor` runs the handler inside `runWithRequestContext`. Nothing else decodes a token.
+- Authentication: passport-jwt verifying the signature through the identity provider's JWKS (`jwks-rsa`, ask first), checking `issuer`, `audience` and the algorithm; one global `JwtAuthGuard` (`APP_GUARD`) with a `@Public()` decorator for open routes. The strategy binds `sub`, claim `{{sc:tenantClaim}}` and claim `{{sc:rolesClaim}}` to the request; `RequestContextInterceptor` runs the handler inside `runWithRequestContext`. Nothing else decodes a token.
 - Persistence with TypeORM per `addon-typeorm`: entities extend `{{sc:baseEntity}}`/`{{sc:baseTenantEntity}}`, tenant entities only through their `TenantScopedRepository`, migrations only (skill `stackcrew-nest-typeorm-entity`).
 - Errors: one global `AllExceptionsFilter` answers RFC 7807 `application/problem+json` with a constant `detail`; domain errors extend `ProblemError`. Never send `exception.message`.
 - Outbound HTTP only through `HttpService` (`@nestjs/axios`) with a `timeout` per client, base URLs from config, and `OutboundHttpLogger` on that module. Never `fetch` or a bare axios instance.
@@ -182,7 +182,7 @@ export class JwtAuthGuard extends AuthGuard('jwt') {
 
 - Register `JwtStrategy`, `{ provide: APP_GUARD, useClass: JwtAuthGuard }` and `RequestContextInterceptor` in `CommonModule` (request-logging skill). Mark health checks and webhooks `@Public()`; a public route touches no tenant entity.
 - The strategy binds the user to the request object, not to AsyncLocalStorage: callbacks inside passport and jwks-rsa may run in another request's async context.
-- Roles for authorization come from `AuthUser.roles` (a roles guard with `@Roles(...)`); object-level checks (no IDOR) go through the tenant repository and the owner field.
+- Authorization by role reads `AuthUser.roles` (`req.user`, set by the strategy) in a guard on the route or controller; object-level checks (no IDOR) go through the tenant repository and the owner field.
 
 ## Persistence
 
@@ -191,7 +191,7 @@ Per `addon-typeorm` and skill `stackcrew-nest-typeorm-entity`:
 - Services inject the entity's `TenantScopedRepository` subclass; a lookup by id of another tenant's row returns `null` and becomes 404.
 - `AuditSubscriber` fills `createdBy`/`updatedBy` from the request context; `TenantSubscriber` assigns the tenant and refuses other tenants' rows.
 - Jobs and migrations run inside `runAsSystem(tenantId, work)`; consumers inside `runWithRequestContext(contextFromMessageHeaders(headers), work)`. Cross-tenant reads only through `runCrossTenant(reason, work)`, allowed for `CROSS_TENANT_ROLES` (default {{sc:crossTenantRoles}}) and the system job entry.
-- Transactions: `dataSource.transaction(async (manager) => ...)`, and all work inside through `manager`. Never a remote call inside a transaction.
+- Transactions: `dataSource.transaction(async (manager) => ...)`. Inside, a tenant entity goes only through its repository's `withManager(manager)` (`this.profiles.withManager(manager).update(...)`); `manager.getRepository(Entity)`, `manager.update` and `manager.delete` carry no tenant condition and let tenant B change tenant A's rows. Never a remote call inside a transaction.
 
 ## Errors (RFC 7807)
 

@@ -57,6 +57,8 @@ One masker, shared by inbound, outbound and consumers. Behavior (the same in eve
 - **Base64:** a string longer than 1024 characters that is base64 (optionally a `data:` URI) becomes `<base64 N bytes>` with N the decoded size.
 - **Size:** serialize compactly. Above 16 KB (`LOG_MAX_BODY_BYTES` or `app.logging.max-body-bytes`, default 16384) keep the first bytes, cut at a character boundary, and append `...[truncated T bytes]` with T the full size.
 - **Content types:** parse and mask `application/json` (and `*+json`) and `application/x-www-form-urlencoded`. `multipart/*`, `application/octet-stream`, `image/*` and `application/pdf` log the placeholder `<binary CT N bytes>`, where CT is the content type and N the size in bytes. Everything else (XML, SOAP, `text/*`, a missing content type, JSON that does not parse) logs only the placeholder `<CT N bytes>` (content type, or `unknown` when missing, and size in bytes); the content is not logged.
+- **Nesting:** a body nested deeper than 64 objects or arrays logs only `<CT N bytes>`. The masker walks at most 64 levels; it never recurses without a bound, so a crafted body of brackets cannot exhaust the stack.
+- **Logging never throws:** if masking or writing a line fails, the one line is still written with size-only bodies, and the request, the outbound call or the message keeps its result. A log line is never the reason a call fails.
 - **Switch:** `LOG_BODIES` or `app.logging.log-bodies` (default on). Off drops `reqBody` and `resBody` and keeps the one-line log.
 - Strip or escape CR and LF in logged values.
 

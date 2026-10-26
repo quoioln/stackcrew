@@ -52,6 +52,8 @@ public class BodyMasker {
     private static final int BASE64_BYTES_PER_GROUP = 3;
     private static final int UTF8_CONTINUATION_MASK = 0xC0;
     private static final int UTF8_CONTINUATION_BITS = 0x80;
+    /** A body nested deeper than this (objects or arrays) logs only its size: the walk never recurses without a bound. */
+    private static final int MAX_NESTING_DEPTH = 64;
     private static final ObjectMapper JSON = new ObjectMapper();
     private static final ObjectReader STRICT_READER = JSON.reader().with(DeserializationFeature.FAIL_ON_TRAILING_TOKENS);
 
@@ -72,16 +74,23 @@ public class BodyMasker {
         return logBodies;
     }
 
-    /** The masked, capped body for a log field, or null when there is no body. */
+    /**
+     * The masked, capped body for a log field, or null when there is no body. Never throws: unparseable JSON, a body
+     * nested deeper than MAX_NESTING_DEPTH, or any other failure gives the `<CT N bytes>` placeholder.
+     */
     public String mask(byte[] body, String contentType) {
         if (body == null || body.length == 0) {
             return null;
         }
-        String type = mediaType(contentType);
-        if (type.equals(FORM_TYPE)) {
-            return maskForm(body, type);
+        try {
+            String type = mediaType(contentType);
+            if (type.equals(FORM_TYPE)) {
+                return maskForm(body, type);
+            }
+            return isMaskable(contentType) ? maskJson(body, type) : placeholder(contentType, body.length);
+        } catch (RuntimeException failure) {
+            return placeholder(contentType, body.length); // logging never throws (core-logging)
         }
-        return isMaskable(contentType) ? maskJson(body, type) : placeholder(contentType, body.length);
     }
 
     /** True for the bodies this masker parses (JSON, *+json, form); everything else only ever logs its size. */
@@ -103,9 +112,11 @@ public class BodyMasker {
             if (tree == null || tree.isMissingNode()) {
                 return placeholder(type, body.length);
             }
-            return truncate(JSON.writeValueAsString(maskTree(tree)));
+            return truncate(JSON.writeValueAsString(maskTree(tree, 1)));
         } catch (IOException unparseable) {
-            return placeholder(type, body.length);
+            return placeholder(type, body.length); // also Jackson 2.15+'s own nesting limit (StreamConstraintsException)
+        } catch (NestingTooDeep | StackOverflowError tooDeep) {
+            return placeholder(type, body.length); // Jackson 2.14 (Boot 3.0) has no nesting limit of its own
         }
     }
 
@@ -119,25 +130,34 @@ public class BodyMasker {
                     form.put(key, equals < 0 ? "" : URLDecoder.decode(pair.substring(equals + 1), StandardCharsets.UTF_8));
                 }
             }
-            return truncate(JSON.writeValueAsString(maskTree(form)));
+            return truncate(JSON.writeValueAsString(maskTree(form, 1)));
         } catch (IllegalArgumentException | IOException malformed) {
             return placeholder(type, body.length);
         }
     }
 
-    /** Masks in place: a masked key's value becomes "***" whatever its type; containers are walked. */
-    private JsonNode maskTree(JsonNode node) { // stackcrew-allow: SC-TYPE log masking walks arbitrary JSON before it is written
+    /**
+     * Masks in place: a masked key's value becomes "***" whatever its type; containers are walked, never deeper than
+     * MAX_NESTING_DEPTH (depth 1 is the body itself).
+     */
+    private JsonNode maskTree(JsonNode node, int depth) { // stackcrew-allow: SC-TYPE log masking walks arbitrary JSON before it is written
         if (node instanceof ObjectNode object) { // stackcrew-allow: SC-TYPE log masking walks arbitrary JSON before it is written
+            if (depth > MAX_NESTING_DEPTH) {
+                throw new NestingTooDeep();
+            }
             List<String> names = new ArrayList<>();
             object.fieldNames().forEachRemaining(names::add);
             for (String name : names) {
-                object.set(name, isMaskedKey(name) ? TextNode.valueOf(MASK) : maskTree(object.get(name)));
+                object.set(name, isMaskedKey(name) ? TextNode.valueOf(MASK) : maskTree(object.get(name), depth + 1));
             }
             return object;
         }
         if (node instanceof ArrayNode array) {
+            if (depth > MAX_NESTING_DEPTH) {
+                throw new NestingTooDeep();
+            }
             for (int i = 0; i < array.size(); i++) {
-                array.set(i, maskTree(array.get(i)));
+                array.set(i, maskTree(array.get(i), depth + 1));
             }
             return array;
         }
@@ -208,6 +228,15 @@ public class BodyMasker {
         String type = (parameters < 0 ? contentType : contentType.substring(0, parameters))
                 .replaceAll("[\\r\\n]", "").trim().toLowerCase(Locale.ROOT);
         return type.isEmpty() ? UNKNOWN_TYPE : type;
+    }
+
+    /** Thrown inside the walk past MAX_NESTING_DEPTH; mask() turns it into a size placeholder. No stack trace. */
+    private static final class NestingTooDeep extends RuntimeException {
+        private static final long serialVersionUID = 1L;
+
+        NestingTooDeep() {
+            super(null, null, false, false);
+        }
     }
 }
 ```

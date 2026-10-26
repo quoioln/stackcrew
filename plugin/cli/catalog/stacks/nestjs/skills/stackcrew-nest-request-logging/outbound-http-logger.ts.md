@@ -8,7 +8,7 @@ import { AxiosHeaders, isAxiosError, type AxiosResponse, type InternalAxiosReque
 import { Readable } from 'node:stream';
 import { contextLogFields } from '../context/request-context';
 import { bodyPlaceholder, isMaskable, loadLogBodies, loadMaskOptions, maskBody, serializeMasked, type MaskOptions } from './body-masker';
-import { elapsedMs, levelFor, LogEvent, type CallLogLine } from './log-fields';
+import { elapsedMs, LogEvent, writeCallLine, type CallLogLine } from './log-fields';
 
 export const OUTBOUND_TARGET = Symbol('OUTBOUND_TARGET');
 const CAPTURE_LIMIT_BYTES = 2 * 1024 * 1024;
@@ -54,20 +54,23 @@ export class OutboundHttpLogger implements OnModuleInit {
     );
   }
 
+  /** Runs inside axios's promise chain: through writeCallLine, so a logging failure never changes the call's result. */
   private write(config: InternalAxiosRequestConfig, response: AxiosResponse | undefined, error: string | undefined): void {
     const started = this.startedAt.get(config);
-    const line: CallLogLine = {
+    const minimal = (): CallLogLine => ({
       event: LogEvent.HTTP_OUT,
       target: this.target,
       method: (config.method ?? 'get').toUpperCase(),
-      url: sanitizeUrl(this.http.axiosRef.getUri(config)),
       status: response?.status,
       durationMs: started === undefined ? undefined : elapsedMs(started),
       error,
+    });
+    writeCallLine(this.logger, () => ({
+      ...minimal(),
+      url: sanitizeUrl(this.http.axiosRef.getUri(config)),
       ...contextLogFields(),
       ...(this.logBodies ? { reqBody: requestBody(config, this.opts), resBody: response && responseBody(response, this.opts) } : {}),
-    };
-    this.logger[levelFor(line.status)](line, LogEvent.HTTP_OUT);
+    }), minimal);
   }
 }
 
@@ -108,7 +111,7 @@ function responseBody(response: AxiosResponse, opts: MaskOptions): string | unde
     return maskBody(Buffer.from(data), contentType, opts);
   }
   // axios parsed it as JSON; log it only when the response declares JSON or form
-  return isMaskable(contentType) ? serializeMasked(data, opts) : bodyPlaceholder(contentType, Buffer.byteLength(JSON.stringify(data)));
+  return isMaskable(contentType) ? serializeMasked(data, opts, contentType) : bodyPlaceholder(contentType, Buffer.byteLength(JSON.stringify(data)));
 }
 
 function declaredSize(contentType: string | undefined, contentLength: string | undefined): string | undefined {

@@ -32,6 +32,12 @@ const BASE64_CHARS_PER_GROUP = 4;
 const BASE64_BYTES_PER_GROUP = 3;
 const UTF8_CONTINUATION_MASK = 0xc0;
 const UTF8_CONTINUATION_BITS = 0x80;
+/** A body nested deeper than this (objects or arrays) logs only its size: the walk never recurses without a bound. */
+const MAX_NESTING_DEPTH = 64;
+const CONTAINER_MARKS = 2;
+
+/** Thrown inside the walk past MAX_NESTING_DEPTH; the exported functions turn it into a size placeholder. */
+class NestingTooDeep extends Error {}
 
 /** LOG_MASK_FIELDS (unset or empty = DEFAULT_PII_FIELDS) and LOG_MAX_BODY_BYTES. */
 export function loadMaskOptions(source: Pick<LoggingEnv, 'LOG_MASK_FIELDS' | 'LOG_MAX_BODY_BYTES'> = loggingEnv()): MaskOptions {
@@ -44,37 +50,44 @@ export function loadLogBodies(source: Pick<LoggingEnv, 'LOG_BODIES'> = loggingEn
   return source.LOG_BODIES !== 'false';
 }
 
-/** The masked, capped body for a log field; undefined when there is no body. */
+/**
+ * The masked, capped body for a log field; undefined when there is no body. Never throws: unparseable JSON, a body
+ * nested deeper than MAX_NESTING_DEPTH, or any other failure gives the `<CT N bytes>` placeholder.
+ */
 export function maskBody(raw: string | Buffer | undefined, contentType: string | undefined, opts: MaskOptions): string | undefined {
   if (raw === undefined || raw.length === 0) {
     return undefined;
   }
-  const type = mediaType(contentType);
   const size = Buffer.byteLength(raw);
-  const text = typeof raw === 'string' ? raw : raw.toString('utf8');
-  if (type === FORM_TYPE) {
-    return serializeMasked(parseForm(text), opts);
-  }
-  if (!isMaskable(contentType)) {
-    return bodyPlaceholder(contentType, size);
-  }
-  let parsed: unknown;
   try {
-    parsed = JSON.parse(text);
+    const text = typeof raw === 'string' ? raw : raw.toString('utf8');
+    if (mediaType(contentType) === FORM_TYPE) {
+      return maskAndSerialize(parseForm(text), opts) ?? bodyPlaceholder(contentType, size);
+    }
+    if (!isMaskable(contentType)) {
+      return bodyPlaceholder(contentType, size);
+    }
+    return maskAndSerialize(JSON.parse(text), opts) ?? bodyPlaceholder(contentType, size);
   } catch {
-    return bodyPlaceholder(contentType, size);
+    return bodyPlaceholder(contentType, size); // JSON that does not parse logs its size only
   }
-  return serializeMasked(parsed, opts);
 }
 
-/** Masks an already-parsed body (an object a handler returned, a parsed message): keys, nesting and base64; no size cap. */
+/**
+ * Masks an already-parsed body (an object a handler returned, a parsed message): keys, nesting and base64; no size
+ * cap. A value nested deeper than MAX_NESTING_DEPTH, or one whose getters throw, gives the size placeholder instead.
+ */
 export function maskValue(value: unknown, opts: MaskOptions): unknown {
-  return maskWith(value, maskedKeys(opts));
+  try {
+    return maskWith(value, maskedKeys(opts), 1);
+  } catch {
+    return bodyPlaceholder(JSON_TYPE, serializedSize(value));
+  }
 }
 
-/** maskValue, then compact JSON capped at maxBodyBytes: the log field for an already-parsed body. */
-export function serializeMasked(value: unknown, opts: MaskOptions): string {
-  return truncate(JSON.stringify(maskValue(value, opts)) ?? '', opts.maxBodyBytes);
+/** maskValue, then compact JSON capped at maxBodyBytes: the log field for an already-parsed body. Never throws. */
+export function serializeMasked(value: unknown, opts: MaskOptions, contentType: string = JSON_TYPE): string {
+  return maskAndSerialize(value, opts) ?? bodyPlaceholder(contentType, serializedSize(value));
 }
 
 /** True for the bodies the masker parses (JSON, *+json, form); everything else only ever logs its size. */
@@ -108,18 +121,64 @@ function maskedKeys(opts: MaskOptions): ReadonlySet<string> {
   return keys;
 }
 
-function maskWith(value: unknown, keys: ReadonlySet<string>): unknown {
+/** The masked JSON text, or undefined when the value cannot be masked (too deep, a getter or toJSON that throws). */
+function maskAndSerialize(value: unknown, opts: MaskOptions): string | undefined {
+  try {
+    return truncate(JSON.stringify(maskWith(value, maskedKeys(opts), 1)) ?? '', opts.maxBodyBytes);
+  } catch {
+    return undefined; // NestingTooDeep or a failing getter: the caller logs the size instead
+  }
+}
+
+/**
+ * The UTF-8 size of the value as compact JSON, for a placeholder. Computed without recursion, because JSON.stringify
+ * itself overflows on a value nested tens of thousands deep. 0 when a getter throws.
+ */
+function serializedSize(root: unknown): number {
+  try {
+    let size = 0;
+    const pending: unknown[] = [root];
+    while (pending.length > 0) {
+      const value = pending.pop();
+      if (Array.isArray(value)) {
+        size += CONTAINER_MARKS + Math.max(value.length - 1, 0); // [ ] and the commas
+        for (const item of value) pending.push(item);
+      } else if (typeof value === 'object' && value !== null) {
+        const entries = Object.entries(value);
+        size += CONTAINER_MARKS + Math.max(entries.length - 1, 0); // { } and the commas
+        for (const [key, item] of entries) {
+          size += Buffer.byteLength(JSON.stringify(key)) + 1; // "key":
+          pending.push(item);
+        }
+      } else {
+        size += Buffer.byteLength(JSON.stringify(value) ?? 'null');
+      }
+    }
+    return size;
+  } catch {
+    return 0;
+  }
+}
+
+/** Recursive, but never deeper than MAX_NESTING_DEPTH: depth 1 is the body itself. */
+function maskWith(value: unknown, keys: ReadonlySet<string>, depth: number): unknown {
   if (Array.isArray(value)) {
-    return value.map((item: unknown) => maskWith(item, keys));
+    if (depth > MAX_NESTING_DEPTH) {
+      throw new NestingTooDeep();
+    }
+    return value.map((item: unknown) => maskWith(item, keys, depth + 1));
   }
   if (typeof value === 'object' && value !== null && 'toJSON' in value && typeof value.toJSON === 'function') {
     const json: unknown = value.toJSON(); // a Date or a DTO with toJSON: mask what JSON.stringify would write
-    return maskWith(json, keys);
+    return maskWith(json, keys, depth + 1);
   }
   if (typeof value === 'object' && value !== null) {
+    if (depth > MAX_NESTING_DEPTH) {
+      throw new NestingTooDeep();
+    }
     // Object.fromEntries defines own properties, so a "__proto__" key stays a plain key
     return Object.fromEntries(Object.entries(value).map(([key, item]: [string, unknown]) =>
-      [key, isMaskedKey(key, keys) ? MASK : maskWith(item, keys)]));
+      [key, isMaskedKey(key, keys) ? MASK : maskWith(item, keys, depth + 1)]));
   }
   if (typeof value === 'string' && value.length > BASE64_MIN_EXCLUSIVE_LENGTH && BASE64.test(value)) {
     return `<base64 ${decodedSize(value)} bytes>`;
