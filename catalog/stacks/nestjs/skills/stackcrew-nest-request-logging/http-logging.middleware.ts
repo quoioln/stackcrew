@@ -9,8 +9,8 @@ import { elapsedMs, levelFor, LogEvent, type CallLogLine } from './log-fields';
 const CAPTURE_LIMIT_BYTES = 2 * 1024 * 1024;
 const UNMATCHED_ROUTE = 'UNMATCHED';
 const CLIENT_ABORT = 'ClientAbort';
-/** Health checks and metrics get no line. Adjust to the project's paths. */
-const SKIPPED_PATH_PREFIXES = ['/health', '/metrics'];
+/** Health checks and metrics get no line: these paths and the paths below them, not /health-records. Adjust to the project. */
+const SKIPPED_PATHS = ['/health', '/metrics'];
 
 type ResponseTee = { bytes: number; streamed: boolean; captured?: string | Buffer };
 
@@ -45,7 +45,7 @@ export function httpLoggingMiddleware(): RequestHandler {
   const opts = loadMaskOptions();
   const logBodies = loadLogBodies();
   return (req: RawBodyRequest<Request>, res: Response, next: NextFunction): void => {
-    if (SKIPPED_PATH_PREFIXES.some((prefix) => req.path.startsWith(prefix))) {
+    if (SKIPPED_PATHS.some((skipped) => req.path === skipped || req.path.startsWith(`${skipped}/`))) {
       next();
       return;
     }

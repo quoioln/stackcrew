@@ -257,9 +257,10 @@ test('nest request logging writes one line per request from a middleware ahead o
     const mw = s.file('http-logging.middleware.ts');
     for (const needle of ["res.once('finish', writeLine)", "res.once('close', writeLine)", 'if (written) {', 'req.rawBody', 'CAPTURE_LIMIT_BYTES = 2 * 1024 * 1024',
       'tee.streamed = true', "isMaskable(headerText(this.getHeader('content-type')))", 'userId: ctx?.userId', "UNMATCHED_ROUTE = 'UNMATCHED'",
-      'route: routeTemplates.get(req) ?? UNMATCHED_ROUTE']) {
+      'route: routeTemplates.get(req) ?? UNMATCHED_ROUTE', 'req.path === skipped || req.path.startsWith(`${skipped}/`)']) {
       assert.ok(mw.includes(needle), `middleware missing ${needle}`);
     }
+    assert.ok(!/req\.path\.startsWith\((prefix|skipped)\)/.test(mw), 'a bare prefix match would skip /health-records');
     const common = s.file('common.module.ts');
     const routeGuard = common.indexOf('useClass: RouteTemplateGuard');
     assert.ok(routeGuard > 0 && routeGuard < common.indexOf('useClass: JwtAuthGuard'), 'RouteTemplateGuard is the first global guard');
