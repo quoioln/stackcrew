@@ -91,3 +91,60 @@ test('stackcrew-init tells the agent where to find the reference skills on the f
   assert.ok(text.includes('${CLAUDE_PLUGIN_ROOT}/cli/catalog/skills/'));
   assert.ok(text.includes('re-check after the first sync'));
 });
+
+const readCatalogFile = (rel) => readFile(path.join(ROOT, 'catalog', rel), 'utf8');
+
+test('stackcrew-init asks for project conventions and records them in conventions', async () => {
+  const { CONVENTION_KEYS } = await import('../src/conventions.js');
+  const text = await readCatalogFile('skills/stackcrew-init/SKILL.md');
+  assert.match(text, /^10\. \*\*Project conventions\*\*/m);
+  for (const needle of ['aliases.ui', 'components.json', 'BaseEntity', 'omit', 'conventions']) {
+    assert.ok(text.includes(needle), `init skill is missing "${needle}"`);
+  }
+  for (const key of CONVENTION_KEYS.filter((k) => k !== 'typeFreeFiles' && k !== 'tenantColumn' && k !== 'systemUser')) {
+    assert.ok(text.includes(key), `init skill never names convention key ${key}`);
+  }
+  // P2-R8: a shared skill may use only the cli and version placeholders (it is read raw, without a stack).
+  const placeholders = [...text.matchAll(/\{\{sc:([\w]+)\}\}/g)].map((m) => m[1]);
+  assert.deepEqual(placeholders.filter((p) => p !== 'cli' && p !== 'version'), []);
+  assert.match(text, /internal shared libraries/i);
+  assert.match(text, /--wire/);
+  assert.match(text, /package\.json/);
+  assert.match(text, /never edit `node`|`node` is never edited/i);
+});
+
+test('stackcrew-init summary points to slash commands, not a plugin-cache path', async () => {
+  const text = await readCatalogFile('skills/stackcrew-init/SKILL.md');
+  assert.doesNotMatch(text, /node .*stackcrew\.js/);
+  for (const cmd of ['/stackcrew:sync', '/stackcrew:add <addon>', '/stackcrew:check']) {
+    assert.ok(text.includes(cmd), `summary is missing ${cmd}`);
+  }
+  assert.ok(text.includes('{{sc:cli}} sync|add|check'));
+});
+
+test('profile-schema documents every convention key with its default', async () => {
+  const { CONVENTION_DEFAULTS, validateConventions } = await import('../src/conventions.js');
+  const text = await readCatalogFile('skills/stackcrew-init/references/profile-schema.md');
+  for (const [key, def] of Object.entries(CONVENTION_DEFAULTS)) {
+    const row = text.split('\n').find((l) => l.startsWith(`| \`${key}\``));
+    assert.ok(row, `profile-schema has no table row for ${key}`);
+    assert.ok(row.includes(JSON.stringify(def)), `row for ${key} does not show default ${JSON.stringify(def)}`);
+  }
+  assert.ok(text.includes('node.wired') && text.includes('"node"'));
+  const example = JSON.parse(/```json\n([\s\S]*?)\n```/.exec(text)[1]);
+  assert.ok(example.conventions, 'eKYC example has no conventions');
+  assert.deepEqual(validateConventions(example.conventions), []);
+  assert.doesNotMatch(text, /\{\{sc:(?!cli\}\}|version\}\})/);
+});
+
+test('sync command documents --wire for Java (ArchUnit) and TypeScript (ESLint)', async () => {
+  const text = await readCatalogFile('plugin-commands/sync.md');
+  assert.ok(text.includes('ArchUnit') && text.includes('ESLint'));
+  assert.ok(text.includes('package.json'));
+});
+
+test('next feature-page skill: empty state and past-last-page bullets agree', async () => {
+  const text = await readCatalogFile('stacks/nextjs/skills/stackcrew-next-feature-page/SKILL.md');
+  assert.doesNotMatch(text, /shows the table's own empty row/);
+  assert.match(text, /`total === 0`[^\n]*no rows at all/);
+});

@@ -16,7 +16,9 @@
   "decisions": [
     { "id": "D-001", "area": "...", "decision": "...", "rationale": "...", "rejected": ["..."] }
   ],
-  "java": { "basePackage": "com.acme.app", "wired": false }
+  "java": { "basePackage": "com.acme.app", "wired": false },
+  "node": { "wired": false },
+  "conventions": { "<key>": "<value>" }
 }
 ```
 
@@ -30,6 +32,25 @@ Fields:
 - `context`: free-form map of string to string, one key per interview topic (domain, integrations, scale, timeline, stability, extensibility, team, stack, tools). Values are plain strings, not arrays or objects.
 - `decisions`: ordered list. Each entry has string `id`, `area`, `decision`, `rationale` and a string array `rejected` (empty when no alternative was weighed). Use ids `D-001`, `D-002`, ... and never reuse or renumber one. To change a decision, add a new entry that says it supersedes the old one in its `rationale`.
 - `java`: only for Java stacks. `basePackage` is a valid Java package or `""`. `wired` is `true` once ArchUnit is wired into the build; `sync --wire` sets it, so do not set it by hand.
+- `node`: only for TypeScript stacks. `node.wired` is `true` once the stackcrew rules are wired into the project's ESLint config; `sync --wire` sets it, so never edit `node` by hand.
+- `conventions`: optional object of per-project conventions. Keep only the keys that differ from the default; a missing key means its default. An unknown key or an invalid value makes `sync` exit 1 and write nothing.
+
+## Conventions
+
+| key | default | meaning |
+|---|---|---|
+| `sharedLibraries` | `[]` | Internal packages or modules to reuse instead of re-implementing. Array of non-empty strings. |
+| `baseEntity` | `"BaseEntity"` | Name of the abstract base class for entities (audit fields). An identifier. |
+| `baseTenantEntity` | `"BaseTenantEntity"` | Name of the abstract base class for tenant-scoped entities. An identifier. |
+| `tenantClaim` | `"tenant_id"` | Token claim or session field that carries the tenant id. |
+| `tenantColumn` | `"tenantId"` | Name of the tenant column or field on tenant-scoped entities. An identifier. |
+| `rolesClaim` | `"roles"` | Token claim or session field that carries the user's roles. |
+| `crossTenantRoles` | `["super_admin"]` | Roles allowed to read across tenants. An empty list disables cross-tenant access. |
+| `sharedComponents` | `"src/components/ui"` | Folder of shared UI components (fullstack and frontend stacks). Relative POSIX path from the project root: no leading `/`, no `\`, no `..`. With shadcn, the folder that `aliases.ui` in `components.json` resolves to. |
+| `systemUser` | `"system"` | Audit user recorded when no user is in context (jobs, migrations). |
+| `typeFreeFiles` | `[]` | Globs of files where the guard forbids declaring a type or interface (TypeScript stacks). When non-empty it replaces the stack default (service files). Array of non-empty strings. |
+
+`tenantClaim`, `rolesClaim`, `systemUser` and every role in `crossTenantRoles` may use only the characters `A-Z a-z 0-9 _ . : / -`, because they end up in code, YAML and a comma-separated list.
 
 ## Example: eKYC provider hub on Spring Boot
 
@@ -74,6 +95,13 @@ Fields:
       ]
     }
   ],
-  "java": { "basePackage": "com.acme.ekyc", "wired": false }
+  "java": { "basePackage": "com.acme.ekyc", "wired": false },
+  "conventions": {
+    "sharedLibraries": ["com.acme.platform:acme-common"],
+    "baseEntity": "AuditedEntity",
+    "baseTenantEntity": "AuditedTenantEntity",
+    "tenantClaim": "org_id",
+    "crossTenantRoles": ["platform_admin"]
+  }
 }
 ```
