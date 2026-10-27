@@ -1,0 +1,23 @@
+{
+  "id": "nextjs",
+  "name": "Next.js",
+  "category": "fullstack",
+  "language": "typescript",
+  "minVersion": "16.0",
+  "globs": [
+    "**/*.ts",
+    "**/*.tsx"
+  ],
+  "aliases": [
+    "next"
+  ],
+  "priority": 25,
+  "detect": {
+    "files": [],
+    "contains": [],
+    "excludeContains": [],
+    "packageDeps": [
+      "next"
+    ]
+  }
+}

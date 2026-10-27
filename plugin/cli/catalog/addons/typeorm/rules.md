@@ -38,5 +38,6 @@ Applies when the profile lists the `typeorm` add-on (TypeORM 0.3 with NestJS or 
 
 ## Next.js
 
-- Create one `DataSource` per process and keep it on `globalThis` so hot reload does not open a new pool on every edit.
-- Keep TypeORM out of the client bundle: `import 'server-only'` in data modules, and list `typeorm` in `serverExternalPackages` (`pg` is already on Next's default list).
+- Keep the `DataSource` on `globalThis` so hot reload does not open a new pool on every edit, keyed by the module's entity list: Next.js evaluates server modules once per layer (Server Components and actions, route handlers), each with its own entity classes, so each layer gets one `DataSource` of its own.
+- Keep TypeORM out of the client bundle with `import 'server-only'` in data modules, and unbundled on the server: list `typeorm` in `serverExternalPackages` (`pg` is already on Next's default list). Without it, webpack builds warn about TypeORM's optional drivers, and each layer bundles its own copy.
+- Every column names its `type`: neither the Next.js compiler (without `emitDecoratorMetadata`) nor Vitest emits decorator metadata.
