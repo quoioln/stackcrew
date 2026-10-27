@@ -4,7 +4,7 @@ title: Next.js testing
 ---
 # Next.js testing
 
-Vitest for unit and integration tests, Testing Library for client components, Playwright for end-to-end tests. Extends the core testing rule. Use the tools the project already has; a missing one is a new dependency: ask the user before adding it.
+Vitest for unit and integration tests, Testing Library for client components, Playwright for end-to-end tests. Extends the core testing rule; the tester's procedure, with the Playwright config and sign-in setup, is the skill `stackcrew-nextjs-testing`. Use the tools the project already has; a missing one is a new dependency: ask the user before adding it.
 
 ## Essentials
 
@@ -15,7 +15,7 @@ Vitest for unit and integration tests, Testing Library for client components, Pl
 - Persistence runs against a real Postgres (the project's `vitest.int.config.ts`, the test database in Docker) with the real migrations and both subscribers. SQLite or an in-memory fake does not stand in for Postgres.
 - Every tenant entity has the audit and tenant tests from `core-persistence` (section "Entity base, audit and tenant isolation").
 - Never call a real third party from a test. Fake it with a local HTTP stub server (`node:http`) so `httpClient.fetch` and its `http_out` line run for real.
-- Mock only true boundaries: `auth()` and `next/headers` in a unit test, a repository port, a provider. Never mock the action under test, the masker, zod or TypeORM; call `redirect()` and `notFound()` for real.
+- Mock only true boundaries: `auth()`, `next/headers` and `next/cache` in a unit test, a repository, a provider. Never mock the action under test, the masker, zod or TypeORM; call `redirect()` and `notFound()` for real.
 - Cover at least three negative or edge cases per happy path, and every branch of changed logic.
 - Keep tests deterministic: no sleeps on fixed timers (wait with `vi.waitFor`), no order dependence, no network outside the database and local stubs.
 
@@ -87,7 +87,7 @@ CROSS_TENANT_ROLES=report_admin
 
 ## Server actions and route handlers
 
-- Call the wrapped action directly in Vitest with `vi.mock('next/headers')` and `vi.mock('<path to src>/auth')`; the action, its schema, the wrapper and the masker run for real. Assert the typed result of every branch (`ok`, `VALIDATION` with field errors, `UNAUTHENTICATED`, `FORBIDDEN`, `NOT_FOUND`) and the one `http_in` line.
+- Call the wrapped action directly in Vitest with `vi.mock('next/headers')`, `vi.mock('<path to src>/auth')` and `vi.mock('next/cache')` (`revalidatePath` needs the request store of Next.js); the action, its schema, the wrapper and the masker run for real. Assert the typed result of every branch (`ok`, `VALIDATION` with field errors, `UNAUTHENTICATED`, `FORBIDDEN`, `NOT_FOUND`) and the one `http_in` line.
 - A route handler is a function: call it with a `new NextRequest(...)` and `{ params: Promise.resolve({ id }) }`, then assert the response and the line.
 - Server actions that write go to a fake repository in unit tests (`vi.fn()` on the methods the action uses, typed with `Pick<CustomerProfileRepository, 'save' | 'create'>`) and to Postgres in an integration test.
 - Run code that reads the context inside `runWithRequestContext({ requestId: 'test', userId: 'alice', tenantId: 'tenant-a', roles: [] }, ...)`.
@@ -109,19 +109,10 @@ A component spec starts with `// @vitest-environment jsdom`, renders with `@test
 
 ## End-to-end (Playwright)
 
-```ts
-// e2e/customer-profiles.spec.ts
-import { expect, test } from '@playwright/test';
-
-test('lists the profiles of the signed-in tenant', async ({ page }) => {
-  await page.goto('/customer-profiles');
-  await expect(page.getByRole('heading', { name: 'Customer profiles' })).toBeVisible();
-  await expect(page.getByRole('row')).not.toHaveCount(0);
-});
-```
+`playwright.config.ts`, `e2e/auth.setup.ts` and `e2e/sessions.ts` ship with the skill `stackcrew-nextjs-testing`; the feature skills ship an E2E spec each.
 
 - Playwright covers the async Server Components: loading, empty and error states, and a full form round trip. Sign in once in a setup project and reuse its `storageState`; never stub `auth()` in an E2E run.
-- Seed and clean data through the app's own code (`runAsSystem` in a setup script), never with raw SQL on tenant tables.
+- Seed through the app's own UI or API (a form, a route handler), never with raw SQL on tenant tables. Server modules cannot be imported into Playwright (`server-only` throws there). Give every run its own users and second tenant (`E2E_RUN_ID`) instead of cleaning up.
 
 ## Naming and structure
 

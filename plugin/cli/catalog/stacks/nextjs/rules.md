@@ -10,14 +10,14 @@ Next.js 16 App Router with React 19 and TypeScript strict, used full-stack: Serv
 
 - Server Components by default. `'use client'` only on the leaf component that needs state, effects or browser APIs; pass it serializable props, never a function or a class instance.
 - Code that touches the database, a secret or a repository starts with `import 'server-only'`. Entities never reach the client: Server Components, server actions and route handlers map them to DTOs or plain objects first.
-- A server action parses its input with a zod schema kept in its own file (`schemas/`, type by `z.infer`), checks the caller and their permissions through `getRequestContext()` (which calls `auth()`), returns a typed result `{ ok: true, data } | { ok: false, error }`, calls `revalidatePath(path)` or `revalidateTag(tag, 'max')` after a write (`updateTag(tag)` when the caller must read its own write at once), and is wrapped with `withActionLogging`. An actions file declares no `interface` or `type` (SC-TYPEFILE).
+- A server action parses its input with a zod schema kept in its own file (`schemas/`, type by `z.infer`), checks the caller and their permissions through `getRequestContext()` (which calls `auth()`), returns a typed result `{ ok: true, data } | { ok: false, error }`, calls `revalidatePath(path)` or `revalidateTag(tag, 'max')` after a write (`updateTag(tag)` when the caller must read its own write at once), and is wrapped with `withActionLogging`. An actions file declares no `interface` or `type` (SC-TYPEFILE). Skill `stackcrew-next-server-action` (form and action), `stackcrew-next-route-handler` (API routes, RFC 7807 problems).
 - Route handlers are wrapped with `withRouteLogging`; outbound HTTP goes through `httpClient.fetch`; `onRequestError` in `instrumentation.ts` logs what escapes (skill `stackcrew-next-request-logging`, `core-logging`). Bodies are logged only by these, through the shared masker.
 - Forms use `react-hook-form` with `zodResolver` on the same schema the action parses. The action validates again: client validation is for the user, not for security.
 - Reuse before you write: components in `{{sc:sharedComponents}}` and the feature's existing components first; tables use the shared TanStack Table component. Never write a second button, input, dialog or table.
 - Classes go through `cn()` (`clsx` + `tailwind-merge`) and the design tokens of Tailwind 4; no inline `style`, no hardcoded colors.
 - Environment variables only through the `env` object of `@t3-oss/env-nextjs` in `src/env.ts` (SC-ENV); never `process.env` in a component, action or route.
 - `zustand` holds client UI state only (open panels, selections, wizard steps). Server data comes from Server Components or server actions, never from a client store.
-- Every page has its loading, empty and error states: `loading.tsx`, `error.tsx` (a Client Component with a retry button) and an empty state in the page.
+- Every page has its loading, empty and error states: `loading.tsx`, `error.tsx` (a Client Component with a retry button) and an empty state in the page (skill `stackcrew-next-feature-page`).
 - Persistence per `addon-typeorm`: one `DataSource` per server layer kept on `globalThis`, `typeorm` and `pino` in `serverExternalPackages`, `experimentalDecorators` in `tsconfig.json`, tenant entities only through `TenantScopedRepository` (skill `stackcrew-next-typeorm-entity`).
 - Write tests per `stack-nextjs-testing`: Vitest for schemas, mappers and actions; Testing Library for client components; Playwright for async Server Components.
 
@@ -138,7 +138,7 @@ export function toCustomerProfileDto(entity: CustomerProfile): CustomerProfileDt
 ## Forms
 
 - The form is a Client Component: `useForm<CreateCustomerProfileInput>({ resolver: zodResolver(createCustomerProfileSchema) })`, the action called in `handleSubmit`, and `result.error.fieldErrors` mapped back with `setError`. Inputs, labels and the submit button come from `{{sc:sharedComponents}}`.
-- Disable the submit button while the action runs; show the refusal the result carries, never a raw exception.
+- Disable the submit button while the action runs (`formState.isSubmitting`); show the refusal the result carries, never a raw exception. An action that throws rejects inside the submit handler, not in `error.tsx`: catch it there and show constant text.
 
 ## Authentication
 

@@ -21,7 +21,12 @@ const OPTS = { cli: 'npx stackcrew', version: '0.0.0' };
 const ALL = ['claude', 'cursor', 'codex', 'antigravity'];
 const LOGGING = 'stackcrew-next-request-logging';
 const ENTITY = 'stackcrew-next-typeorm-entity';
-const NEXT_SKILLS = [LOGGING, ENTITY];
+const SERVER_ACTION = 'stackcrew-next-server-action';
+const FEATURE_PAGE = 'stackcrew-next-feature-page';
+const ROUTE_HANDLER = 'stackcrew-next-route-handler';
+const TESTING_SKILL = 'stackcrew-nextjs-testing';
+const FEATURE_SKILLS = [SERVER_ACTION, FEATURE_PAGE, ROUTE_HANDLER];
+const NEXT_SKILLS = [LOGGING, ENTITY, ...FEATURE_SKILLS];
 const TEST_EXCLUDES = ['**/*.spec.ts', '**/*.spec.tsx', '**/*.test.ts', '**/*.test.tsx', '**/test/**', '**/tests/**', '**/e2e/**', '**/__tests__/**'];
 const ACTION_GLOBS = ['**/actions.ts', '**/*.actions.ts', '**/actions/**/*.ts'];
 
@@ -220,7 +225,7 @@ test('nextjs with typeorm and all four tools renders within every budget', async
     assert.ok(Buffer.byteLength(renderAgentsMdBlock(ctx).op.content) <= 16000);
     for (const o of ops.filter((x) => x.path.startsWith('.cursor/rules/stackcrew/'))) assert.ok(o.content.split('\n').length <= 500, `${o.path} lines`);
     for (const o of ops.filter((x) => x.path.startsWith('.agents/rules/stackcrew-'))) assert.ok(Buffer.byteLength(o.content) <= 24000, `${o.path} bytes`);
-    for (const name of NEXT_SKILLS) assert.ok(ops.some((o) => o.path.includes(name)), `${name} is rendered`);
+    for (const name of [...NEXT_SKILLS, TESTING_SKILL]) assert.ok(ops.some((o) => o.path.includes(name)), `${name} is rendered`);
     for (const o of ops) assert.ok(!o.content.includes('{{sc:'), `${o.path} has an unrendered placeholder`);
   });
 });
@@ -250,8 +255,9 @@ test('every next sibling file and code block passes the TypeScript and Next.js g
   await withRealCatalog(async (c) => {
     const compiled = compileGuardRules([...c.languages.get('typescript').guard, ...c.stacks.get('nextjs').guard]);
     const ctx = nextCtx(c, { addons: ['typeorm'] });
-    const skills = ctx.skills.filter((s) => NEXT_SKILLS.includes(s.name));
-    assert.equal(skills.length, NEXT_SKILLS.length, 'every next skill is scanned');
+    const scanned = [...NEXT_SKILLS, TESTING_SKILL];
+    const skills = ctx.skills.filter((s) => scanned.includes(s.name));
+    assert.equal(skills.length, scanned.length, 'every next skill is scanned');
     const sources = [];
     for (const k of skills) {
       for (const f of k.files) sources.push({ name: `${k.name}/${f.relPath}`, path: GOES_TO.exec(f.content)[1], text: codeOfSibling(f.content) });
@@ -485,5 +491,190 @@ test('next fix round 1: control flow by the own digest of the error, revalidateT
     assert.ok(entity.body.includes('yarn tsx --env-file=.env.local node_modules/typeorm/cli.js migration:run') && entity.body.includes('npx tsx'), 'yarn first, npm noted');
     assert.ok(!entity.file('customer-profile.persistence.int.spec.ts').includes('RequestContextInterceptor'), 'no NestJS class name');
     assert.match(entity.file('data-source.ts'), /The old entry stays in the\n \* Map/, 'the stale dev entry is explained');
+  });
+});
+
+// ---- Task 10: Next.js feature skills (server action, feature page, route handler) and the testing skill ----
+
+/** Every code block and sibling of a skill. */
+const allCode = (s) => [...s.files.map((f) => codeOfSibling(f.content)), ...[...s.body.matchAll(/```tsx?\n([\s\S]*?)```/g)].map((m) => m[1])].join('\n');
+const withoutComments = (text) => text.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '').replace(/\s\/\/ .*$/gm, '');
+
+test('next feature skills load and name Next.js in their descriptions', async () => {
+  await withRealCatalog(async (c) => {
+    assert.deepEqual(validateCatalog(c), []);
+    const byName = Object.fromEntries(c.stacks.get('nextjs').skills.map((k) => [k.name, k]));
+    for (const name of [...FEATURE_SKILLS, TESTING_SKILL]) {
+      const k = byName[name];
+      assert.ok(k, `${name} exists`);
+      assert.equal(k.kind, name === TESTING_SKILL ? 'testing' : 'task', `${name} kind`);
+      assert.deepEqual(k.requiresAddons, [], `${name} needs no add-on, like the NestJS feature skills`);
+      assert.deepEqual(k.paths, []);
+      assert.ok(k.description.startsWith('Use when') && k.description.includes('Next.js'), `${name} description`);
+      assert.ok(k.description.length <= 500, `${name} description length`);
+      assert.ok(!/always|any code|all code|every task|whenever the user|proactively/i.test(k.description), `${name} has a banned word`);
+      assert.ok(k.body.includes('SC-PREFLIGHT') || name === TESTING_SKILL, `${name} asks for the pre-flight note`);
+    }
+    const names = nextCtx(c).skills.map((k) => k.name);
+    for (const name of [...FEATURE_SKILLS, TESTING_SKILL]) assert.ok(names.includes(name), `${name} renders without add-ons`);
+  });
+});
+
+test('new next SKILL.md files are at most 350 lines', async () => {
+  await withRealCatalog(async (c) => {
+    for (const name of [...FEATURE_SKILLS, TESTING_SKILL]) {
+      const k = c.stacks.get('nextjs').skills.find((s) => s.name === name);
+      assert.ok(k, `${name} exists`);
+      const lines = k.body.split('\n').length;
+      assert.ok(lines <= 350, `${name} SKILL.md is ${lines} lines`);
+    }
+  });
+});
+
+test('next testing skill: siblings follow the "Goes to" format; the tester procedure covers every layer', async () => {
+  await withRealCatalog(async (c) => {
+    const s = nextSkill(c, TESTING_SKILL);
+    assert.ok(s.files.length > 0, 'the Playwright config and sign-in setup ship as siblings');
+    for (const f of s.files) {
+      assert.ok(/\.tsx?\.md$/.test(f.relPath) && !f.relPath.includes('/'), f.relPath);
+      const goesTo = GOES_TO.exec(f.content);
+      assert.ok(goesTo, `${f.relPath} starts with "Goes to" and the code block`);
+      assert.equal(f.content.split('```').length, 3, `${f.relPath}: one fenced block`);
+      assert.ok(codeOfSibling(f.content).startsWith(`// Default location: ${goesTo[1]}`), `${f.relPath}: the code names the same location`);
+    }
+    for (const needle of ['stack-nextjs-testing', 'Vitest', 'Testing Library', 'Playwright', 'vitest.int.config.ts', "vi.mock('next/headers'", "vi.mock('next/cache'",
+      'storageState', 'next typegen', 'tsc --noEmit', 'http_in', 'Never call a real', 'ask the user', SERVER_ACTION, FEATURE_PAGE, ROUTE_HANDLER, ENTITY, LOGGING]) {
+      assert.ok(s.body.includes(needle), `testing SKILL.md missing ${needle}`);
+    }
+    const setup = s.file('auth.setup.ts');
+    assert.ok(setup.includes("from 'next-auth/jwt'") && setup.includes('encode(') && setup.includes('storageState('), 'signs in by the app session format, auth() stays real');
+    const config = s.file('playwright.config.ts');
+    for (const needle of ['defineConfig', 'webServer', "dependencies: ['setup']", 'storageState']) assert.ok(config.includes(needle), `playwright.config.ts missing ${needle}`);
+    const testing = c.stacks.get('nextjs').testing.body;
+    assert.ok(testing.includes("vi.mock('next/cache')"), 'stack testing rule names next/cache as a boundary');
+    assert.ok(testing.includes(TESTING_SKILL), 'stack testing rule points at the tester skill');
+  });
+});
+
+test('next server action skill (golden task): eKYC schema file, wrapped action, caller and permission checks, DTO result, the form and its states', async () => {
+  await withRealCatalog(async (c) => {
+    const s = nextSkill(c, SERVER_ACTION);
+    const schema = s.file('register-kyc.schema.ts');
+    assert.ok(schema.includes('export const registerKycSchema = z.object(') && schema.includes('export type RegisterKycInput = z.infer<typeof registerKycSchema>;'), 'schema and z.infer type in their own file');
+    assert.ok(/errorMap: \(\) => \(\{ message:/.test(schema), 'enum errors are constant text: zod 3 echoes the received value otherwise');
+    assert.ok(!schema.includes('.entity'), 'the schema never imports the entity: it runs in the browser too');
+    const action = s.file('actions.ts');
+    assert.ok(action.startsWith("// Default location: src/features/kyc-registrations/actions.ts\n'use server';"), "'use server' after the location comment");
+    assert.ok(action.includes("export const registerKyc = withActionLogging('registerKyc',"), 'the export is wrapped, named by its export name');
+    assert.ok(/revalidatePath\(/.test(action), 'revalidates after the write');
+    assert.ok(!/^(export\s+)?(interface|type)\s/m.test(action), 'no type in the actions file (SC-TYPEFILE)');
+    const service = s.file('kyc-registration.service.ts');
+    for (const needle of ["import 'server-only';", 'await getRequestContext()', 'caller.userId === undefined', 'ActionErrorCode.UNAUTHENTICATED', 'caller.tenantId === undefined',
+      'ActionErrorCode.FORBIDDEN', 'registerKycSchema.safeParse(input)', 'parsed.error.flatten().fieldErrors', 'applicantId: caller.userId', 'ActionErrorCode.CONFLICT', 'toKycRegistrationDto(']) {
+      assert.ok(service.includes(needle), `kyc-registration.service.ts missing ${needle}`);
+    }
+    assert.ok(!/\bauth\(\)/.test(withoutComments(service)) && !/\bauth\(\)/.test(withoutComments(action)), 'feature code reads the caller through getRequestContext(), never auth() itself');
+    const dto = s.file('kyc-registration.dto.ts');
+    for (const pii of ['idNumber', 'dateOfBirth', 'fullName', 'tenantId', 'createdBy']) assert.ok(!dto.includes(pii), `the result DTO does not echo ${pii}`);
+    const repo = s.file('kyc-registration.repository.ts');
+    assert.ok(repo.includes('extends TenantScopedRepository<KycRegistration>') && repo.includes('QueryFailedError') && repo.includes("'23505'"), 'a duplicate is decided by the unique constraint');
+    const entity = s.file('kyc-registration.entity.ts');
+    assert.ok(entity.includes('extends {{sc:baseTenantEntity}}') && entity.includes("@Unique('kyc_registration_applicant_key'"), 'tenant entity with a named unique constraint');
+    const form = s.file('kyc-registration-form.tsx');
+    for (const needle of ["'use client';", 'useForm<RegisterKycInput>({', 'resolver: zodResolver(registerKycSchema)', 'isSubmitting } = form.formState', 'disabled={isSubmitting}','setError(', 'await registerKyc(',
+      'catch', 'role="status"', 'role="alert"', 'aria-invalid', 'htmlFor', "from '@/components/ui/button'", "from '@/components/ui/input'", "from '@/components/ui/label'"]) {
+      assert.ok(form.includes(needle), `kyc-registration-form.tsx missing ${needle}`);
+    }
+    assert.ok(!/style=\{/.test(form) && !/error\.message/.test(form), 'no inline style; never shows an exception message');
+    assert.ok(!form.includes('.entity') && !form.includes('.service'), 'the client imports no server module');
+    for (const spec of ['register-kyc.schema.spec.ts', 'actions.spec.ts', 'kyc-registration-form.spec.tsx', 'kyc-registration.int.spec.ts', 'kyc-registration.spec.ts']) {
+      assert.ok(s.files.some((f) => f.relPath === `${spec}.md`), `${spec} ships`);
+    }
+    const actionSpec = s.file('actions.spec.ts');
+    for (const needle of ["vi.mock('next/headers'", "vi.mock('../../auth'", "vi.mock('next/cache'", 'UNAUTHENTICATED', 'FORBIDDEN', 'VALIDATION', 'CONFLICT', 'http_in', '"idNumber":"***"']) {
+      assert.ok(actionSpec.includes(needle), `actions.spec.ts missing ${needle}`);
+    }
+    assert.ok(s.file('kyc-registration-form.spec.tsx').startsWith('// Default location: src/features/kyc-registrations/components/kyc-registration-form.spec.tsx\n// @vitest-environment jsdom'));
+    for (const needle of ['SC-PREFLIGHT', 'getRequestContext()', 'auth()', 'withActionLogging', 'z.infer', 'react-hook-form', 'zodResolver', '{{sc:sharedComponents}}', 'isSubmitting',
+      'useActionState', 'ENTITIES', 'MIGRATIONS', 'idempotency', 'Outcome side-write', 'LOG_MASK_FIELDS', 'ask the user']) {
+      assert.ok(s.body.includes(needle), `server action SKILL.md missing ${needle}`);
+    }
+  });
+});
+
+test('next feature page skill: async Server Component on getRequestContext and the tenant repository, DTO rows, loading, error, empty state, the shared table', async () => {
+  await withRealCatalog(async (c) => {
+    const s = nextSkill(c, FEATURE_PAGE);
+    const data = s.file('data.ts');
+    for (const needle of ["import 'server-only';", 'await getRequestContext()', 'runInRequestContext(', 'await kycRegistrations()', 'toKycRegistrationRowDto', 'count(',
+      'ActionErrorCode.FORBIDDEN', 'KycRole.REVIEWER', "order: { createdAt: 'DESC', id: 'DESC' }"]) {
+      assert.ok(data.includes(needle), `data.ts missing ${needle}`);
+    }
+    const row = s.file('kyc-registration-row.dto.ts');
+    for (const pii of ['idNumber', 'dateOfBirth', 'tenantId']) assert.ok(!row.includes(pii), `the list row leaves out ${pii}`);
+    const page = s.file('page.tsx');
+    for (const needle of ['export default async function', "PageProps<'/kyc/registrations'>", 'await props.searchParams', 'loadKycRegistrationPage(', 'redirect(', '<KycRegistrationTable']) {
+      assert.ok(page.includes(needle), `page.tsx missing ${needle}`);
+    }
+    assert.ok(!page.includes("'use client'"), 'the page is a Server Component');
+    assert.ok(s.file('loading.tsx').includes("from '@/components/ui/skeleton'"), 'loading.tsx uses the shared skeleton');
+    const error = s.file('error.tsx');
+    for (const needle of ["'use client';", 'reset', 'router.refresh()', 'startTransition(', 'error.digest']) assert.ok(error.includes(needle), `error.tsx missing ${needle}`);
+    assert.ok(!/error\.message/.test(withoutComments(error)), 'error.tsx never shows the message');
+    const table = s.file('kyc-registration-table.tsx');
+    for (const needle of ["'use client';", 'ColumnDef<KycRegistrationRowDto>[]', "from '@/components/ui/data-table'", 'timeZone']) assert.ok(table.includes(needle), `table missing ${needle}`);
+    const dataTable = s.file('data-table.tsx');
+    assert.equal(GOES_TO.exec(s.files.find((f) => f.relPath === 'data-table.tsx.md').content)[1], '{{sc:sharedComponents}}/data-table.tsx', 'the table goes to the shared components');
+    for (const needle of ['useReactTable', 'getCoreRowModel()', 'flexRender(', "from './table'"]) assert.ok(dataTable.includes(needle), `data-table.tsx missing ${needle}`);
+    const pagination = s.file('pagination.ts');
+    assert.ok(pagination.includes('export const pageQuerySchema') && pagination.includes('MAX_PAGE_SIZE') && pagination.includes('export type PageDto<T>'), 'one page shape');
+    for (const spec of ['data.spec.ts', 'kyc-registration-table.spec.tsx', 'kyc-registrations-page.spec.ts']) assert.ok(s.files.some((f) => f.relPath === `${spec}.md`), `${spec} ships`);
+    for (const needle of ['SC-PREFLIGHT', 'loading.tsx', 'error.tsx', 'empty state', 'TanStack Table', '{{sc:sharedComponents}}', 'runInRequestContext', 'TenantScopedRepository',
+      SERVER_ACTION, 'v9', 'authInterrupts']) {
+      assert.ok(s.body.includes(needle), `feature page SKILL.md missing ${needle}`);
+    }
+  });
+});
+
+test('next route handler skill: withRouteLogging with the route template, zod input, the caller, typed JSON and RFC 7807 problems', async () => {
+  await withRealCatalog(async (c) => {
+    const s = nextSkill(c, ROUTE_HANDLER);
+    const route = s.file('route.ts');
+    for (const needle of ["export const GET = withRouteLogging('/api/v1/kyc-registrations',", "export const POST = withRouteLogging('/api/v1/kyc-registrations',",
+      'pageQuerySchema.safeParse(', 'readJsonBody(', 'submitKycRegistration(', 'listKycRegistrations(', 'NextResponse.json', 'HTTP_STATUS.CREATED', 'problemForRefusal(']) {
+      assert.ok(route.includes(needle), `route.ts missing ${needle}`);
+    }
+    const problems = s.file('problem-details.ts');
+    for (const needle of ["'application/problem+json'", "'about:blank'", 'STATUS_CODES', 'errors', 'export type FieldError = { field: string; messages: readonly string[] }',
+      'ACTION_ERROR_STATUS', 'CrossTenantDeniedError']) {
+      assert.ok(problems.includes(needle), `problem-details.ts missing ${needle}`);
+    }
+    assert.ok(!/\.message\b/.test(withoutComments(problems)), 'a problem never carries an exception message');
+    const body = s.file('read-json-body.ts');
+    assert.ok(!/\b415\b/.test(withoutComments(body)) &&body.includes('UNSUPPORTED_MEDIA_TYPE') && body.includes('BAD_REQUEST'), 'non-JSON is 415, malformed JSON is 400, by name');
+    const spec = s.file('route.spec.ts');
+    for (const needle of ['status: 400', 'status: 401', 'status: 403', 'status: 409', 'status: 415', 'status: 201', 'status: 200', "'application/problem+json'", 'http_in', 'new NextRequest(']) {
+      assert.ok(spec.includes(needle), `route.spec.ts missing ${needle}`);
+    }
+    for (const needle of ['SC-PREFLIGHT', 'withRouteLogging', 'RFC 7807', 'next typegen', 'CrossTenantDeniedError', 'constant', 'wrap only the exports', SERVER_ACTION, FEATURE_PAGE]) {
+      assert.ok(s.body.includes(needle), `route handler SKILL.md missing ${needle}`);
+    }
+  });
+});
+
+test('next feature code: no style attribute, classes through cn(), and only the shared components for controls', async () => {
+  await withRealCatalog(async (c) => {
+    for (const name of FEATURE_SKILLS) {
+      const s = nextSkill(c, name);
+      assert.ok(s.files.length > 0, `${name} has siblings`);
+      for (const f of s.files.filter((x) => /\.tsx\.md$/.test(x.relPath) && !/\.spec\.tsx\.md$/.test(x.relPath))) {
+        const code = codeOfSibling(f.content);
+        assert.ok(!/\bstyle=\{/.test(code), `${name}/${f.relPath}: inline style`);
+        assert.ok(!/<(button|input|select|table)\b/.test(code), `${name}/${f.relPath}: a raw control where a shared component belongs`);
+        assert.ok(!/#[0-9a-fA-F]{3,6}\b/.test(code), `${name}/${f.relPath}: hardcoded color`);
+      }
+    }
+    const all = FEATURE_SKILLS.map((n) => allCode(nextSkill(c, n))).join('\n');
+    assert.ok(all.includes('cn('), 'classes are merged through cn()');
   });
 });
