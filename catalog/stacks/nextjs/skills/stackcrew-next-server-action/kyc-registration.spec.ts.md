@@ -9,7 +9,7 @@ import { E2E_RUN_ID, sessionFile } from './sessions';
 test.describe('eKYC registration', () => {
   test.use({ storageState: sessionFile('applicant') });
 
-  test('a signed-in applicant registers and sees the confirmation', async ({ page }) => {
+  test('a signed-in applicant registers and sees the confirmation', async ({ page }, testInfo) => {
     await page.goto('/kyc');
     await expect(page.getByRole('heading', { name: 'Verify your identity' })).toBeVisible();
 
@@ -22,7 +22,10 @@ test.describe('eKYC registration', () => {
     await page.getByLabel('Document number').fill('C1234567');
     await page.getByRole('button', { name: 'Submit for verification' }).click();
 
-    await expect(page.getByRole('status')).toHaveText('Registration received. We will let you know when your identity is verified.');
+    const confirmation = page.getByRole('status').filter({ hasText: 'Registration received. We will let you know when your identity is verified.' });
+    // a CI retry meets the registration of the first attempt: the same applicant gets CONFLICT, nothing else
+    const repeat = page.getByRole('alert').filter({ hasText: 'You have already registered.' });
+    await expect(testInfo.retry === 0 ? confirmation : confirmation.or(repeat)).toBeVisible();
   });
 });
 

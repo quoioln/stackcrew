@@ -19,6 +19,8 @@ export const kycRegistrationListText = {
   emptyTitle: 'No registrations yet',
   emptyBody: 'Registrations appear here as soon as applicants submit them.',
   noRows: 'No registrations on this page.',
+  pastLastPage: 'There are no registrations on this page.',
+  lastPage: 'Go to the last page',
   forbidden: 'You do not have access to identity registrations.',
   loading: 'Loading registrations',
   pages: 'Pages',

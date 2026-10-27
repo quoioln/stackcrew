@@ -31,7 +31,7 @@ export const kycRegistrationText = {
     UNAUTHENTICATED: 'Your session has ended. Sign in again to continue.',
     FORBIDDEN: 'Your account cannot register for identity verification.',
     NOT_FOUND: 'This registration no longer exists.',
-    CONFLICT: 'You have already registered. Your registration is being reviewed.',
+    CONFLICT: 'You have already registered. Only one registration per account is possible.',
   } satisfies Record<ActionErrorCode, string>,
   unexpected: 'Something went wrong. Try again in a moment.',
 } as const;

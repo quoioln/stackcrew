@@ -6,6 +6,8 @@ Goes to `src/app/kyc/registrations/error.tsx`.
 
 import { useRouter } from 'next/navigation';
 import { useTransition } from 'react';
+// Shared components: imports use the project's alias for {{sc:sharedComponents}} (shadcn components.json → aliases.ui;
+// cn at aliases.utils). These assume @/components/ui and @/lib/utils.
 import { Button } from '@/components/ui/button';
 import { kycRegistrationListText as text } from '../../../features/kyc-registrations/kyc-registration-list.messages';
 

@@ -45,6 +45,22 @@ test.describe('identity registrations page', () => {
     await expect(page.getByText(APPLICANT_NAME)).toHaveCount(0);
   });
 
+  test('a page past the last one links back to the last page', async ({ browser }) => {
+    const page = await signedIn(browser, 'reviewer');
+    await page.goto('/kyc/registrations?page=999');
+
+    await expect(page.getByText('There are no registrations on this page.')).toBeVisible();
+    await page.getByRole('link', { name: 'Go to the last page' }).click();
+    await expect(page.getByRole('table')).toBeVisible();
+  });
+
+  test('a visitor without a session is sent to sign in', async ({ browser }) => {
+    const page = await (await browser.newContext({ storageState: { cookies: [], origins: [] } })).newPage();
+    await page.goto('/kyc/registrations');
+
+    await expect(page).toHaveURL(/\/api\/auth\/signin/);
+  });
+
   test('an applicant is refused the list', async ({ browser }) => {
     const page = await signedIn(browser, 'applicant');
     await page.goto('/kyc/registrations');

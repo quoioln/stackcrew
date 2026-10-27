@@ -43,7 +43,7 @@ Copy `customer-profile.persistence.int.spec.ts` of the entity skill for the new 
 
 ## 2. Dependencies (ask the user before adding any)
 
-`react-hook-form` 7, `@hookform/resolvers` 5 and `zod` 3 for the form; the shared components of `{{sc:sharedComponents}}` (shadcn: `button`, `input`, `label`, `native-select`). A missing component is added with the project's own generator (`npx shadcn@latest add native-select`), never written by hand. Testing Library and Playwright for the tests (stack testing rule).
+`react-hook-form` 7, `@hookform/resolvers` 5 and `zod` 3 for the form; the shared components of `{{sc:sharedComponents}}` (shadcn: `button`, `input`, `label`, `native-select`). A missing component is added with the project's own generator (`npx shadcn@latest add native-select`), never written by hand. In the code, imports use the project's alias for `{{sc:sharedComponents}}` (shadcn `components.json` → `aliases.ui`; `cn` at `aliases.utils`); the examples assume `@/components/ui` and `@/lib/utils`. Testing Library and Playwright for the tests (stack testing rule).
 
 ## 3. The schema
 
@@ -71,7 +71,7 @@ export const registerKyc = withActionLogging('registerKyc', async (input: unknow
 - Every exported action is a public POST endpoint, callable without the page: the checks live in the action's own code path, whatever the page checked.
 - The function is shared with `POST /api/v1/kyc-registrations` (`stackcrew-next-route-handler`). Wrap only the exports: a wrapped action that calls another wrapped action writes two log lines.
 - Refusals are typed results (`fail(code)`); only an unexpected failure throws. The wrapper logs the call once (the identity fields masked as `"***"`), and a throw also reaches `onRequestError`.
-- A repeat is decided by the database: the unique constraint and `insertUnlessRegistered` answer `CONFLICT`, also for two concurrent submits. A read before the insert does not stop the second one.
+- A repeat is decided by the database: the unique constraint and `insertUnlessRegistered` answer `CONFLICT`, also for two concurrent submits. A read before the insert does not stop the second one. The constraint covers every status, so a rejected applicant cannot apply again; to allow that, make it a partial unique index (`CREATE UNIQUE INDEX "kyc_registration_applicant_key" ON "kyc_registration" ("{{sc:tenantColumn}}", "applicantId") WHERE "status" IN ('PENDING', 'VERIFIED')`, `@Index(..., { unique: true, where })` on the entity) and keep the refusal text neutral.
 - After a write: `revalidatePath(path)` of the pages that show it, or `revalidateTag(tag, 'max')`; `updateTag(tag)` when this user must read their own write at once.
 - The result is a DTO of plain strings: no entity, no `Date`, and no echo of the identity data just sent.
 - Scope: this action stores the registration. Calling the eKYC provider, uploading document images, the provider idempotency key and outcome side writes are not part of it: the verification runs later as a stored operation, outside this request (the cross-stack "Outbound idempotency" and "Outcome side-write seam" decisions). Never call a provider inside the action's transaction.
@@ -82,11 +82,11 @@ export const registerKyc = withActionLogging('registerKyc', async (input: unknow
 - A Client Component (`'use client'`) at the leaf; the page around it stays a Server Component.
 - `useForm<RegisterKycInput>({ resolver: zodResolver(registerKycSchema), defaultValues })`, the action called in `handleSubmit` with the parsed values. Not `useActionState`: the action takes one `unknown` argument, not `(previousState, formData)`, and react-hook-form already holds the state.
 - Pending: `formState.isSubmitting` is true while the action runs; disable the button and change its text. `aria-busy` on the form.
-- Success: the confirmation (`role="status"`) replaces the form.
+- Success: the confirmation (`role="status"`) replaces the form and takes the focus (`tabIndex={-1}`), so keyboard and screen-reader users land on it.
 - Refusal: `result.error.fieldErrors` goes back onto the fields with `setError(field, { message })`, and the refusal text of the code onto `root.server`, shown with `role="alert"`.
 - Unexpected failure: an awaited action that throws rejects inside the submit handler; it never reaches `error.tsx`. Catch it there and show constant text, never `error.message`. The server already logged it with its digest.
 - Accessibility: each control has a `Label` with `htmlFor`, `aria-invalid` and `aria-describedby` pointing at its error; errors are text, not color alone.
-- Controls come from `{{sc:sharedComponents}}`, imported through the project's alias (`@/components/ui/...`, shadcn's `aliases.ui`); point the imports at the project's folder. With shadcn's `Field` components or a `Form` wrapper in the project, use those for the field layout. Classes through `cn()`, Tailwind tokens only, no `style`.
+- Controls come from `{{sc:sharedComponents}}`; the alias rule of section 2 applies to their imports and to `cn`. With shadcn's `Field` components or a `Form` wrapper in the project, use those for the field layout. Classes through `cn()`, Tailwind tokens only, no `style`.
 - Text comes from the feature's catalog (`kyc-registration.messages.ts`); with an i18n library in the project, from its catalog.
 
 ## 6. The page
@@ -107,7 +107,7 @@ export const registerKyc = withActionLogging('registerKyc', async (input: unknow
 - `actions.spec.ts`: the wrapped action with only `next/headers`, `auth()`, `next/cache` and the repository mocked: the DTO and the stored applicant; one `http_in` line with `"idNumber":"***"`; `UNAUTHENTICATED`, `FORBIDDEN` (no role, no tenant) before the repository; `VALIDATION`; `CONFLICT`; a thrown error rethrown and logged once as 500 without its message.
 - `kyc-registration-form.spec.tsx` (jsdom): schema errors without calling the action; pending (button disabled), then the confirmation; server field errors and the refusal; constant text when the action throws.
 - `kyc-registration.int.spec.ts` (Postgres): stored in the caller's tenant with the audit fields; a second registration answers `CONFLICT`; of two concurrent submits exactly one passes; the same user registers once per tenant.
-- `e2e/kyc-registration.spec.ts` (Playwright): a signed-in applicant fills the form and sees the confirmation; a visitor without a session is sent to sign in.
+- `e2e/kyc-registration.spec.ts` (Playwright): a signed-in applicant fills the form and sees the confirmation (a CI retry, which meets the first attempt's registration, accepts the `CONFLICT` text); a visitor without a session is sent to sign in.
 
 ## Do not
 

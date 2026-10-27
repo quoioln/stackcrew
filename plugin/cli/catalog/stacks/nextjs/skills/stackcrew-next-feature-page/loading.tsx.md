@@ -2,6 +2,8 @@ Goes to `src/app/kyc/registrations/loading.tsx`.
 
 ```tsx
 // Default location: src/app/kyc/registrations/loading.tsx
+// Shared components: imports use the project's alias for {{sc:sharedComponents}} (shadcn components.json → aliases.ui;
+// cn at aliases.utils). These assume @/components/ui and @/lib/utils.
 import { Skeleton } from '@/components/ui/skeleton';
 import { kycRegistrationListText as text } from '../../../features/kyc-registrations/kyc-registration-list.messages';
 

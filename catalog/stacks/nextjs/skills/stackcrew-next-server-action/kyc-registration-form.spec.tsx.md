@@ -57,7 +57,9 @@ describe('KycRegistrationForm', () => {
     expect(registerKyc).toHaveBeenCalledWith({ fullName: 'Nguyen Van A', dateOfBirth: '1990-04-12', documentType: 'PASSPORT', idNumber: 'C1234567' });
 
     finish(ok(REGISTERED));
-    expect((await screen.findByRole('status')).textContent).toBe(text.submitted);
+    const status = await screen.findByRole('status');
+    expect(status.textContent).toBe(text.submitted);
+    await waitFor(() => expect(document.activeElement).toBe(status)); // focus moves to the confirmation
     expect(screen.queryByRole('button')).toBeNull();
   });
 

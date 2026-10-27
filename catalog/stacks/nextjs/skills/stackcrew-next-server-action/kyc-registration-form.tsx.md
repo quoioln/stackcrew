@@ -5,9 +5,10 @@ Goes to `src/features/kyc-registrations/components/kyc-registration-form.tsx`.
 'use client';
 
 import { zodResolver } from '@hookform/resolvers/zod';
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useForm } from 'react-hook-form';
-// The shared components of {{sc:sharedComponents}}, imported through the project's alias (shadcn's aliases.ui).
+// Shared components: imports use the project's alias for {{sc:sharedComponents}} (shadcn components.json → aliases.ui;
+// cn at aliases.utils). These assume @/components/ui and @/lib/utils.
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
@@ -29,13 +30,18 @@ const errorId = (field: keyof RegisterKycInput): string => `kyc-${field}-error`;
 /**
  * The eKYC registration form. react-hook-form validates with the action's own schema (zodResolver), then calls the
  * server action with the parsed values. States: pending (the button is disabled while the action runs), success (the
- * confirmation replaces the form), refusal (the server's field errors on their fields, the refusal text above the
+ * confirmation replaces the form and takes the focus), refusal (the server's field errors on their fields, the refusal text above the
  * button) and unexpected failure (constant text; the server already logged it).
  */
 export function KycRegistrationForm() {
   const [registered, setRegistered] = useState<KycRegistrationDto | null>(null);
+  const confirmation = useRef<HTMLParagraphElement>(null);
   const form = useForm<RegisterKycInput>({ resolver: zodResolver(registerKycSchema), defaultValues: EMPTY });
   const { errors, isSubmitting } = form.formState;
+
+  useEffect(() => {
+    confirmation.current?.focus(); // the form the user was in is gone: put them on what replaced it
+  }, [registered]);
 
   const onSubmit = async (values: RegisterKycInput): Promise<void> => {
     let result: ActionResult<KycRegistrationDto>;
@@ -62,7 +68,7 @@ export function KycRegistrationForm() {
 
   if (registered !== null) {
     return (
-      <p role="status" className="rounded-lg border bg-muted p-4 text-sm">
+      <p ref={confirmation} tabIndex={-1} role="status" className="rounded-lg border bg-muted p-4 text-sm outline-none">
         {text.submitted}
       </p>
     );

@@ -5,7 +5,8 @@ Goes to `src/features/kyc-registrations/components/kyc-registration-table.tsx`.
 'use client';
 
 import type { ColumnDef } from '@tanstack/react-table';
-// The shared table of {{sc:sharedComponents}}, imported through the project's alias (shadcn's aliases.ui).
+// Shared components: imports use the project's alias for {{sc:sharedComponents}} (shadcn components.json → aliases.ui;
+// cn at aliases.utils). These assume @/components/ui and @/lib/utils.
 import { DataTable } from '@/components/ui/data-table';
 import type { KycRegistrationRowDto } from '../kyc-registration-row.dto';
 import { kycRegistrationListText as text } from '../kyc-registration-list.messages';

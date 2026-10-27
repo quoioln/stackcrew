@@ -678,3 +678,49 @@ test('next feature code: no style attribute, classes through cn(), and only the 
     assert.ok(all.includes('cn('), 'classes are merged through cn()');
   });
 });
+
+test('next task 10 fix round 1: TanStack v8 pinned, the shared components alias, neutral CONFLICT, retry-safe E2E, caller before input, past the last page, focus on success', async () => {
+  await withRealCatalog(async (c) => {
+    const page = nextSkill(c, FEATURE_PAGE);
+    const action = nextSkill(c, SERVER_ACTION);
+    const route = nextSkill(c, ROUTE_HANDLER);
+    // 1. a fresh install gets v9: the sibling says to pin v8
+    const pin = '`@tanstack/react-table@^8` when creating `data-table.tsx` from this sibling; a v9 project writes the table and columns against v9';
+    assert.ok(page.body.includes(pin), 'feature page SKILL.md pins TanStack Table v8 for the sibling');
+    assert.ok(page.file('data-table.tsx').includes('@tanstack/react-table@^8'), 'the sibling header names the v8 pin');
+    // 2. imports of the shared components follow the project's alias for {{sc:sharedComponents}}
+    const alias = 'imports use the project\'s alias for `{{sc:sharedComponents}}` (shadcn `components.json` → `aliases.ui`; `cn` at `aliases.utils`); the examples assume `@/components/ui` and `@/lib/utils`';
+    for (const [name, s] of [[FEATURE_PAGE, page], [SERVER_ACTION, action]]) assert.ok(s.body.includes(alias), `${name} SKILL.md states the alias rule`);
+    for (const [s, rel] of [[action, 'kyc-registration-form.tsx'], [page, 'kyc-registration-table.tsx'], [page, 'page.tsx'], [page, 'loading.tsx'], [page, 'error.tsx'], [page, 'data-table.tsx']]) {
+      assert.ok(s.file(rel).includes('aliases.ui'), `${rel}: the header comment names the alias rule`);
+    }
+    // 3. CONFLICT text is neutral for every status; re-application after REJECTED is a partial unique index
+    const conflict = /CONFLICT: '([^']*)'/.exec(action.file('kyc-registration.messages.ts'))?.[1] ?? '';
+    assert.ok(conflict.includes('You have already registered.') && !/review/i.test(conflict), `neutral CONFLICT text: ${conflict}`);
+    assert.ok(action.body.includes(`WHERE "status" IN ('PENDING', 'VERIFIED')`), 'SKILL.md names the partial unique index for re-application');
+    // 4. a CI retry of the form E2E meets the registration of the first attempt
+    const formE2e = action.file('kyc-registration.spec.ts');
+    assert.ok(formE2e.includes('testInfo.retry') && formE2e.includes('You have already registered.'), 'the form E2E accepts CONFLICT only on a retry');
+    // 5. the list page without a session goes to sign in
+    const pageE2e = page.file('kyc-registrations-page.spec.ts');
+    assert.ok(pageE2e.includes("toHaveURL(/\\/api\\/auth\\/signin/)"), 'page E2E: no session redirects to sign in');
+    // 6. route handlers check the caller before they read the input (401/403 before 400/415)
+    const handler = route.file('route.ts');
+    for (const method of ['GET', 'POST']) {
+      const body = handler.slice(handler.indexOf(`export const ${method} =`));
+      const callerAt = body.indexOf('requireCaller(');
+      const inputAt = Math.min(...['readJsonBody(', 'pageQuerySchema.safeParse('].map((n) => body.indexOf(n)).filter((i) => i >= 0));
+      assert.ok(callerAt >= 0 && callerAt < inputAt, `${method}: requireCaller before the input parse`);
+    }
+    assert.ok(route.file('require-caller.ts').includes('export async function requireCaller('), 'the caller check ships as a sibling');
+    assert.match(route.body, /caller \(401\), then the role and tenant \(403\), then the content type and body \(415, 400\)/, 'SKILL.md states the order');
+    assert.ok(route.file('route.spec.ts').includes('checks the caller before the input'), 'a spec row pins the order');
+    // 7. a page number past the last page offers the last page
+    assert.ok(page.file('page.tsx').includes('text.pastLastPage') && page.file('page.tsx').includes('page: pages, size: registrations.size'), 'past the last page: a link to the last page');
+    assert.ok(pageE2e.includes('?page=999'), 'page E2E covers a page past the last');
+    // 8. the confirmation that replaces the form takes the focus
+    const form = action.file('kyc-registration-form.tsx');
+    assert.ok(form.includes('tabIndex={-1}') && form.includes('.focus()'), 'focus moves to the confirmation');
+    assert.ok(action.file('kyc-registration-form.spec.tsx').includes('document.activeElement'), 'the component spec pins the focus');
+  });
+});

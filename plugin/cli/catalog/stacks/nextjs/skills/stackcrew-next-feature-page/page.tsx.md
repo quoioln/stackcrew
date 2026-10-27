@@ -4,6 +4,8 @@ Goes to `src/app/kyc/registrations/page.tsx`.
 // Default location: src/app/kyc/registrations/page.tsx
 import Link from 'next/link';
 import { redirect } from 'next/navigation';
+// Shared components: imports use the project's alias for {{sc:sharedComponents}} (shadcn components.json → aliases.ui;
+// cn at aliases.utils). These assume @/components/ui and @/lib/utils.
 import { buttonVariants } from '@/components/ui/button';
 import { cn } from '@/lib/utils';
 import { KycRegistrationTable } from '../../../features/kyc-registrations/components/kyc-registration-table';
@@ -36,6 +38,20 @@ export default async function KycRegistrationsPage(props: PageProps<'/kyc/regist
   const registrations = result.data;
   const pages = lastPage(registrations);
   const linkClass = cn(buttonVariants({ variant: 'outline', size: 'sm' }));
+  if (registrations.total > 0 && registrations.items.length === 0) {
+    // a hand-edited ?page= past the end, or rows removed since the link was made: offer the last page
+    return (
+      <main className="mx-auto grid max-w-5xl gap-6 p-6">
+        <h1 className="text-2xl font-semibold">{text.title}</h1>
+        <section className="grid justify-items-center gap-4 rounded-lg border border-dashed p-10 text-center">
+          <p className="text-sm text-muted-foreground">{text.pastLastPage}</p>
+          <Link className={linkClass} href={{ query: { page: pages, size: registrations.size } }}>
+            {text.lastPage}
+          </Link>
+        </section>
+      </main>
+    );
+  }
   return (
     <main className="mx-auto grid max-w-5xl gap-6 p-6">
       <h1 className="text-2xl font-semibold">{text.title}</h1>

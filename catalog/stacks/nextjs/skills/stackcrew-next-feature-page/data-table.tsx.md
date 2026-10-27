@@ -4,6 +4,10 @@ Goes to `{{sc:sharedComponents}}/data-table.tsx`.
 // Default location: {{sc:sharedComponents}}/data-table.tsx
 'use client';
 
+// TanStack Table v8: add it as @tanstack/react-table@^8 (a plain install gets v9, whose API differs).
+// Imports of the shared components use the project's alias for {{sc:sharedComponents}} (shadcn components.json →
+// aliases.ui; cn at aliases.utils); this file sits next to table.tsx and imports it relatively.
+
 import { flexRender, getCoreRowModel, useReactTable, type ColumnDef } from '@tanstack/react-table';
 import { useMemo } from 'react';
 import { Table, TableBody, TableCaption, TableCell, TableHead, TableHeader, TableRow } from './table';

@@ -103,6 +103,18 @@ describe('/api/v1/kyc-registrations', () => {
     expect(JSON.stringify(problem)).not.toContain('DRIVER');
   });
 
+  it('checks the caller before the input: 401 and 403 win over a malformed or non-JSON body and a bad query', async () => {
+    authMock.mockResolvedValue(null);
+    expect(await problemOf(await POST(post('{"fullName":'), CONTEXT))).toMatchObject({ status: 401 });
+    expect(await problemOf(await GET(new NextRequest(`${ENDPOINT}?size=1000`), CONTEXT))).toMatchObject({ status: 401 });
+
+    signIn('rita', ['kyc_reviewer']);
+    expect(await problemOf(await POST(post('fullName=A', 'application/x-www-form-urlencoded'), CONTEXT))).toMatchObject({ status: 403 });
+    signIn('alice', ['kyc_applicant']);
+    expect(await problemOf(await GET(new NextRequest(`${ENDPOINT}?size=1000`), CONTEXT))).toMatchObject({ status: 403 });
+    expect(kycRegistrations).not.toHaveBeenCalled();
+  });
+
   it('POST answers 409 when the applicant already registered', async () => {
     repository.insertUnlessRegistered.mockResolvedValue(null);
 
