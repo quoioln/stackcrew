@@ -10,7 +10,7 @@ Next.js 16 App Router with React 19 and TypeScript strict, used full-stack: Serv
 
 - Server Components by default. `'use client'` only on the leaf component that needs state, effects or browser APIs; pass it serializable props, never a function or a class instance.
 - Code that touches the database, a secret or a repository starts with `import 'server-only'`. Entities never reach the client: Server Components, server actions and route handlers map them to DTOs or plain objects first.
-- A server action parses its input with a zod schema kept in its own file (`schemas/`, type by `z.infer`), checks the caller and their permissions through `getRequestContext()` (which calls `auth()`), returns a typed result `{ ok: true, data } | { ok: false, error }`, calls `revalidatePath`/`revalidateTag` after a write, and is wrapped with `withActionLogging`. An actions file declares no `interface` or `type` (SC-TYPEFILE).
+- A server action parses its input with a zod schema kept in its own file (`schemas/`, type by `z.infer`), checks the caller and their permissions through `getRequestContext()` (which calls `auth()`), returns a typed result `{ ok: true, data } | { ok: false, error }`, calls `revalidatePath(path)` or `revalidateTag(tag, 'max')` after a write (`updateTag(tag)` when the caller must read its own write at once), and is wrapped with `withActionLogging`. An actions file declares no `interface` or `type` (SC-TYPEFILE).
 - Route handlers are wrapped with `withRouteLogging`; outbound HTTP goes through `httpClient.fetch`; `onRequestError` in `instrumentation.ts` logs what escapes (skill `stackcrew-next-request-logging`, `core-logging`). Bodies are logged only by these, through the shared masker.
 - Forms use `react-hook-form` with `zodResolver` on the same schema the action parses. The action validates again: client validation is for the user, not for security.
 - Reuse before you write: components in `{{sc:sharedComponents}}` and the feature's existing components first; tables use the shared TanStack Table component. Never write a second button, input, dialog or table.
@@ -132,6 +132,7 @@ export function toCustomerProfileDto(entity: CustomerProfile): CustomerProfileDt
 - A `'use server'` file exports only the wrapped async actions. Every exported action is a public POST endpoint: authenticate, authorize and validate in the action itself, whatever the page around it checks.
 - Expected refusals (validation, sign-in, permission, not found, conflict) are typed results with an `ActionErrorCode`; the client branches on `result.ok`. Only unexpected failures throw: they reach `error.tsx` and are logged as 500 by the wrapper and `onRequestError`.
 - `redirect()` and `notFound()` work by throwing: call them outside any `try`, or call `unstable_rethrow(error)` first in the `catch`. The wrapper logs them at their status and rethrows them.
+- After a write: `revalidatePath(path)`, or `revalidateTag(tag, 'max')` (Next.js 16 takes a cache profile; the one-argument form is deprecated and a type error). In an action whose caller must see its own write at once, `updateTag(tag)` instead (actions only; route handlers use `revalidateTag`).
 - The result is serializable data: a DTO, never an entity, a `Date` or a class instance.
 
 ## Forms
@@ -192,12 +193,13 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
 
 ```ts
 // src/env.ts (add to server)
+AUTH_SECRET: z.string().min(32),
 AUTH_ISSUER: z.string().url(),
 AUTH_CLIENT_ID: z.string().min(1),
 AUTH_CLIENT_SECRET: z.string().min(1),
 ```
 
-- `app/api/auth/[...nextauth]/route.ts` exports `const { GET, POST } = handlers`. `AUTH_SECRET` is read by next-auth itself; it is never in the repository.
+- `app/api/auth/[...nextauth]/route.ts` exports `const { GET, POST } = handlers`. `AUTH_SECRET` is read by next-auth itself and validated in `src/env.ts`, so a missing or short secret fails the build and the boot; it is never in the repository.
 - `proxy.ts` may refresh the session, but it is not an authorization check: actions, route handlers and loaders check the caller themselves.
 
 ## Persistence
@@ -218,7 +220,7 @@ export default nextConfig;
 ```
 
 - `tsconfig.json` sets `"experimentalDecorators": true`; every column names its `type`, because Vitest never emits decorator metadata and Next.js only with `emitDecoratorMetadata`. Tables, indexes, constraints and migrations have explicit names: the production build minifies class names.
-- One `DataSource` per server layer through `getDataSource()`, kept on `globalThis` so `next dev` does not open a pool per edit. Next.js evaluates server modules once for Server Components and actions and again for route handlers, each with its own entity classes, so a single process-wide instance would serve one layer only; size the pool knowing there are two. Entities, subscribers and migrations are listed by class in `data-source.options.ts`, never by path glob.
+- One `DataSource` per server layer through `getDataSource()`, kept on `globalThis` so `next dev` does not open a pool per edit. Next.js evaluates server modules once for Server Components and actions and again for route handlers, each with its own entity classes, so a single process-wide instance would serve one layer only: one pool per server layer (two in a Turbopack build), sized accordingly. Entities, subscribers and migrations are listed by class in `data-source.options.ts`, never by path glob.
 - Tenant entities only through their `TenantScopedRepository`; a lookup by id of another tenant's row returns `null` and becomes `notFound()` or `NOT_FOUND`, and so does a `CrossTenantDeniedError` (catch it where the refusal is decided). Cross-tenant reads only through `runCrossTenant(reason, work)`, allowed for `CROSS_TENANT_ROLES` (default {{sc:crossTenantRoles}}) and the system job entry `runAsSystem`.
 - Transactions: `dataSource.transaction(async (manager) => ...)`, and inside it a tenant entity only through its repository's `withManager(manager)`. Never use any manager method on a tenant entity (getRepository, update, delete, increment, decrement, softDelete, restore, upsert, createQueryBuilder…): none carries the tenant condition. Never a remote call inside a transaction.
 

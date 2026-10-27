@@ -18,8 +18,9 @@ const holder = globalThis as typeof globalThis & { appDataSources?: Map<readonly
  * classes, subscribers and request context; a DataSource built from one layer's classes cannot serve the other. Each
  * copy of this module therefore gets its own DataSource (its own pool of POOL_SIZE connections), created once and
  * reused for every request of that layer. A failed initialization is not kept: the next call retries.
- * Under `next dev`, an edit that reloads an entity creates a new DataSource; the old one's idle connections close by
- * themselves (pg's idle timeout).
+ * Under `next dev`, an edit that reloads an entity creates a new DataSource for that layer. The old entry stays in the
+ * Map: a reloaded copy cannot be told from the other layer's copy, so it is never closed from here. It holds no
+ * connection once idle (pg's idle timeout closes them); restart `next dev` after many entity edits to drop the objects.
  */
 export function getDataSource(): Promise<DataSource> {
   const sources = (holder.appDataSources ??= new Map());

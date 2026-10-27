@@ -20,6 +20,14 @@ type ProfileInput = { fullName: string; email: string; password: string };
 
 const authMock = auth as unknown as Mock<() => Promise<unknown>>; // next-auth's auth() is overloaded; the mock returns a session
 const session = (id: string, tenantId: string): unknown => ({ user: { id, tenantId, roles: ['user'] }, expires: '2099-01-01T00:00:00.000Z' });
+/** What a Next.js control-flow call throws, captured to build an error around it. */
+const thrownBy = (fn: () => never): unknown => {
+  try {
+    return fn();
+  } catch (failure: unknown) {
+    return failure;
+  }
+};
 const INPUT: ProfileInput = { fullName: 'Nguyen Van A', email: 'a@b.c', password: 'p4ss' };
 
 /** The action under test: reads the caller through getRequestContext(), refuses with typed results. */
@@ -103,6 +111,16 @@ describe('withActionLogging', () => {
       ['info', 'action:redirecting', 307, 'NEXT_REDIRECT'],
       ['warn', 'action:missing', 404, 'NEXT_HTTP_ERROR_FALLBACK'],
     ]);
+  });
+
+  it('logs an error that only carries notFound() in its cause as the 500 it is, once, and rethrows it unchanged', async () => {
+    const wrapped = new Error('lookup failed', { cause: thrownBy(notFound) }); // Next.js answers this with a 500, not a 404
+    const failing = withActionLogging('wrapped', async (): Promise<ActionResult<never>> => {
+      throw wrapped;
+    });
+    await expect(failing()).rejects.toBe(wrapped);
+    expect(httpIn()).toHaveLength(1);
+    expect(httpIn()[0]).toMatchObject({ level: 'error', line: { route: 'action:wrapped', status: 500, error: 'Error' } });
   });
 
   it('logs the fields of a FormData argument, after the previous state of useActionState, and a file as its size only', async () => {

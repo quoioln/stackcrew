@@ -311,7 +311,7 @@ test('next request logging: one line per action and route call, typed results, c
       assert.ok(route.includes(needle), `with-route-logging.ts missing ${needle}`);
     }
     const control = s.file('next-control-flow.ts');
-    assert.ok(control.includes("from 'next/navigation'") && control.includes('unstable_rethrow('), 'control flow is detected through the public unstable_rethrow');
+    assert.ok(!control.includes('unstable_rethrow(') && control.includes("'digest' in error"), 'control flow is read from the own digest of the thrown error (fix round 1)');
     const client = s.file('http-client.ts');
     for (const needle of ['export const httpClient', 'async fetch(target: string, input: string, init?: RequestInit): Promise<Response>', 'LogEvent.HTTP_OUT', 'sanitizeUrl(', '.clone()']) {
       assert.ok(client.includes(needle), `http-client.ts missing ${needle}`);
@@ -434,7 +434,7 @@ test('next scratch findings: one DataSource per server layer, a literal NEXT_RUN
     // next build evaluates server modules once per layer: a DataSource keyed by the entity list, never replaced on a class mismatch
     assert.ok(ds.includes('sources.get(ENTITIES)') && ds.includes('sources.set(ENTITIES, starting)'), 'one DataSource per copy of the module');
     assert.ok(!ds.includes('hasMetadata') && !ds.includes('destroy('), 'never closes the DataSource another layer is using');
-    assert.match(entity.body, /one DataSource per layer/, 'SKILL.md explains the layers');
+    assert.match(entity.body, /one DataSource, and one pool, per server layer/, 'SKILL.md explains the layers');
     const rules = c.stacks.get('nextjs').rules.body;
     assert.ok(rules.includes('One `DataSource` per server layer'), 'stack rule says per layer');
     const addon = c.addons.get('typeorm').rules.body;
@@ -456,5 +456,34 @@ test('next scratch findings: one DataSource per server layer, a literal NEXT_RUN
       assert.ok(!/\b\d[\d_]*n\b/.test(file.replace(/\/\/.*$/gm, '')), `${name}: no bigint literal (Next.js tsconfig targets ES2017)`);
     }
     assert.ok(c.stacks.get('nextjs').testing.body.includes("env: loadEnv('test', process.cwd(), '')"), 'unit and integration specs load .env.test');
+  });
+});
+
+test('next fix round 1: control flow by the own digest of the error, revalidateTag profile, AUTH_SECRET validated, wording', async () => {
+  await withRealCatalog(async (c) => {
+    const logging = nextSkill(c, LOGGING);
+    const control = logging.file('next-control-flow.ts');
+    for (const digest of ['DYNAMIC_SERVER_USAGE', 'BAILOUT_TO_CLIENT_SIDE_RENDERING', 'HANGING_PROMISE_REJECTION', 'NEXT_PRERENDER_INTERRUPTED']) {
+      assert.ok(control.includes(`'${digest}'`), `bailout digest ${digest}`);
+    }
+    assert.ok(!/\.cause\b/.test(control.replace(/^\s*(\*|\/\/).*$/gm, '')), 'the cause is never consulted');
+    assert.ok(control.includes('/^30[378]$/') && control.includes('/^40[134]$/'), 'only the statuses Next.js accepts');
+    for (const spec of ['with-action-logging.spec.ts', 'with-route-logging.spec.ts']) {
+      const text = logging.file(spec);
+      assert.ok(text.includes("new Error('lookup failed', { cause: thrownBy(notFound) })") && text.includes('rejects.toBe(wrapped)') && text.includes('status: 500'), `${spec}: a cause-wrapped notFound() is one 500 line`);
+    }
+    assert.ok(logging.file('with-route-logging.spec.ts').includes("digest: 'DYNAMIC_SERVER_USAGE'"), 'a bailout writes no line');
+    assert.match(logging.body, /own `digest`/, 'SKILL.md says how control flow is recognized');
+    assert.match(logging.body, /writes two lines/, 'SKILL.md says a nested wrapped action writes two lines');
+    const next = c.stacks.get('nextjs');
+    assert.ok(next.rules.body.includes("revalidateTag(tag, 'max')") && next.rules.body.includes('updateTag(tag)') && !/revalidateTag\('[^']*'\)/.test(next.rules.body), 'Next.js 16 revalidateTag takes a profile');
+    assert.ok(next.rules.body.includes('AUTH_SECRET: z.string().min(32),'), 'AUTH_SECRET is validated');
+    assert.match(next.testing.body, /# \.env\.test\nAUTH_SECRET=\S{32,}\n/, '.env.test carries a test AUTH_SECRET');
+    assert.ok(next.rules.body.includes('one pool per server layer (two in a Turbopack build)'), 'pool wording in the rule');
+    const entity = nextSkill(c, ENTITY);
+    assert.ok(entity.body.includes('one pool, per server layer (two in a Turbopack build)'), 'pool wording in the skill');
+    assert.ok(entity.body.includes('yarn tsx --env-file=.env.local node_modules/typeorm/cli.js migration:run') && entity.body.includes('npx tsx'), 'yarn first, npm noted');
+    assert.ok(!entity.file('customer-profile.persistence.int.spec.ts').includes('RequestContextInterceptor'), 'no NestJS class name');
+    assert.match(entity.file('data-source.ts'), /The old entry stays in the\n \* Map/, 'the stale dev entry is explained');
   });
 });

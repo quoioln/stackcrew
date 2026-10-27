@@ -56,7 +56,7 @@ export function databaseEnv(): DatabaseEnv {
 ## 3. The DataSource
 
 - Server code gets it through `getDataSource()`, or through a repository factory such as `customerProfiles()`. Never `new DataSource(...)` in a request.
-- It lives on `globalThis`, so `next dev` does not open a new pool on every edit, and it is keyed by the entity list of the module that asks. Next.js evaluates server modules once per layer, one copy for Server Components and server actions and another for route handlers, and each copy has its own entity classes and its own request context: a DataSource built from one layer's classes cannot serve the other. So the process has one DataSource per layer, each with its own pool; size `POOL_SIZE` knowing there are two.
+- It lives on `globalThis`, so `next dev` does not open a new pool on every edit, and it is keyed by the entity list of the module that asks. Next.js evaluates server modules once per layer, one copy for Server Components and server actions and another for route handlers, and each copy has its own entity classes and its own request context: a DataSource built from one layer's classes cannot serve the other. So the process has one DataSource, and one pool, per server layer (two in a Turbopack build); size `POOL_SIZE` accordingly.
 - An edit of an entity under `next dev` gives that layer a new DataSource; the idle connections of the old one close on their own.
 - Entities, subscribers and migrations are listed by class in `data-source.options.ts`. Path globs find nothing in a bundle, and the production build minifies class names, so tables, indexes, constraints and migration `name`s are explicit strings.
 
@@ -72,12 +72,12 @@ export function databaseEnv(): DatabaseEnv {
 
 ## 5. The migration
 
-Generate it with the TypeORM CLI, run through `tsx` (a dev dependency: ask first) so it reads the TypeScript options file and the env file:
+Generate it with the TypeORM CLI, run through `tsx` (a dev dependency: ask first) so it reads the TypeScript options file and the env file. With yarn (`yarn tsx …`); with npm, `npx tsx …`:
 
 ```bash
-npx tsx --env-file=.env.local node_modules/typeorm/cli.js migration:generate src/shared/db/migrations/CreateCustomerProfile -d src/shared/db/data-source.cli.ts
-npx tsx --env-file=.env.local node_modules/typeorm/cli.js migration:run -d src/shared/db/data-source.cli.ts
-npx tsx --env-file=.env.local node_modules/typeorm/cli.js migration:revert -d src/shared/db/data-source.cli.ts
+yarn tsx --env-file=.env.local node_modules/typeorm/cli.js migration:generate src/shared/db/migrations/CreateCustomerProfile -d src/shared/db/data-source.cli.ts
+yarn tsx --env-file=.env.local node_modules/typeorm/cli.js migration:run -d src/shared/db/data-source.cli.ts
+yarn tsx --env-file=.env.local node_modules/typeorm/cli.js migration:revert -d src/shared/db/data-source.cli.ts
 ```
 
 - Read the generated file before you keep it, and add its class to `MIGRATIONS` in `data-source.options.ts`. `create-customer-profile.migration.ts.md` is the reviewed result for the example entity.

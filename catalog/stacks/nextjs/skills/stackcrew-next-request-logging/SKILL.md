@@ -108,7 +108,7 @@ The line: `event=http_in`, `method`, `route`, `status`, `durationMs`, `reqBody`,
 
 **Both:**
 
-- `redirect()`, `notFound()` and the other Next.js control-flow throws are recognized through the public `unstable_rethrow` and rethrown unchanged: never a 500, never swallowed, and `onRequestError` does not fire for them. A dynamic-rendering bailout while `next build` prerenders a GET handler writes no line: it is not a request.
+- `redirect()`, `notFound()` and the other Next.js control-flow throws are recognized by the thrown error's own `digest`, as Next.js recognizes them, and rethrown unchanged: never a 500, never swallowed, and `onRequestError` does not fire for them. A dynamic-rendering bailout while `next build` prerenders a GET handler writes no line: it is not a request. An ordinary error that carries a `notFound()` or `redirect()` error in its `cause` is a 500 for Next.js, and its line says 500.
 - Every error is rethrown unchanged after its line, so Next.js renders `error.tsx` or answers 500 as before.
 - The context is set with `storage.run`, so it ends with the call: concurrent requests never see each other's user, and nothing is left for the next one.
 - `userId` and `tenantId` are written even when undefined, so the pino mixin cannot fill them from another context.
@@ -164,7 +164,7 @@ Producers send `x-request-id`, `x-tenant-id` and `x-user-id`. A consumer builds 
 
 - Do not log a body anywhere else: no `logger.info(dto)`, no body in an error message, no second masker.
 - Do not log headers other than `content-type`, `content-length` and `user-agent`; never `Authorization` or cookies.
-- Do not leave a server action or route handler unwrapped, and do not wrap one twice.
+- Do not leave a server action or route handler unwrapped, and do not wrap one twice. A wrapped action that calls another wrapped action writes two lines (one per wrapper): share the logic as a plain function and wrap only the exports.
 - Do not catch `redirect()` or `notFound()` without rethrowing them (`unstable_rethrow`).
 - Do not set the request context with `AsyncLocalStorage.enterWith`: only `storage.run` scopes it.
 - Do not log from `proxy.ts` as a substitute for the wrappers: it never sees the response.

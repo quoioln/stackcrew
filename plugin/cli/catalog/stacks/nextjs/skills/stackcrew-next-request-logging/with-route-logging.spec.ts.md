@@ -19,6 +19,15 @@ vi.mock('../../auth', () => ({ auth: vi.fn() }));
 type Written = { level: string; line: Record<string, unknown> };
 type Params = { params: Promise<{ id: string }> };
 
+/** What a Next.js control-flow call throws, captured to build an error around it. */
+const thrownBy = (fn: () => never): unknown => {
+  try {
+    return fn();
+  } catch (failure: unknown) {
+    return failure;
+  }
+};
+
 const ROUTE = '/api/v1/customer-profiles/[id]';
 const authMock = auth as unknown as Mock<() => Promise<unknown>>;
 const params = (id: string): Params => ({ params: Promise.resolve({ id }) });
@@ -77,6 +86,21 @@ describe('withRouteLogging', () => {
     await expect(withRouteLogging(ROUTE, async () => notFound())(post('{}', 'application/json'), params('p-2')))
       .rejects.toMatchObject({ digest: 'NEXT_HTTP_ERROR_FALLBACK;404' });
     expect(await oneLine()).toMatchObject({ status: 404, error: 'NEXT_HTTP_ERROR_FALLBACK' });
+  });
+
+  it('logs an error that only carries notFound() in its cause as a 500, and writes no line for a prerender bailout', async () => {
+    const wrapped = new Error('lookup failed', { cause: thrownBy(notFound) });
+    await expect(withRouteLogging(ROUTE, async () => {
+      throw wrapped;
+    })(post('{}', 'application/json'), params('p-1'))).rejects.toBe(wrapped);
+    expect(await oneLine()).toMatchObject({ status: 500, error: 'Error' });
+    written.length = 0;
+    const bailout = Object.assign(new Error('Dynamic server usage'), { digest: 'DYNAMIC_SERVER_USAGE' }); // what next build throws while it prerenders a GET
+    await expect(withRouteLogging(ROUTE, async () => {
+      throw bailout;
+    })(new NextRequest('http://localhost/api/v1/customer-profiles/p-1'), params('p-1'))).rejects.toBe(bailout);
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(httpIn()).toEqual([]);
   });
 
   it('never holds back or copies a stream: an SSE response is returned at once, unread, and logs no body', async () => {

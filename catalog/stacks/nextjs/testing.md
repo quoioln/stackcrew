@@ -73,6 +73,7 @@ export default defineConfig({
 
 ```dotenv
 # .env.test
+AUTH_SECRET=test-only-secret-0123456789abcdef0123
 DATABASE_URL=postgres://app:app@127.0.0.1:5432/app_test
 AUTH_ISSUER=http://127.0.0.1:9/issuer
 AUTH_CLIENT_ID=test-client

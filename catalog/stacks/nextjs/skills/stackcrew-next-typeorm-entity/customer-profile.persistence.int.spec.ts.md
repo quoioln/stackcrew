@@ -19,7 +19,7 @@ vi.hoisted(() => {
 const TENANT_A = 'tenant-a';
 const TENANT_B = 'tenant-b';
 
-/** Runs fn as a signed-in user, the way RequestContextInterceptor does for a request. */
+/** Runs fn as a signed-in user, the way withActionLogging and withRouteLogging do for a call. */
 const as = <T>(userId: string, tenantId: string | undefined, fn: () => Promise<T>, ...roles: string[]): Promise<T> =>
   runWithRequestContext({ requestId: `test-${userId}`, userId, tenantId, roles }, fn);
 
