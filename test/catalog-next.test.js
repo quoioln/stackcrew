@@ -613,7 +613,7 @@ test('next feature page skill: async Server Component on getRequestContext and t
     const row = s.file('kyc-registration-row.dto.ts');
     for (const pii of ['idNumber', 'dateOfBirth', 'tenantId']) assert.ok(!row.includes(pii), `the list row leaves out ${pii}`);
     const page = s.file('page.tsx');
-    for (const needle of ['export default async function', "PageProps<'/kyc/registrations'>", 'await props.searchParams', 'loadKycRegistrationPage(', 'redirect(', '<KycRegistrationTable']) {
+    for (const needle of ['export default async function', "PageProps<'/kyc/registrations'>", 'await props.searchParams', 'loadKycRegistrationPage(', 'redirect(', '<KycRegistrationTable', 'size: registrations.size']) {
       assert.ok(page.includes(needle), `page.tsx missing ${needle}`);
     }
     assert.ok(!page.includes("'use client'"), 'the page is a Server Component');

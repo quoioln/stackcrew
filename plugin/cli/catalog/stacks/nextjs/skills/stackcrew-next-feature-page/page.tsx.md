@@ -51,12 +51,12 @@ export default async function KycRegistrationsPage(props: PageProps<'/kyc/regist
             <span>{text.pageStatus(registrations.page, pages)}</span>
             <span className="flex gap-2">
               {registrations.page > 1 && (
-                <Link className={linkClass} href={{ query: { page: registrations.page - 1 } }}>
+                <Link className={linkClass} href={{ query: { page: registrations.page - 1, size: registrations.size } }}>
                   {text.previous}
                 </Link>
               )}
               {registrations.page < pages && (
-                <Link className={linkClass} href={{ query: { page: registrations.page + 1 } }}>
+                <Link className={linkClass} href={{ query: { page: registrations.page + 1, size: registrations.size } }}>
                   {text.next}
                 </Link>
               )}
