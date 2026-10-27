@@ -12,12 +12,18 @@ export type KycDecision = (typeof KycDecision)[keyof typeof KycDecision];
  * The side writes of a terminal outcome of an operation: the profile status, an outbox row. KycVerificationService
  * calls each inside the transaction that wrote the status, with its manager (tenant entities through
  * `withManager(manager)`, never a manager method), and only when that status write affected exactly one row: the run
- * that lost a race writes nothing. Bind an implementation to KYC_OUTCOME_EFFECTS in the feature's module; without one
- * the service writes the status only.
+ * that lost a race writes nothing. Always bound to KYC_OUTCOME_EFFECTS: KycVerificationModule binds a no-op, and the
+ * feature that owns the side writes replaces that binding. The rules of the seam:
+ * - Database writes only, through `manager`. Never a remote call (HTTP, a broker publish): the status row is locked
+ *   while an effect runs. A message goes out through an outbox row written here.
+ * - Read the outcome from `result`, never from `verification`: that is the row as loaded before the provider call.
+ * - A `failed` effect may be superseded: a later run's success replaces FAILED with COMPLETED and runs `completed`, so
+ *   `completed` must undo or override what `failed` wrote (the profile status set again, a compensating outbox event).
+ * - An effect that throws rolls back the status write with it: the operation stays as it was, and `run` rejects.
  */
 export type KycOutcomeEffects = {
-  completed?(manager: EntityManager, verification: KycVerification, result: VerifyIdentityResult): Promise<void>;
-  failed?(manager: EntityManager, verification: KycVerification): Promise<void>;
+  completed(manager: EntityManager, verification: KycVerification, result: VerifyIdentityResult): Promise<void>;
+  failed(manager: EntityManager, verification: KycVerification): Promise<void>;
 };
 
 /**

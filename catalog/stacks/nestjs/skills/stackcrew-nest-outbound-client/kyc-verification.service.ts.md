@@ -2,7 +2,7 @@ Goes to `src/modules/kyc/kyc-verification.service.ts`.
 
 ```ts
 // Default location: src/modules/kyc/kyc-verification.service.ts
-import { Inject, Injectable, Optional } from '@nestjs/common';
+import { Inject, Injectable } from '@nestjs/common';
 import { DataSource, In } from 'typeorm';
 import { currentContext } from '../../common/context/request-context';
 import { ProviderRejectedError } from '../../common/providers/provider.errors';
@@ -24,7 +24,9 @@ import { KYC_OUTCOME_EFFECTS } from './kyc.constants';
  * the same pending operation). The row decides: every status write is guarded by the statuses it may replace and
  * reads its affected count inside its transaction; the side writes follow only when exactly one row changed, and a
  * write that changed no row reloads the row and answers with its stored state. A provider success is authoritative,
- * so COMPLETED replaces PENDING or FAILED, and nothing replaces COMPLETED.
+ * so COMPLETED replaces PENDING or FAILED, and nothing replaces COMPLETED. The side writes (KYC_OUTCOME_EFFECTS, always
+ * bound: the module binds a no-op by default) run inside the status transaction, so one that throws rolls the status
+ * write back and `run` rejects with its error.
  */
 @Injectable()
 export class KycVerificationService {
@@ -32,7 +34,7 @@ export class KycVerificationService {
     private readonly verifications: KycVerificationRepository,
     private readonly provider: KycProvider,
     private readonly dataSource: DataSource,
-    @Optional() @Inject(KYC_OUTCOME_EFFECTS) private readonly effects?: KycOutcomeEffects,
+    @Inject(KYC_OUTCOME_EFFECTS) private readonly effects: KycOutcomeEffects,
   ) {}
 
   /**
@@ -75,7 +77,7 @@ export class KycVerificationService {
         const ended = await this.dataSource.transaction(async (manager) => {
           const rows = await this.verifications.withManager(manager).update({ id: verification.id, status: KycVerificationStatus.PENDING }, { status: KycVerificationStatus.FAILED });
           if (rows === 1) {
-            await this.effects?.failed?.(manager, verification); // the failure's side writes, only with the status write that won
+            await this.effects.failed(manager, verification); // the failure's side writes, only with the status write that won
           }
           return rows;
         });
@@ -97,7 +99,7 @@ export class KycVerificationService {
         { status: KycVerificationStatus.COMPLETED, decision: result.decision, providerReference: result.providerReference },
       );
       if (rows === 1) {
-        await this.effects?.completed?.(manager, verification, result);
+        await this.effects.completed(manager, verification, result); // the outcome is in result, never in the pre-call row
       }
       return rows;
     });

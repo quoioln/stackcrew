@@ -48,13 +48,21 @@ describe('KycVerificationService (Postgres, a fake KycProvider)', () => {
   let verifications: KycVerificationRepository;
   let service: KycVerificationService;
   const provider: jest.Mocked<KycProvider> = { verify: jest.fn() };
+  /** Set by a test: the effects write their probe row, then throw this. */
+  let effectFailure: Error | undefined;
   /** What a feature writes with an outcome (the profile status, an outbox row): here a probe row, through the transaction's manager. */
   const effects: KycOutcomeEffects = {
     completed: async (manager, verification, result) => {
       await manager.query(`INSERT INTO ${OUTCOME_PROBE} ("verificationId", outcome) VALUES ($1, $2)`, [verification.id, result.decision]);
+      if (effectFailure !== undefined) {
+        throw effectFailure;
+      }
     },
     failed: async (manager, verification) => {
       await manager.query(`INSERT INTO ${OUTCOME_PROBE} ("verificationId", outcome) VALUES ($1, $2)`, [verification.id, KycVerificationStatus.FAILED]);
+      if (effectFailure !== undefined) {
+        throw effectFailure;
+      }
     },
   };
 
@@ -76,7 +84,10 @@ describe('KycVerificationService (Postgres, a fake KycProvider)', () => {
     service = new KycVerificationService(verifications, provider, dataSource, effects);
   });
 
-  beforeEach(() => provider.verify.mockReset());
+  beforeEach(() => {
+    provider.verify.mockReset();
+    effectFailure = undefined;
+  });
 
   afterAll(async () => {
     await dataSource.destroy();
@@ -229,6 +240,26 @@ describe('KycVerificationService (Postgres, a fake KycProvider)', () => {
     expect(provider.verify).toHaveBeenCalledTimes(2);
     expect(await stored(id)).toMatchObject({ status: KycVerificationStatus.COMPLETED, decision: KycDecision.APPROVED });
     expect(await sideWrites(id)).toEqual([KycDecision.APPROVED]); // no FAILED side write
+  });
+
+  it('an outcome side write that throws rolls back the status write: the operation stays as it was, with no side write, and run rejects', async () => {
+    const id = await inRequest('req-23', () => service.start(randomUUID()));
+    effectFailure = new Error('outbox write failed');
+    provider.verify.mockResolvedValueOnce(APPROVED);
+    await expect(inRequest('req-23', () => service.run(id, EVIDENCE))).rejects.toBe(effectFailure);
+    expect(await stored(id)).toMatchObject({ status: KycVerificationStatus.PENDING, decision: null });
+    expect(await sideWrites(id)).toEqual([]); // the probe row was written, then rolled back with the status
+
+    provider.verify.mockRejectedValueOnce(new ProviderRejectedError()); // the same for the failure's side write
+    await expect(inRequest('req-24', () => service.run(id, EVIDENCE))).rejects.toBe(effectFailure);
+    expect(await stored(id)).toMatchObject({ status: KycVerificationStatus.PENDING, decision: null });
+    expect(await sideWrites(id)).toEqual([]);
+
+    effectFailure = undefined; // fixed: the retry calls with the same key and commits the status with its side write
+    provider.verify.mockResolvedValueOnce(APPROVED);
+    await expect(inRequest('req-25', () => service.run(id, EVIDENCE))).resolves.toBe(KycDecision.APPROVED);
+    expect(provider.verify.mock.calls.map(([command]) => command.idempotencyKey)).toEqual([id, id, id]);
+    expect(await sideWrites(id)).toEqual([KycDecision.APPROVED]);
   });
 
   it('calls the provider with no transaction open', async () => {

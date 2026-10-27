@@ -916,9 +916,10 @@ test('nest task 8 fix round 5: side writes only with the status write that won, 
     // IMPORTANT: the side writes of an outcome run inside the transaction that wrote the status, only when it affected exactly one row
     const service = outbound.file('kyc-verification.service.ts');
     assert.ok(outbound.file('kyc-verification.ts').includes('export type KycOutcomeEffects') && service.includes('KycOutcomeEffects'), 'the side writes are an injected collaborator (typed in the domain types file, SC-TYPEFILE), not a comment');
-    assert.ok(service.includes('@Optional() @Inject(KYC_OUTCOME_EFFECTS)'), 'optional: the service works without effects');
+    // Task 9 housekeeping (breaker ruling) supersedes the optional binding: the token is always bound, so the calls are direct
+    assert.ok(service.includes('@Inject(KYC_OUTCOME_EFFECTS) private readonly effects: KycOutcomeEffects'), 'the effects are always injected');
     for (const path of ['completed', 'failed']) {
-      const call = service.indexOf(`this.effects?.${path}?.(manager`);
+      const call = service.indexOf(`this.effects.${path}(manager`);
       assert.ok(call > 0, `the ${path} side write gets the transaction's manager`);
       const guard = service.lastIndexOf('if (rows === 1) {', call);
       const commit = service.indexOf('return rows;', call);
@@ -953,5 +954,32 @@ test('nest task 8 fix round 5: side writes only with the status write that won, 
     const e2e = nestSkill(c, CONSUMER).file('kyc-completed.consumer.e2e.spec.ts');
     assert.ok(e2e.includes('await eventually(() => started, (yes) => yes);') && e2e.indexOf('await eventually(() => started') < e2e.indexOf('await context.close();'), 'the row waits for the delivery in flight');
     assert.ok(e2e.includes('if (context !== undefined && !closed) {'), 'the context is closed in finally when the row fails');
+  });
+});
+
+test('nest task 9 housekeeping: the outcome effects are always bound (no-op default), the seam rules are documented, and a throwing effect rolls back the status', async () => {
+  await withRealCatalog(async (c) => {
+    const outbound = nestSkill(c, OUTBOUND);
+    const service = outbound.file('kyc-verification.service.ts');
+    assert.ok(!service.includes('@Optional()') && !service.includes('Optional }') && !service.includes('this.effects?.'), 'never optional');
+    const types = outbound.file('kyc-verification.ts');
+    assert.ok(types.includes('  completed(manager: EntityManager') && types.includes('  failed(manager: EntityManager'), 'both effects are required members');
+    for (const rule of [/Database writes only/, /Never a remote call/, /from `result`, never from `verification`/, /`failed` effect may be superseded/, /throws rolls back the status write/]) {
+      assert.match(types, rule, `the KycOutcomeEffects doc states ${rule}`);
+    }
+    const module = outbound.file('kyc-verification.module.ts');
+    assert.ok(module.includes('{ provide: KYC_OUTCOME_EFFECTS, useValue: NO_OUTCOME_EFFECTS }') && module.includes('completed: () => Promise.resolve()'), 'the module binds a no-op');
+    assert.match(module, /useClass: ProfileKycOutcomeEffects/, 'the comment shows how a feature replaces it');
+    assert.match(module, /imports a module that provides and exports KYC_OUTCOME_EFFECTS/, 'the comment shows the imported-module option');
+    const section9 = outbound.body.split('## 9.')[1]?.split('\n## ')[0] ?? '';
+    for (const rule of [/never `@Optional\(\)`/, /database writes through `manager` only/i, /from `result`, never from `verification`/, /`failed` effect may be superseded/, /throws rolls the status write back/]) {
+      assert.match(section9, rule, `§9 states ${rule}`);
+    }
+    const spec = outbound.file('kyc-verification.service.spec.ts');
+    assert.ok(spec.includes('an outcome side write that throws rolls back the status write') && spec.includes('.rejects.toBe(effectFailure)'), 'the spec row exists');
+    const table = outbound.body.split('## 3.')[1]?.split('\n## ')[0] ?? '';
+    assert.match(table, /`kyc-verification\.ts\.md` \| [^\n]*`KycEvidence`[^\n]*`KycOutcomeEffects`/, 'file table: domain types row');
+    assert.match(table, /`kyc\.constants\.ts\.md` \| [^\n]*`KYC_OUTCOME_EFFECTS`/, 'file table: constants row');
+    assert.match(table, /`kyc-verification\.service\.spec\.ts\.md` \| [^\n]*throwing side write rolls the status back/, 'file table: spec row');
   });
 });
