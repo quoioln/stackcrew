@@ -27,9 +27,11 @@ public interface ProviderPort {
     VerifyResult verify(VerifyCommand command);
 }
 
-public record VerifyCommand(@NotBlank String documentNumber, @NotNull byte[] selfie, @NotBlank String requestId) {
+// idempotencyKey: the stored operation's id (section 8), the same on every attempt and retry; never the inbound x-request-id.
+// traceRef: correlation only (the request id is fine here); it deduplicates nothing.
+public record VerifyCommand(@NotBlank String documentNumber, @NotNull byte[] selfie, @NotBlank String idempotencyKey, @NotBlank String traceRef) {
     @Override public String toString() {             // a record prints every field: never log PII
-        return "VerifyCommand[requestId=" + requestId + "]";
+        return "VerifyCommand[idempotencyKey=" + idempotencyKey + ", traceRef=" + traceRef + "]";
     }
 }
 public record VerifyResult(VerificationStatus status, BigDecimal score, String providerReference) {}
@@ -75,7 +77,7 @@ They live next to the adapter and never leave that package.
 package com.acme.kyc.infrastructure.c06;
 
 @JsonIgnoreProperties(ignoreUnknown = true)
-record C06VerifyRequest(String idNumber, String faceImageBase64, String traceRef) {}
+record C06VerifyRequest(String idNumber, String faceImageBase64, String clientReference, String traceRef) {}   // C06 deduplicates on clientReference
 
 @JsonIgnoreProperties(ignoreUnknown = true)
 record C06VerifyResponse(String resultCode, BigDecimal matchScore, String transactionId) {}
@@ -97,7 +99,7 @@ final class C06Mapper {
         C06Codes.PROCESSING, VerificationStatus.PENDING);
 
     C06VerifyRequest toRequest(VerifyCommand c) {
-        return new C06VerifyRequest(c.documentNumber(), Base64.getEncoder().encodeToString(c.selfie()), c.requestId());
+        return new C06VerifyRequest(c.documentNumber(), Base64.getEncoder().encodeToString(c.selfie()), c.idempotencyKey(), c.traceRef());
     }
 
     VerifyResult toDomain(C06VerifyResponse r) {
@@ -227,10 +229,10 @@ public abstract class AbstractProviderAdapter<REQ, RES> implements ProviderPort 
         sample.stop(Timer.builder(ProviderMetrics.CALLS).tag(ProviderMetrics.TAG_PROVIDER, providerCode)
             .tag(ProviderMetrics.TAG_OUTCOME, outcome).register(meters));
         if (failure == null) {
-            audit.success(providerCode, command.requestId());
+            audit.success(providerCode, command.traceRef());
         } else {
             meters.counter(ProviderMetrics.FAILURES, ProviderMetrics.TAG_PROVIDER, providerCode, ProviderMetrics.TAG_OUTCOME, outcome).increment();
-            audit.failure(providerCode, command.requestId(), outcome);
+            audit.failure(providerCode, command.traceRef(), outcome);
         }
     }
 
@@ -346,33 +348,63 @@ resilience4j:
 - If you prefer annotations (`@CircuitBreaker(name = ProviderCodes.C06)`, `@Retry`) they work only through the Spring proxy: they are inert on a hand-built bean and on self-invocation, and `circuitBreakerAspectOrder=1` and `retryAspectOrder=2` are needed so the breaker wraps the retry. The template above avoids all of that.
 - `@TimeLimiter` is for `CompletableFuture` methods only; for blocking `RestClient` calls the client timeouts are the time limit.
 
-## 8. Calling and persisting: no transaction around the remote call
+## 8. Calling and persisting: the stored operation, no transaction around the remote call
 
-Call first, then persist in a different bean so the `@Transactional` proxy applies. Never `this.save(...)` with `@Transactional` on a method of the same class.
+A call that changes something runs as a stored operation, in this order:
+
+1. **Insert the operation row and commit.** Its generated id is the provider's idempotency key and is stored before any call. The row is tenant data, so it is a JPA entity on `{{sc:baseTenantEntity}}` (the `Verification` entity of `stackcrew-spring-jpa-entity`), never a `JdbcClient` insert, which Hibernate does not scope to the tenant. The caller keeps the id: in a job row, a message, or the API response.
+2. **Call the provider with no transaction open,** with the key reloaded from the row.
+3. **Persist the result in another bean's `@Transactional` method,** so the proxy applies. Never `this.save(...)` with `@Transactional` on a method of the same class.
 
 ```java
 @Service
-class VerificationFacade {                       // not @Transactional
+class VerificationFacade {                       // not @Transactional: each step is its own transaction, or none
     private final ProviderRegistry registry;
-    private final VerificationRecorder recorder;
+    private final VerificationOperations operations;
 
-    VerificationFacade(ProviderRegistry registry, VerificationRecorder recorder) { this.registry = registry; this.recorder = recorder; }
+    VerificationFacade(ProviderRegistry registry, VerificationOperations operations) { this.registry = registry; this.operations = operations; }
 
-    VerifyResult verify(String providerCode, VerifyCommand command) {
-        VerifyResult result = registry.get(providerCode).verify(command);   // remote call, no transaction open
-        recorder.record(command.requestId(), result);                       // other bean: transaction starts here
+    /** Step 1, committed on its own. The caller keeps the id to run or retry the operation. */
+    UUID start(String reference) {
+        return operations.start(reference);
+    }
+
+    /** Steps 2 and 3; a retry or redelivery calls this again with the same id, so the provider sees the same key. */
+    VerifyResult run(UUID operationId, String providerCode, String documentNumber, byte[] selfie, String traceRef) {
+        String key = operations.keyOf(operationId);                              // reloaded from the stored row
+        VerifyResult result = registry.get(providerCode)
+            .verify(new VerifyCommand(documentNumber, selfie, key, traceRef));   // remote call, no transaction open
+        operations.record(operationId, result);                                  // other bean: transaction starts here
         return result;
     }
 }
 
 @Service
-class VerificationRecorder {
+class VerificationOperations {
+    private final VerificationRepository verifications;
+
+    VerificationOperations(VerificationRepository verifications) { this.verifications = verifications; }
+
     @Transactional
-    void record(String requestId, VerifyResult result) { /* repository.save(...) */ }
+    UUID start(String reference) {
+        return verifications.save(new Verification(reference)).getId();         // committed before any call
+    }
+
+    @Transactional(readOnly = true)
+    String keyOf(UUID operationId) {
+        return verifications.findById(operationId).map(v -> v.getId().toString())
+            .orElseThrow(() -> new VerificationNotFoundException(operationId));
+    }
+
+    @Transactional
+    void record(UUID operationId, VerifyResult result) {
+        verifications.findById(operationId).ifPresent(v -> v.record(result.status(), result.providerReference()));
+    }
 }
 ```
 
-`TransactionTemplate` inside the facade is an equivalent alternative.
+- The key is generated by this service once per operation and stored before the call; never the inbound `x-request-id` or a client's raw `Idempotency-Key`, which can repeat across operations or change between retries of one. Never generate the key at call time or insert a new row for a retry: either sends a fresh key.
+- `record(status, providerReference)` is the entity's own method; add it next to `approve()`. `TransactionTemplate` inside the facade is an equivalent alternative to the second bean.
 
 ## 9. Callbacks: authenticate, dedupe in SQL, acknowledge, process later
 
@@ -427,7 +459,7 @@ class CallbackProcessor {                        // another bean
 ```
 
    A `@TransactionalEventListener` is not invoked at all when no transaction is active (unless `fallbackExecution = true`), and a synchronous one runs before the caller returns. `@EnableAsync` and a bounded `ThreadPoolTaskExecutor` bean named `callbackExecutor` are required. If the process dies between commit and processing, the row is still `NEW`: keep the poller as the safety net.
-5. For your own outbound mutating calls send an idempotency key derived from the business request id, and store it.
+5. For your own outbound calls that change something, send the stored operation's key (section 8): generated by this service and stored before the call, reloaded on every retry, never the inbound `x-request-id`.
 
 ## 10. Logging and metrics per provider
 
@@ -451,6 +483,7 @@ One test class per adapter (`C06AdapterTest`) with `@WireMockTest`. Because Resi
 - timeout gives `ProviderUnavailableException`; with retry on, the call takes about `maxAttempts` read timeouts plus backoff, so use `maxAttempts(1)` or short timeouts in the test when asserting duration;
 - malformed body and unknown or missing result code give `ProviderProtocolException`;
 - retry: a WireMock scenario that fails once then succeeds;
+- a retried 5xx sends the same `clientReference` (the stored key) on every attempt: `verify(2, postRequestedFor(urlEqualTo(C06Paths.VERIFY)).withRequestBody(matchingJsonPath("$.clientReference", equalTo(KEY))))`;
 - callback delivered twice is processed once.
 
 Add the new code to `ProviderRegistryTest`, and make sure `StackcrewArchitectureTest` still passes.

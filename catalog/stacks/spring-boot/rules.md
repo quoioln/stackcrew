@@ -85,7 +85,7 @@ Full steps with code: skill `stackcrew-spring-integration-provider`.
 
 ## Transactions and async
 
-- A remote call never runs inside a `@Transactional` method. Call first, then persist in a different bean (another `@Service`) or with `TransactionTemplate`; `this.save()` on a `@Transactional` method of the same class bypasses the proxy.
+- A remote call never runs inside a `@Transactional` method. A call that changes something is a stored operation: insert its row in its own transaction and commit, so its server-generated id, the provider's idempotency key, is stored before the call; call with no transaction open; then persist the result in a different bean (another `@Service`) or with `TransactionTemplate`. A retry reloads the stored key; the key is never the inbound `x-request-id` or a client's raw `Idempotency-Key`. `this.save()` on a `@Transactional` method of the same class bypasses the proxy.
 - Persist an incoming callback with one atomic idempotent statement, acknowledge, and process later from the persisted row (an inbox poller is the simplest; with events, insert and `publishEvent` inside one `@Transactional` method of the ingest bean and make the `@TransactionalEventListener(phase = AFTER_COMMIT)` listener on another bean `@Async` with `@EnableAsync` and a bounded executor, since such a listener never runs without a transaction and a synchronous one delays the 200). Never catch `DataIntegrityViolationException` inside the same transaction.
 - `@Async`, `@Retry`, `@CircuitBreaker` and `@Transactional` all work through the proxy: they do nothing on `this.` calls or on a hand-built bean in a unit test.
 

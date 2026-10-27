@@ -534,3 +534,27 @@ test('spring logging never throws: depth-capped masker and guarded line writers'
     }
   });
 });
+
+test('spring provider follows the outbound idempotency decision: stored key before the call, no transaction around it', async () => {
+  await withRealCatalog(async (c) => {
+    const s = c.stacks.get('spring-boot');
+    const rules = s.rules.body;
+    const provider = s.skills.find((k) => k.name === 'stackcrew-spring-integration-provider').body;
+    for (const text of [rules, provider]) {
+      assert.ok(!/call first, then persist/i.test(text), 'no call-first wording left');
+      assert.ok(!/derived from the business request id/i.test(text), 'the key is not derived from the request id');
+    }
+    assert.ok(/stored before the call/.test(rules) && /never the inbound `x-request-id`/.test(rules), 'rules.md states the decision');
+    // the domain command carries the stored key and a separate trace reference
+    assert.ok(provider.includes('@NotBlank String idempotencyKey, @NotBlank String traceRef)') && !provider.includes('String requestId)'), 'VerifyCommand fields');
+    assert.ok(provider.includes('c.idempotencyKey(), c.traceRef())'), 'the mapper puts the key and the trace reference into the provider request');
+    assert.ok(!provider.includes('command.requestId()'), 'the template audits the trace reference');
+    // §8 order: the stored row first, the call with no transaction open, then the result in another bean
+    const s8 = provider.split('## 8.')[1].split('\n## ')[0];
+    for (const needle of ['class VerificationOperations', '@Transactional', 'operations.keyOf(', 'operations.record(', 'never the inbound `x-request-id`']) {
+      assert.ok(s8.includes(needle), `section 8 missing ${needle}`);
+    }
+    assert.ok(s8.indexOf('operations.keyOf(') < s8.indexOf('.verify(') && s8.indexOf('.verify(') < s8.indexOf('operations.record('), 'section 8 order');
+    assert.ok(/a retried 5xx sends the same `clientReference`/.test(provider), 'WireMock row for the key on retries');
+  });
+});
