@@ -74,14 +74,14 @@ export default defineConfig({
 ```dotenv
 # .env.test
 AUTH_SECRET=test-only-secret-0123456789abcdef0123
-DATABASE_URL=postgres://app:app@127.0.0.1:5432/app_test
+DATABASE_URL=postgres://127.0.0.1:5432/app_test
 AUTH_ISSUER=http://127.0.0.1:9/issuer
 AUTH_CLIENT_ID=test-client
 AUTH_CLIENT_SECRET=test-only-not-a-secret
 CROSS_TENANT_ROLES=report_admin
 ```
 
-- `DATABASE_URL` points at a database that only tests use (`docker compose up -d db`, then create `app_test`). A test that clears tables must never run against a shared or production database. Unit specs never connect to it.
+- `DATABASE_URL` points at a database that only tests use (a throwaway local Postgres in Docker with trust authentication, so the URL carries no credentials: `docker compose up -d db`, then create `app_test`). A test that clears tables must never run against a shared or production database. Unit specs never connect to it.
 - `tsc --noEmit` in CI runs after `next typegen`: route handlers use `RouteContext<'...'>`, a type Next.js generates into `.next/types`.
 - `tsconfig.json` has `"experimentalDecorators": true`, which Vitest's TypeScript transform reads for the entity decorators. It emits no decorator metadata: every column names its type (skill `stackcrew-next-typeorm-entity`).
 

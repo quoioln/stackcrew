@@ -8,7 +8,7 @@
       "name": "stackcrew",
       "source": "./plugin",
       "description": "Coding rules, per-stack skills and dev/test roles for AI agents, with a write-time guard hook (stackcrew).",
-      "version": "0.1.1"
+      "version": "0.2.0"
     }
   ]
 }

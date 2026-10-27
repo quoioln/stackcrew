@@ -1,6 +1,6 @@
 {
   "name": "stackcrew",
-  "version": "0.1.1",
+  "version": "0.2.0",
   "description": "Coding rules, per-stack skills and dev/test roles for AI agents (Claude Code, Cursor, Codex, Antigravity)",
   "type": "module",
   "bin": {

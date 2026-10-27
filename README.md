@@ -7,7 +7,7 @@ stackcrew là một CLI không phụ thuộc thư viện ngoài (zero-dependency
 - **Rule** về coding standard (type safety, error handling, logging, security, testing, performance, brownfield, delivery) cộng với rule riêng của từng stack và add-on.
 - **Skill theo từng việc** của stack (ví dụ thêm REST endpoint, thêm provider tích hợp, consumer Kafka, viết test), mô tả hẹp để không tự gọi bừa.
 - **Vai (agent)**: `tech-lead`, `developer`, `tester`.
-- **Lưới chặn**: guard hook lúc ghi file (Claude Code), lệnh `check` dựa trên diff cho Jenkins, cấu hình Checkstyle và test ArchUnit sinh sẵn.
+- **Lưới chặn**: guard hook lúc ghi file (Claude Code), lệnh `check` dựa trên diff cho Jenkins, cấu hình Checkstyle và test ArchUnit sinh sẵn (Java), cấu hình ESLint sinh sẵn (TypeScript).
 
 Tool được hỗ trợ: Claude Code, Cursor, Codex, Antigravity. Mỗi tool nhận file đúng định dạng native của nó.
 
@@ -17,13 +17,21 @@ Ba lớp phòng thủ (spec §8):
 2. **L2, chặn lúc ghi**: PreToolUse guard hook, chỉ có trên Claude Code.
 3. **L3, chặn lúc build và CI**: ArchUnit (đã đóng băng bằng `FreezingArchRule`), Checkstyle, `stackcrew check` trong Jenkins.
 
-Plan 1 chỉ hỗ trợ stack **Spring Boot 3.x (Java 17+)** với add-on `kafka`, `rabbitmq`, `camel`, `observability`.
+Stack hỗ trợ (bản 0.2.0):
+
+| Stack | Ngôn ngữ | Phiên bản | Skill theo việc |
+| --- | --- | --- | --- |
+| `spring-boot` | Java 17+ | Spring Boot 3.x | REST endpoint, provider tích hợp, JPA entity, request logging, consumer Kafka (add-on `kafka`), test |
+| `nestjs` | TypeScript | NestJS 10 | REST endpoint, outbound client, TypeORM entity, request logging, consumer RabbitMQ (add-on `rabbitmq`), test |
+| `nextjs` | TypeScript | Next.js 16 (App Router, React 19) | trang feature, server action, route handler, TypeORM entity, request logging, test |
+
+Add-on: `kafka`, `rabbitmq`, `observability` (mọi ngôn ngữ), `camel` (chỉ Java), `typeorm` (chỉ TypeScript). `nextjs` thắng `nestjs` khi dự án có cả hai dependency.
 
 ## Không làm gì
 
 - **Không điều phối** (no orchestration): không tự chuyển bước, không có pipeline, không có "khi người dùng gửi ý tưởng thì chạy quy trình".
 - **Không phải quy trình SDLC**: không có PO/BA/Architect, không có phase. stackcrew không đọc và không ghi gì của SDLC (không bao giờ ghi vào `docs/sdlc/`).
-- Không sửa `Jenkinsfile` có sẵn, không sửa `pom.xml` / `build.gradle(.kts)` nếu bạn không truyền `--wire`.
+- Không sửa `Jenkinsfile` có sẵn, không sửa `pom.xml` / `build.gradle(.kts)` / `package.json` / cấu hình ESLint nếu bạn không truyền `--wire`.
 - Không đụng văn bản ngoài khối `<!-- stackcrew:begin -->` ... `<!-- stackcrew:end -->` trong `CLAUDE.md` và `AGENTS.md`.
 
 ## Cài đặt
@@ -66,7 +74,7 @@ Sau `init`:
 - `stackcrew.json` là profile (nguồn sự thật). Sửa nó rồi chạy `stackcrew sync`.
 - `docs/stackcrew/architecture-profile.md` là bản đọc được của profile.
 - Với tool không phải Claude, nhờ agent dùng skill `stackcrew-init` để chạy phỏng vấn.
-- Dự án Java chưa nối ArchUnit sẽ nhận gợi ý chạy `stackcrew sync --wire`.
+- Dự án Java chưa nối ArchUnit, dự án TypeScript chưa nối ESLint sẽ nhận gợi ý chạy `stackcrew sync --wire`.
 
 ### Dùng Claude Code mà không cài plugin
 
@@ -84,6 +92,49 @@ Nên commit:
 - `.claude/settings.json` nếu bật plugin ở project scope (xem "Cài cho cả team").
 
 Lưu ý: nếu repo chưa có `CLAUDE.md`, `.claude/CLAUDE.md` hay `CLAUDE.local.md` mà đã có `AGENTS.md` chứa quy ước của team, việc `init`/`sync` tạo `CLAUDE.md` khiến Claude Code bản mới **ngừng đọc** `AGENTS.md` (mặc định `claude-md-or-agents-md`). `sync` in cảnh báo `claude-md-shadows-agents-md`; stackcrew **không** tự thêm `@AGENTS.md` vào `CLAUDE.md` (tránh nạp rule của chính nó hai lần). Muốn dùng cả hai, tự thêm dòng `@AGENTS.md` vào `CLAUDE.md`.
+
+## Quy ước dự án (`conventions`)
+
+Rule và skill cần biết vài tên riêng của dự án (lớp entity gốc, claim chứa tenant, ...). Chúng nằm trong khối `conventions` của `stackcrew.json`. Chỉ ghi khóa nào khác mặc định; khối này có thể vắng mặt hoàn toàn. `sync` kiểm tra khối này trước khi ghi: sai tên khóa hoặc giá trị không hợp lệ thì `sync` báo đúng khóa đó, thoát `1` và không ghi gì. `/stackcrew:init` hỏi các khóa này (chỉ với stack `backend` và `fullstack`) rồi ghi lại.
+
+| Khóa | Mặc định | Ý nghĩa |
+| --- | --- | --- |
+| `sharedLibraries` | `[]` | Thư viện nội bộ dự án phải tái sử dụng thay vì tự viết lại |
+| `baseEntity` | `"BaseEntity"` | Lớp entity gốc, có sẵn trường audit |
+| `baseTenantEntity` | `"BaseTenantEntity"` | Lớp entity gốc có thêm cột tenant |
+| `tenantClaim` | `"tenant_id"` | Claim JWT (hoặc trường session) chứa tenant id |
+| `tenantColumn` | `"tenantId"` | Tên cột/thuộc tính tenant trên entity |
+| `rolesClaim` | `"roles"` | Claim JWT (hoặc trường session) chứa danh sách role |
+| `crossTenantRoles` | `["super_admin"]` | Role được đọc xuyên tenant; danh sách rỗng là tắt hẳn việc này |
+| `sharedComponents` | `"src/components/ui"` | Thư mục component UI dùng chung (stack `nextjs`) |
+| `systemUser` | `"system"` | Giá trị `createdBy`/`updatedBy` khi không có người dùng (job nền, migration) |
+| `typeFreeFiles` | `[]` | Glob bổ sung cho luật `SC-TYPEFILE` (file không được khai báo `interface`/`type`) |
+
+```json
+{
+  "conventions": {
+    "baseEntity": "AppBaseEntity",
+    "tenantClaim": "org_id",
+    "crossTenantRoles": ["platform_admin"]
+  }
+}
+```
+
+Hai nhóm quy ước đi kèm skill:
+
+- **Entity gốc**: mọi entity mới kế thừa `baseEntity` hoặc `baseTenantEntity` (`createdAt`, `createdBy`, `updatedAt`, `updatedBy`, giờ UTC). Entity có tenant luôn truy vấn qua repository đã lọc tenant; thiếu tenant trong context thì ném lỗi (TypeScript) hoặc trả về không dòng nào (Hibernate), không bao giờ trả dữ liệu chưa lọc. Đọc xuyên tenant phải đi qua `runCrossTenant(reason, ...)`, chỉ cho role trong `crossTenantRoles` hoặc `systemUser`, và ghi log lý do.
+- **Log request/response có che dữ liệu (masked body logging)**: mỗi lời gọi vào và ra ghi một dòng JSON, kèm `requestId`, `traceId`, `userId`, `tenantId`. Body chỉ được ghi với JSON và `application/x-www-form-urlencoded`; mọi trường bí mật (`password`, `token`, `authorization`, ...) và PII (`email`, `phoneNumber`, `cardNumber`, ...) bị thay bằng `"***"`. XML/SOAP, `text/*`, nhị phân, JSON hỏng chỉ ghi content-type và kích thước; chuỗi base64 dài ghi `<base64 N bytes>`; body quá dài bị cắt. Cấu hình: Spring `app.logging.mask-fields`, `app.logging.max-body-bytes` (mặc định 16384), `app.logging.log-bodies`; Node `LOG_MASK_FIELDS`, `LOG_MAX_BODY_BYTES`, `LOG_BODIES=false` để tắt body.
+
+### Nối ESLint với `sync --wire` (TypeScript)
+
+Với `nestjs` và `nextjs`, `init` và `sync` luôn sinh cả hai bản cấu hình: `.stackcrew/lint/eslint.stackcrew.mjs` (flat config, ESLint 9+) và `.stackcrew/lint/eslintrc.stackcrew.cjs` (legacy, ESLint 8). Chỉ `sync --wire` mới đọc phiên bản ESLint của dự án và chọn một bản:
+
+- ESLint 9+ và có `eslint.config.js|mjs|ts|mts`: thêm `import` và bọc export mặc định; phần còn lại của file (ví dụ `eslint.config.mjs` của create-next-app) giữ nguyên.
+- ESLint 8: thêm vào `extends` của `.eslintrc.json` hoặc khóa `eslintConfig` trong `package.json`.
+- Dự án chưa có ESLint: tạo `eslint.config.mjs` và thêm `eslint`, `@eslint/js`, `typescript-eslint` vào `devDependencies` (sau đó tự chạy `npm install`).
+- Trường hợp không nối tự động được (`eslint.config.cjs`, hai dòng `export default`, `.eslintrc` dạng YAML hoặc JSONC; ESLint 9 chỉ có `.eslintrc*`; có cấu hình nhưng không có dependency `eslint`; ESLint 8 không có cấu hình; phiên bản ESLint nhỏ hơn 8): thoát `1`, in đoạn cần dán, không sửa `package.json` hay file cấu hình ESLint (phần còn lại của `sync` vẫn ghi file của stackcrew).
+
+Sau khi `--wire` thành công, `stackcrew.json` ghi `node.wired: true`.
 
 ## Dùng với Claude Code
 
@@ -169,7 +220,9 @@ claude plugin uninstall stackcrew@stackcrew    # gỡ; thêm --scope tương ứ
 
 Sau khi cập nhật, gõ `/reload-plugins` trong phiên đang mở hoặc mở phiên mới. Plugin khai `version` cố định, nên `update` chỉ lấy bản mới khi `version` đã tăng (xem "Phát triển"); nếu chưa tăng, nó báo `already at the latest version`.
 
-Rule, skill và agent nằm trong từng dự án, nên sau khi cập nhật plugin, chạy `/stackcrew:sync` trong mỗi dự án đã init để render lại theo bản mới. Ví dụ bản 0.1.1 bỏ `paths` khỏi skill: trước bản này, skill theo stack chỉ hiện ra sau khi Claude đụng tới một file của stack, và vai không nạp sẵn được skill.
+Rule, skill và agent nằm trong từng dự án, nên sau khi cập nhật plugin, chạy `/stackcrew:sync` trong mỗi dự án đã init để render lại theo bản mới.
+
+**Lên 0.2.0**: (1) `claude plugin marketplace update stackcrew` rồi `claude plugin update stackcrew@stackcrew`, sau đó `/reload-plugins`; (2) trong **từng dự án** đã init, chạy `/stackcrew:sync`. Profile 0.1.x (không có `conventions`, không có `node`) vẫn hợp lệ: `sync` dùng quy ước mặc định (bản 0.2.0 thêm cho Spring skill `stackcrew-spring-jpa-entity`, `stackcrew-spring-request-logging`, rule `core-persistence` và rule log body có che dữ liệu). Nếu entity gốc hay claim tenant của dự án khác mặc định, thêm khối `conventions` (xem "Quy ước dự án") trước khi sync; dự án TypeScript chạy thêm `/stackcrew:sync --wire` để nối ESLint. Ví dụ bản 0.1.1 bỏ `paths` khỏi skill: trước bản này, skill theo stack chỉ hiện ra sau khi Claude đụng tới một file của stack, và vai không nạp sẵn được skill.
 
 ### Lệnh trong phiên
 
@@ -347,6 +400,7 @@ Chi tiết:
 
 - `init` không có `--stack`: dùng stack phát hiện được; nếu không có và đang ở terminal thì hiện menu chọn. Nếu `stackcrew.json` đã có, `init` từ chối (exit 1) trừ khi có `--force`; `--force` giữ lại `decisions`, `context` và cài đặt `java`.
 - `sync` chỉ tạo, ghi đè hoặc xóa file nằm trong danh sách file do stackcrew sở hữu (ghi trong `.stackcrew/manifest.json`). File sinh ra mà bạn sửa tay sẽ **không bị ghi đè**: được báo, lệnh thoát với exit 1. Dùng `--force` để ghi đè, hoặc chuyển phần sửa sang `.stackcrew/custom/`.
+- `--wire` (TypeScript): nối ESLint, xem "Quy ước dự án" > "Nối ESLint với `sync --wire`".
 - `--wire` (Java): thêm `archunit-junit5` (test scope) vào `pom.xml` / `build.gradle(.kts)` và sinh `src/test/java/<basePackage>/stackcrew/StackcrewArchitectureTest.java`.
 
   Test sinh ra có 5 test: 4 rule (khai báo dạng method `@ArchTest`) và `base_package_contains_classes`. Test cuối fail khi `java.basePackage` không khớp class nào, vì khi đó 4 rule sẽ pass mà không kiểm gì. Sau `mvn test` / `gradle test`, log phải có `Tests run: 5`. Đã kiểm với Maven 3.9.12 trên Spring Boot 3.2.12, 3.3.13, 3.4.9, 3.5.4, 3.5.11 (surefire 3.1.2, 3.2.5, 3.5.3, 3.5.4) và Gradle 8.14.4 trên Spring Boot 3.4.9 (xem "Giới hạn hiện tại").
@@ -582,7 +636,7 @@ Chạy `stackcrew sync` để render. Mỗi rule có phần `## Essentials` tố
 
 ## Giới hạn hiện tại
 
-- Plan 1 chỉ có **Spring Boot**. Các stack khác nằm ở Plan 2.
+- Stack hỗ trợ: Spring Boot, NestJS 10, Next.js 16. Stack khác (Go, Python, ...) chưa có; NestJS 11 chưa được nhắm tới.
 - `--wire` chỉ nối được build **một module**. Với Maven nhiều module (root có `<packaging>pom</packaging>` hoặc `<modules>`), stackcrew không sửa pom nào, in đoạn dependency và thoát `1`: hãy thêm ArchUnit vào module chứa class ứng dụng (test sinh ra nằm ở `src/test/java` của root nên sẽ không chạy trong build nhiều module).
 - Khi chọn đồng thời `claude`, `cursor` và `codex`, Cursor đọc cả `.claude/skills` lẫn `.agents/skills` nên skill có thể hiện **hai lần**. `sync` in cảnh báo `cursor-duplicate-skills`.
 - Khi chọn `cursor` cùng `codex`, Cursor còn đọc `.codex/agents` nên agent của stackcrew có thể hiện **hai lần**; `sync` in cảnh báo `cursor-duplicate-agents`. Chưa rõ Cursor có thật sự đọc `.codex/agents/*.toml` không (xem `docs/manual-checklist.md`).
@@ -610,5 +664,6 @@ Phát hành bản plugin mới:
 4. Người dùng chạy `claude plugin marketplace update stackcrew`, rồi `claude plugin update stackcrew@stackcrew`.
 
 Push mà không tăng `version` thì người đã cài vẫn giữ bản cũ.
-- `fixtures/spring-boot-minimal/` là dự án mẫu cho `test/e2e.test.js` (có vi phạm cài sẵn trong `BadService`). Nó không nằm trong gói npm.
+- `fixtures/spring-boot-minimal/` là dự án mẫu cho `test/e2e.test.js` (có vi phạm cài sẵn trong `BadService`); `fixtures/nestjs-minimal/` và `fixtures/nextjs-minimal/` là dự án mẫu cho `test/e2e-node.test.js` (vi phạm cài sẵn `SC-TYPEFILE`, `SC-TYPE`, `SC-ENV`). Chúng không nằm trong gói npm.
+- File trong `catalog/` và `fixtures/` không được đặt tên khớp mẫu mặc định của `node --test` (`*.test.*`, `*-test.*`, `*_test.*`, `test-*.*`, `test.*`, thư mục `test/`): Node 22 bóc kiểu nên cũng chạy file `.ts`. Ví dụ spec dùng `*.spec.ts`; `test/release.test.js` kiểm điều này.
 - Danh sách kiểm thử tay trên Cursor, Codex, Antigravity: xem `docs/manual-checklist.md`.

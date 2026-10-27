@@ -68,6 +68,49 @@ Trên fixture Spring Boot, bối cảnh "tích hợp eKYC nhiều provider", gia
 
 Kết quả (từng tool: Claude Code, Cursor, Codex, Antigravity): ______
 
+## Golden task NestJS và Next.js (delta §11.2, bản 0.2.0)
+
+**Chuẩn bị:** copy `fixtures/nestjs-minimal/` (hoặc `fixtures/nextjs-minimal/`) ra thư mục tạm, `git init -b main`, chạy `node <repo>/bin/stackcrew.js init --stack nestjs --addons rabbitmq,typeorm --tools claude,cursor,codex,antigravity` (Next.js: `--stack nextjs --addons typeorm`), rồi `sync --wire`. Giao từng task cho developer của stack (`@stackcrew-nestjs-developer` hoặc `@stackcrew-nextjs-developer`) và chấm theo danh sách. Chạy ở từng tool: Claude Code, Cursor, Codex, Antigravity.
+
+### N1. NestJS: consumer RabbitMQ
+
+Task: **"thêm consumer RabbitMQ nhận sự kiện `kyc.completed` và cập nhật hồ sơ khách hàng"**.
+
+- [ ] Agent đọc skill `stackcrew-nest-rabbitmq-consumer` và viết ghi chú pre-flight trước khi code.
+- [ ] Consumer ack thủ công, retry qua dead-letter exchange (hàng đợi wait, hàng đợi parking), xử lý idempotent (bảng message đã xử lý), không nuốt lỗi.
+- [ ] Message được parse thành lớp có kiểu rồi validate (không `any`); kiểu khai báo ở file `*.message.ts`/`*.types.ts`, không phải `*.service.ts` (`SC-TYPEFILE`).
+- [ ] Context lấy từ header `x-tenant-id`, `x-user-id`, `x-request-id`; thiếu `x-tenant-id` thì lỗi, không đọc dữ liệu chưa lọc tenant.
+- [ ] Mỗi message vào ghi một dòng log JSON `event: message_in` kèm `requestId`, `tenantId`, `userId`; body đã che trường nhạy cảm (`"***"`).
+- [ ] Entity kế thừa `BaseEntity`/`BaseTenantEntity` của dự án, không dùng `BaseEntity` của TypeORM.
+- [ ] Có test (unit cho handler và codec; consumer chạy trên broker thật bằng Testcontainers); cấu hình broker đọc từ module config, không `process.env` rải rác (`SC-ENV`).
+- [ ] Hỏi người dùng trước khi thêm thư viện mới (ví dụ Testcontainers, `nestjs-pino`).
+
+### N2. NestJS: endpoint khách hàng
+
+Task: **"thêm endpoint `GET/POST /customers` (phân trang, tạo mới) cho tenant hiện tại"**.
+
+- [ ] Agent dùng skill `stackcrew-nest-rest-endpoint` và `stackcrew-nest-typeorm-entity`; entity kế thừa `BaseTenantEntity`, truy vấn qua `TenantScopedRepository`.
+- [ ] DTO request/response tách khỏi entity, validate bằng `ValidationPipe`, lỗi trả theo RFC 7807 thống nhất.
+- [ ] Danh sách có phân trang với giới hạn kích thước trang; không có endpoint trả toàn bộ bảng.
+- [ ] Người dùng thường không đọc được dữ liệu tenant khác; đọc xuyên tenant chỉ qua `runCrossTenant(reason, ...)` với role trong `crossTenantRoles`, có log lý do.
+- [ ] Log request/response một dòng JSON; `email`, `phoneNumber`, `fullName` trong body hiện `"***"`.
+- [ ] Test e2e (supertest): tạo, liệt kê, truy cập chéo tenant bị từ chối, thiếu token trả 401.
+- [ ] `stackcrew check --base main` sạch (không `SC-TYPE`, `SC-TYPEFILE`, `SC-ENV`, `SC-CONST`).
+
+### N3. Next.js: form eKYC cho người dùng đã đăng nhập
+
+Task: **"thêm trang đăng ký eKYC (form) cho người dùng đã đăng nhập"**.
+
+- [ ] Agent dùng skill `stackcrew-next-server-action` và `stackcrew-next-feature-page`; server action bọc bằng `withActionLogging`.
+- [ ] Action kiểm tra người gọi qua `getRequestContext()` và từ chối khi chưa đăng nhập; không tin tenant hay user id gửi từ client.
+- [ ] Dữ liệu form được parse bằng schema zod ở biên; kiểu suy ra bằng `z.infer` nằm cạnh schema trong `schemas/` hoặc file `*.types.ts`, không khai báo `interface`/`type` trong `actions.ts` (`SC-TYPEFILE`).
+- [ ] Biến môi trường đọc qua module `env` đã validate, không `process.env` trong action (`SC-ENV`).
+- [ ] Form dùng component dùng chung ở `sharedComponents` (mặc định `src/components/ui`), có trạng thái pending, thành công và lỗi theo trường.
+- [ ] Log của action che `fullName`, `dateOfBirth`, số giấy tờ (`"***"`), không ghi ảnh base64 (`<base64 N bytes>`).
+- [ ] Có test cho schema và action (Vitest); `stackcrew check --base main` sạch.
+
+Kết quả (từng tool): ______
+
 ## Maven / ArchUnit
 
 Quy trình (đã chạy ngày 2026-10-24, kết quả bên dưới):
