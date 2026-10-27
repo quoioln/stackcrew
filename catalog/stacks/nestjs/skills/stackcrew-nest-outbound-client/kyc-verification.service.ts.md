@@ -2,15 +2,16 @@ Goes to `src/modules/kyc/kyc-verification.service.ts`.
 
 ```ts
 // Default location: src/modules/kyc/kyc-verification.service.ts
-import { Injectable } from '@nestjs/common';
-import { DataSource, Not } from 'typeorm';
+import { Inject, Injectable, Optional } from '@nestjs/common';
+import { DataSource, In } from 'typeorm';
 import { currentContext } from '../../common/context/request-context';
 import { ProviderRejectedError } from '../../common/providers/provider.errors';
 import { KycVerificationStatus } from './entities/kyc-verification.entity';
-import type { KycDecision, KycEvidence, VerifyIdentityResult } from './interfaces/kyc-verification';
+import type { KycDecision, KycEvidence, KycOutcomeEffects, VerifyIdentityResult } from './interfaces/kyc-verification';
 import { KycProvider } from './kyc-provider.port';
 import { KycVerificationFailed, KycVerificationNotFound } from './kyc-verification.errors';
 import { KycVerificationRepository } from './kyc-verification.repository';
+import { KYC_OUTCOME_EFFECTS } from './kyc.constants';
 
 /**
  * A provider call that changes something, in three steps: (1) insert the operation row and commit, so its id, the
@@ -20,9 +21,10 @@ import { KycVerificationRepository } from './kyc-verification.repository';
  * The evidence is PII and never stored on the row: the caller passes it on every run, loaded by its reference.
  *
  * Two runs of one operation can overlap (a redelivery during a slow call, the orphan sweep, two requests that got
- * the same pending operation). The row decides: every write is guarded by the status it expects, a write that
- * affects no row reloads the row and answers with its stored state, and a provider success is authoritative, so
- * COMPLETED replaces FAILED but nothing replaces COMPLETED.
+ * the same pending operation). The row decides: every status write is guarded by the statuses it may replace and
+ * reads its affected count inside its transaction; the side writes follow only when exactly one row changed, and a
+ * write that changed no row reloads the row and answers with its stored state. A provider success is authoritative,
+ * so COMPLETED replaces PENDING or FAILED, and nothing replaces COMPLETED.
  */
 @Injectable()
 export class KycVerificationService {
@@ -30,6 +32,7 @@ export class KycVerificationService {
     private readonly verifications: KycVerificationRepository,
     private readonly provider: KycProvider,
     private readonly dataSource: DataSource,
+    @Optional() @Inject(KYC_OUTCOME_EFFECTS) private readonly effects?: KycOutcomeEffects,
   ) {}
 
   /**
@@ -43,7 +46,7 @@ export class KycVerificationService {
 
   /**
    * Steps 2 and 3; safe to call again for the same id, also while another run of it is in flight. A completed
-   * operation returns its decision without a call; a failed one throws KycVerificationFailed. A provider rejection
+   * operation returns its decision without a call; a failed one throws KycVerificationFailed. A provider refusal
    * ends the operation FAILED; any other failure leaves it PENDING, so a retry calls again with the same key.
    */
   async run(verificationId: string, evidence: KycEvidence): Promise<KycDecision> {
@@ -67,9 +70,15 @@ export class KycVerificationService {
       });
     } catch (failure: unknown) {
       if (failure instanceof ProviderRejectedError) {
-        // the provider refused this request and would refuse it again under the same key: the operation ends here,
-        // unless another run of it already completed it (nothing replaces COMPLETED)
-        const ended = await this.verifications.update({ id: verification.id, status: KycVerificationStatus.PENDING }, { status: KycVerificationStatus.FAILED });
+        // the provider refused this request (400, 404, 422) and would refuse it again under the same key: the operation
+        // ends here, unless another run of it already completed it (nothing replaces COMPLETED)
+        const ended = await this.dataSource.transaction(async (manager) => {
+          const rows = await this.verifications.withManager(manager).update({ id: verification.id, status: KycVerificationStatus.PENDING }, { status: KycVerificationStatus.FAILED });
+          if (rows === 1) {
+            await this.effects?.failed?.(manager, verification); // the failure's side writes, only with the status write that won
+          }
+          return rows;
+        });
         if (ended === 0) {
           const decision = await this.completedDecision(verification.id);
           if (decision !== undefined) {
@@ -80,12 +89,17 @@ export class KycVerificationService {
       throw failure; // unavailable (a 5xx, 429, 409, 401, 403, no reply), or an invalid reply: still PENDING, so a retry runs it again with the same key
     }
     const completed = await this.dataSource.transaction(async (manager) => {
-      // the outcome and any other write it causes (the profile status, an outbox row) commit together. The provider's
-      // success is authoritative: it replaces PENDING and a FAILED that a concurrent run wrote, never a COMPLETED
-      return this.verifications.withManager(manager).update(
-        { id: verification.id, status: Not(KycVerificationStatus.COMPLETED) },
+      // the provider's success is authoritative: it replaces PENDING and a FAILED that a concurrent run wrote, never a
+      // COMPLETED. The outcome and the writes it causes (the profile status, an outbox row) commit together, and only
+      // when this run's status write is the one that changed the row: the run that lost writes nothing here
+      const rows = await this.verifications.withManager(manager).update(
+        { id: verification.id, status: In([KycVerificationStatus.PENDING, KycVerificationStatus.FAILED]) },
         { status: KycVerificationStatus.COMPLETED, decision: result.decision, providerReference: result.providerReference },
       );
+      if (rows === 1) {
+        await this.effects?.completed?.(manager, verification, result);
+      }
+      return rows;
     });
     if (completed === 0) {
       // another run completed it first: its stored result is the outcome of this operation, for every caller

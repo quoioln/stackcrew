@@ -5,7 +5,7 @@ Goes to `test/kyc-completed.consumer.e2e.spec.ts`.
 import { Module } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import type { NestExpressApplication } from '@nestjs/platform-express';
-import { Test } from '@nestjs/testing';
+import { Test, type TestingModule } from '@nestjs/testing';
 import { PostgreSqlContainer, type StartedPostgreSqlContainer } from '@testcontainers/postgresql';
 import { RabbitMQContainer, type StartedRabbitMQContainer } from '@testcontainers/rabbitmq';
 import { connect, type ConfirmChannel, type GetMessage } from 'amqplib';
@@ -337,43 +337,48 @@ describe('kyc.completed consumer (e2e: RabbitMQ and Postgres in Testcontainers)'
     const raw = await connect(url);
     const rawChannel = await raw.createConfirmChannel();
     const hooks: string[] = [];
+    const spies: jest.SpyInstance[] = [];
+    let started = false;
+    let closed = false;
     let drainStarted = (): void => undefined;
     const released = new Promise<void>((resolve) => {
       drainStarted = resolve;
     });
-    const context = await Test.createTestingModule({
-      imports: [ShutdownMessagingModule],
-      providers: [KycCompletedConsumer, {
-        provide: KycCompletedHandler,
-        inject: [MessagePublisher],
-        useFactory: (publisher: MessagePublisher): Pick<KycCompletedHandler, 'handle'> => ({
-          handle: async (message) => {
-            await released; // still in flight when the shutdown starts
-            await publisher.publish(exchange, ECHO_ROUTING_KEY, message); // a handler may publish during the drain
-            return true;
-          },
-        }),
-      }],
-    }).setLogger(logger).overrideProvider(ConfigService).useValue({ get: () => url }).compile(); // the same capturing logger: compile() would otherwise replace it
-    const consumer = context.get(KycCompletedConsumer);
-    const publisher = context.get(MessagePublisher);
-    const connection = context.get(RabbitMqConnection);
-    const spies = [
-      jest.spyOn(consumer, 'onModuleDestroy').mockImplementation(async function (this: KycCompletedConsumer) {
-        hooks.push('consumer.onModuleDestroy');
-        drainStarted();
-        await KycCompletedConsumer.prototype.onModuleDestroy.call(this);
-      }),
-      jest.spyOn(publisher, 'beforeApplicationShutdown').mockImplementation(async function (this: MessagePublisher) {
-        hooks.push('publisher.beforeApplicationShutdown');
-        await MessagePublisher.prototype.beforeApplicationShutdown.call(this);
-      }),
-      jest.spyOn(connection, 'onApplicationShutdown').mockImplementation(async function (this: RabbitMqConnection) {
-        hooks.push('connection.onApplicationShutdown');
-        await RabbitMqConnection.prototype.onApplicationShutdown.call(this);
-      }),
-    ];
+    let context: TestingModule | undefined;
     try {
+      context = await Test.createTestingModule({
+        imports: [ShutdownMessagingModule],
+        providers: [KycCompletedConsumer, {
+          provide: KycCompletedHandler,
+          inject: [MessagePublisher],
+          useFactory: (publisher: MessagePublisher): Pick<KycCompletedHandler, 'handle'> => ({
+            handle: async (message) => {
+              started = true;
+              await released; // still in flight when the shutdown starts
+              await publisher.publish(exchange, ECHO_ROUTING_KEY, message); // a handler may publish during the drain
+              return true;
+            },
+          }),
+        }],
+      }).setLogger(logger).overrideProvider(ConfigService).useValue({ get: () => url }).compile(); // the same capturing logger: compile() would otherwise replace it
+      const consumer = context.get(KycCompletedConsumer);
+      const publisher = context.get(MessagePublisher);
+      const connection = context.get(RabbitMqConnection);
+      spies.push(
+        jest.spyOn(consumer, 'onModuleDestroy').mockImplementation(async function (this: KycCompletedConsumer) {
+          hooks.push('consumer.onModuleDestroy');
+          drainStarted();
+          await KycCompletedConsumer.prototype.onModuleDestroy.call(this);
+        }),
+        jest.spyOn(publisher, 'beforeApplicationShutdown').mockImplementation(async function (this: MessagePublisher) {
+          hooks.push('publisher.beforeApplicationShutdown');
+          await MessagePublisher.prototype.beforeApplicationShutdown.call(this);
+        }),
+        jest.spyOn(connection, 'onApplicationShutdown').mockImplementation(async function (this: RabbitMqConnection) {
+          hooks.push('connection.onApplicationShutdown');
+          await RabbitMqConnection.prototype.onApplicationShutdown.call(this);
+        }),
+      );
       await context.init(); // onApplicationBootstrap: the consumer registers
       await consumer.ready();
       await rawChannel.assertQueue(ECHO_QUEUE, { durable: true }); // RabbitMQ 4 refuses a transient non-exclusive queue
@@ -381,12 +386,18 @@ describe('kyc.completed consumer (e2e: RabbitMQ and Postgres in Testcontainers)'
       const message = kycCompleted(randomUUID());
       rawChannel.publish(exchange, routingKey, payload(message), { persistent: true, contentType: 'application/json', messageId: message.messageId, headers: { 'x-tenant-id': 'tenant-a', 'x-user-id': 'kyc-service' } });
       await rawChannel.waitForConfirms();
+      await eventually(() => started, (yes) => yes); // the delivery is in flight when the shutdown starts
       await context.close(); // what enableShutdownHooks runs on SIGTERM; the handler is released once the drain started
+      closed = true;
       expect(hooks).toEqual(['consumer.onModuleDestroy', 'publisher.beforeApplicationShutdown', 'connection.onApplicationShutdown']);
       expect(outcomes(message.messageId)).toEqual([expect.objectContaining({ outcome: 'applied' })]); // the publish during the drain was confirmed
       expect(await rawChannel.checkQueue(ECHO_QUEUE)).toMatchObject({ messageCount: 1 });
       expect(connection.isConnected()).toBe(false);
     } finally {
+      if (context !== undefined && !closed) {
+        drainStarted(); // a failed row must not leave the handler, the consumer or the connection open
+        await context.close().catch(() => undefined);
+      }
       spies.forEach((spy) => spy.mockRestore());
       await raw.close();
       await rabbit.exec(['rabbitmqctl', 'delete_vhost', vhost]);

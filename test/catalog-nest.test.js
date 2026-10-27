@@ -881,10 +881,10 @@ test('nest task 8 fix round 4: a concurrent success is never overwritten; 409/40
     assert.ok(clientSpec.includes('it.each([401, 403, 409])') && clientSpec.includes('it.each([400, 404, 422])'), 'client spec rows: retried with the same key, and refused');
     // N1. the service: the COMPLETED update replaces anything but COMPLETED; an update of 0 rows reloads the row and acts on its state
     const service = outbound.file('kyc-verification.service.ts');
-    assert.ok(service.includes('status: Not(KycVerificationStatus.COMPLETED)'), 'COMPLETED may replace FAILED');
+    assert.ok(service.includes('status: In([KycVerificationStatus.PENDING, KycVerificationStatus.FAILED])') && !service.includes('Not('), 'COMPLETED may replace PENDING or FAILED, and only those (round 5: In, not Not)');
     assert.ok(!/update\(\s*\{ id: verification\.id, status: KycVerificationStatus\.PENDING \},\s*\{ status: KycVerificationStatus\.COMPLETED/.test(service), 'the COMPLETED update is no longer guarded on PENDING only');
     assert.ok(/const completed = await this\.dataSource\.transaction/.test(service) && service.includes('if (completed === 0)'), 'the affected count of the COMPLETED update is read');
-    assert.ok(/const ended = await this\.verifications\.update/.test(service) && service.includes('if (ended === 0)'), 'the affected count of the FAILED update is read');
+    assert.ok(/const ended = await this\.dataSource\.transaction/.test(service) && service.includes('if (ended === 0)'), 'the affected count of the FAILED update is read (round 5: inside its own transaction)');
     assert.ok(service.includes('private async completedDecision('), 'a 0-row update reloads the row');
     const spec = outbound.file('kyc-verification.service.spec.ts');
     for (const needle of ['one answered 409 (the key is in use) and one approved', 'COMPLETED replaces FAILED', 'the result stored first is the outcome of both callers',
@@ -907,5 +907,51 @@ test('nest task 8 fix round 4: a concurrent success is never overwritten; 409/40
     const e2e = consumerSkill.file('kyc-completed.consumer.e2e.spec.ts');
     assert.ok(e2e.includes("'consumer.onModuleDestroy', 'publisher.beforeApplicationShutdown', 'connection.onApplicationShutdown'"), 'the e2e row pins the shutdown order');
     assert.ok(e2e.includes('.setLogger(logger)'), 'the extra testing module keeps the capturing logger');
+  });
+});
+
+test('nest task 8 fix round 5: side writes only with the status write that won, precise status classification, hardened race rows, bounded shutdown row', async () => {
+  await withRealCatalog(async (c) => {
+    const outbound = nestSkill(c, OUTBOUND);
+    // IMPORTANT: the side writes of an outcome run inside the transaction that wrote the status, only when it affected exactly one row
+    const service = outbound.file('kyc-verification.service.ts');
+    assert.ok(outbound.file('kyc-verification.ts').includes('export type KycOutcomeEffects') && service.includes('KycOutcomeEffects'), 'the side writes are an injected collaborator (typed in the domain types file, SC-TYPEFILE), not a comment');
+    assert.ok(service.includes('@Optional() @Inject(KYC_OUTCOME_EFFECTS)'), 'optional: the service works without effects');
+    for (const path of ['completed', 'failed']) {
+      const call = service.indexOf(`this.effects?.${path}?.(manager`);
+      assert.ok(call > 0, `the ${path} side write gets the transaction's manager`);
+      const guard = service.lastIndexOf('if (rows === 1) {', call);
+      const commit = service.indexOf('return rows;', call);
+      assert.ok(guard > 0 && commit > call, `the ${path} side write runs after the 1-row check and before the transaction returns`);
+      const open = service.lastIndexOf('this.dataSource.transaction(async (manager) => {', call);
+      const inside = service.slice(open, call); // the callback's own update, then the guard, then the call; its `return rows;` comes after the call
+      assert.ok(open > 0 && inside.includes('const rows = await this.verifications.withManager(manager).update(') && !inside.includes('return rows;'),
+        `the ${path} side write is inside the transaction callback`);
+    }
+    assert.ok(outbound.file('kyc.constants.ts').includes('export const KYC_OUTCOME_EFFECTS'), 'the effects token lives with the other tokens');
+    const spec = outbound.file('kyc-verification.service.spec.ts');
+    for (const needle of ['kyc_outcome_probe', 'and the losing run writes no side effect', 'a refusal arriving after a success', 'held.reject(new ProviderRejectedError())',
+      "toEqual([KycVerificationStatus.FAILED, KycDecision.APPROVED])", 'new KycVerificationService(verifications, provider, dataSource, effects)']) {
+      assert.ok(spec.includes(needle), `service spec missing ${needle}`);
+    }
+    // minors 1 and 2: every race row waits for the held call to be registered and counts both calls
+    assert.ok((spec.match(/await held\.started;/g) ?? []).length >= 4, 'each race row waits for the held call');
+    assert.ok((spec.match(/toHaveBeenCalledTimes\(2\)/g) ?? []).length >= 4, 'each race row proves the second call happened');
+    // minor 5: In([PENDING, FAILED]), never Not(COMPLETED)
+    assert.ok(service.includes("import { DataSource, In } from 'typeorm'") && !service.includes('Not('), 'In, not Not');
+    // minors 3, 4, 7: the wording matches the binding classification
+    const body = outbound.body;
+    assert.ok(!/Do not retry a 4xx/.test(body) && /Do not retry a 400, 404 or 422/.test(body), 'the Do-not list names the refused statuses');
+    assert.ok(/drop the cached token on a 401 before the retry/i.test(body), 'token cache invalidation on 401');
+    const section6 = body.split('## 6.')[1]?.split('\n## ')[0] ?? '';
+    assert.ok(/alert on `http_out`[^\n]*401[^\n]*403/.test(section6), '§6 says to alert on 401/403 http_out lines');
+    const section9 = body.split('## 9.')[1]?.split('\n## ')[0] ?? '';
+    assert.ok(/exactly one row/.test(section9) && /In\(\[PENDING, FAILED\]\)/.test(section9) && /KYC_OUTCOME_EFFECTS/.test(section9), '§9 states the side-write rule and the binding');
+    const policy = outbound.file('provider-call.policy.ts');
+    assert.ok(!/never a rejection \(4xx\)/.test(policy) && /409, 401 and 403/.test(policy) && /400, 404 or 422/.test(policy), 'the policy header matches the classification');
+    // minor 6: the shutdown row waits for the delivery and closes the context in finally
+    const e2e = nestSkill(c, CONSUMER).file('kyc-completed.consumer.e2e.spec.ts');
+    assert.ok(e2e.includes('await eventually(() => started, (yes) => yes);') && e2e.indexOf('await eventually(() => started') < e2e.indexOf('await context.close();'), 'the row waits for the delivery in flight');
+    assert.ok(e2e.includes('if (context !== undefined && !closed) {'), 'the context is closed in finally when the row fails');
   });
 });

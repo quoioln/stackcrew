@@ -10,6 +10,9 @@ export const KYC_PROVIDER_TARGET = 'kyc-provider';
 /** Injection token of the resilience settings; a test overrides it with short delays. */
 export const KYC_PROVIDER_POLICY = Symbol('KYC_PROVIDER_POLICY');
 
+/** Injection token of the outcome side writes (KycOutcomeEffects); optional, bound by the feature that owns them. */
+export const KYC_OUTCOME_EFFECTS = Symbol('KYC_OUTCOME_EFFECTS');
+
 /** Tune from the provider's SLA: all attempts and backoff together stay well inside the caller's own timeout. */
 export const KYC_PROVIDER_POLICY_DEFAULTS: ProviderPolicyOptions = {
   maxRetries: 2,

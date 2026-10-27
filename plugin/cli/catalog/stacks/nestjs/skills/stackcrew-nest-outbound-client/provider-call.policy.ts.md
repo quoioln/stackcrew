@@ -6,7 +6,10 @@ import { bulkhead, circuitBreaker, ConsecutiveBreaker, ExponentialBackoff, handl
 import type { ProviderCall, ProviderPolicyOptions } from './provider-policy.types';
 import { ProviderUnavailableError } from './provider.errors';
 
-/** Only transient trouble is retried and counted by the breaker: never a rejection (4xx) or an invalid reply. */
+/**
+ * Only transient trouble is retried and counted by the breaker: 5xx, 429, 409, 401 and 403, and no reply (what the
+ * adapter maps to ProviderUnavailableError). A refusal of the request (400, 404 or 422) or an invalid reply is neither.
+ */
 const transient = handleWhen((error: unknown) => error instanceof ProviderUnavailableError);
 
 /**

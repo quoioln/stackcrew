@@ -2,9 +2,23 @@ Goes to `src/modules/kyc/interfaces/kyc-verification.ts`.
 
 ```ts
 // Default location: src/modules/kyc/interfaces/kyc-verification.ts
+import type { EntityManager } from 'typeorm';
+import type { KycVerification } from '../entities/kyc-verification.entity';
 
 export const KycDecision = { APPROVED: 'APPROVED', REJECTED: 'REJECTED', PENDING: 'PENDING' } as const;
 export type KycDecision = (typeof KycDecision)[keyof typeof KycDecision];
+
+/**
+ * The side writes of a terminal outcome of an operation: the profile status, an outbox row. KycVerificationService
+ * calls each inside the transaction that wrote the status, with its manager (tenant entities through
+ * `withManager(manager)`, never a manager method), and only when that status write affected exactly one row: the run
+ * that lost a race writes nothing. Bind an implementation to KYC_OUTCOME_EFFECTS in the feature's module; without one
+ * the service writes the status only.
+ */
+export type KycOutcomeEffects = {
+  completed?(manager: EntityManager, verification: KycVerification, result: VerifyIdentityResult): Promise<void>;
+  failed?(manager: EntityManager, verification: KycVerification): Promise<void>;
+};
 
 /**
  * One identity check, in domain terms. Never log this object: it holds a document number and a selfie.
