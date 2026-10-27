@@ -398,7 +398,7 @@ Mã thoát: `0` thành công, `1` lỗi hoặc có vi phạm, `2` (chỉ riêng 
 
 Chi tiết:
 
-- `init` không có `--stack`: dùng stack phát hiện được; nếu không có và đang ở terminal thì hiện menu chọn. Nếu `stackcrew.json` đã có, `init` từ chối (exit 1) trừ khi có `--force`; `--force` giữ lại `decisions`, `context` và cài đặt `java`.
+- `init` không có `--stack`: dùng stack phát hiện được; nếu không có và đang ở terminal thì hiện menu chọn. Nếu `stackcrew.json` đã có, `init` từ chối (exit 1) trừ khi có `--force`; `--force` giữ lại `decisions`, `context`, `conventions` và cài đặt `java`/`node` (kể cả trạng thái đã wire).
 - `sync` chỉ tạo, ghi đè hoặc xóa file nằm trong danh sách file do stackcrew sở hữu (ghi trong `.stackcrew/manifest.json`). File sinh ra mà bạn sửa tay sẽ **không bị ghi đè**: được báo, lệnh thoát với exit 1. Dùng `--force` để ghi đè, hoặc chuyển phần sửa sang `.stackcrew/custom/`.
 - `--wire` (TypeScript): nối ESLint, xem "Quy ước dự án" > "Nối ESLint với `sync --wire`".
 - `--wire` (Java): thêm `archunit-junit5` (test scope) vào `pom.xml` / `build.gradle(.kts)` và sinh `src/test/java/<basePackage>/stackcrew/StackcrewArchitectureTest.java`.
@@ -424,12 +424,15 @@ Không muốn cài global thì thay `stackcrew` bằng `npx --yes github:quoioln
 ```console
 $ stackcrew list
 Stacks:
+  nestjs  NestJS  backend  min 10.0
+  nextjs  Next.js  fullstack  min 16.0
   spring-boot  Spring Boot  backend  min 3.0
 Addons:
   camel  Apache Camel  languages: java
   kafka  Apache Kafka  languages: all
   observability  Observability (Loki, Grafana)  languages: all
   rabbitmq  RabbitMQ  languages: all
+  typeorm  TypeORM  languages: typescript
 
 $ stackcrew detect
 stack: spring-boot
@@ -572,7 +575,7 @@ overwriting existing stackcrew.json (kept: decisions, context, java settings)
 …
 ```
 
-- `--force` giữ `decisions`, `context` và `java` (kể cả trạng thái đã wire).
+- `--force` giữ `decisions`, `context`, `conventions` và `java`/`node` (kể cả trạng thái đã wire).
 - `addons` và `tools` lấy lại từ cờ. Bỏ `--addons` thì quay về add-on detect được, nên nhớ truyền lại. File của tool bị bỏ khỏi `--tools` sẽ bị xóa.
 - Thêm `--no-guard` để tắt guard hook lúc ghi của Claude Code (`.stackcrew/guard.json` có `"enabled": false`). `stackcrew check` (pre-commit, Jenkins) **vẫn quét** như thường.
 

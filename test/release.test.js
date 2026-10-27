@@ -73,16 +73,17 @@ test('rendered plugin init skill does not contradict itself in the final summary
     const section = text.slice(text.indexOf('## 8. Summarize'), text.indexOf('## Re-profile'));
     assert.ok(section.length > 100, 'found step 8');
     assert.ok(section.includes('/stackcrew:sync') && section.includes('/stackcrew:add') && section.includes('/stackcrew:check'));
-    assert.match(section, /sync\|add\|check/, 'the plain CLI is offered where there are no slash commands');
+    assert.match(section, /`stackcrew sync\|add\|check`/, 'the plain CLI form is offered where there are no slash commands');
+    // Step 8 never hands out the bundled-CLI path, rendered or as a placeholder.
+    assert.doesNotMatch(section, /CLAUDE_PLUGIN_ROOT|stackcrew\.js\b|\{\{sc:cli\}\}|\bnode\b/, 'step 8 offers slash commands or the plain `stackcrew` form only');
     // Any prohibition in this step must not forbid the very command it tells the user to run.
     for (const sentence of section.split(/(?<=\.)\s+/).filter((s) => /\bNever\b/.test(s))) {
-      assert.doesNotMatch(sentence, /\bnode\b|CLAUDE_PLUGIN_ROOT|stackcrew\.js/, `contradictory prohibition: ${sentence}`);
+      assert.doesNotMatch(sentence, /\bnode\b|CLAUDE_PLUGIN_ROOT|stackcrew\.js\b/, `contradictory prohibition: ${sentence}`);
     }
     assert.match(section, /plugin cache/, 'the plugin cache path itself is still never printed as advice');
   }
-  // The plugin copy runs the bundled CLI through ${CLAUDE_PLUGIN_ROOT}; the catalog copy stays a placeholder.
+  // The other steps still run the bundled CLI through ${CLAUDE_PLUGIN_ROOT} in the plugin copy; only step 8 (advice to the user) avoids it.
   assert.ok(read('plugin', 'skills', 'init', 'SKILL.md').includes('${CLAUDE_PLUGIN_ROOT}/cli/bin/stackcrew.js'));
-  assert.ok(read('catalog', 'skills', 'stackcrew-init', 'SKILL.md').includes('{{sc:cli}} sync|add|check'));
 });
 
 test('init interview: ESLint config names are the full list, rolesClaim is asked even without multi-tenancy', () => {

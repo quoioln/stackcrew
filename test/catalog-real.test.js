@@ -119,7 +119,7 @@ test('stackcrew-init summary points to slash commands, not a plugin-cache path',
   for (const cmd of ['/stackcrew:sync', '/stackcrew:add <addon>', '/stackcrew:check']) {
     assert.ok(text.includes(cmd), `summary is missing ${cmd}`);
   }
-  assert.ok(text.includes('{{sc:cli}} sync|add|check'));
+  assert.ok(text.includes('`stackcrew sync|add|check`') && !text.includes('{{sc:cli}} sync|add|check'));
 });
 
 test('profile-schema documents every convention key with its default', async () => {

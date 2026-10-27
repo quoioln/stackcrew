@@ -70,7 +70,7 @@ Kết quả (từng tool: Claude Code, Cursor, Codex, Antigravity): ______
 
 ## Golden task NestJS và Next.js (delta §11.2, bản 0.2.0)
 
-**Chuẩn bị:** copy `fixtures/nestjs-minimal/` (hoặc `fixtures/nextjs-minimal/`) ra thư mục tạm, `git init -b main`, chạy `node <repo>/bin/stackcrew.js init --stack nestjs --addons rabbitmq,typeorm --tools claude,cursor,codex,antigravity` (Next.js: `--stack nextjs --addons typeorm`), rồi `sync --wire`. Giao từng task cho developer của stack (`@stackcrew-nestjs-developer` hoặc `@stackcrew-nextjs-developer`) và chấm theo danh sách. Chạy ở từng tool: Claude Code, Cursor, Codex, Antigravity.
+**Chuẩn bị:** copy `fixtures/nestjs-minimal/` (hoặc `fixtures/nextjs-minimal/`) ra thư mục tạm, `git init -b main` rồi `git add -A && git commit -m baseline` (để `stackcrew check --base main` có mốc so sánh), chạy `node <repo>/bin/stackcrew.js init --stack nestjs --addons rabbitmq,typeorm --tools claude,cursor,codex,antigravity` (Next.js: `--stack nextjs --addons typeorm`), rồi `sync --wire`. Giao từng task cho developer của stack (`@stackcrew-nestjs-developer` hoặc `@stackcrew-nextjs-developer`) và chấm theo danh sách. Chạy ở từng tool: Claude Code, Cursor, Codex, Antigravity.
 
 ### N1. NestJS: consumer RabbitMQ
 

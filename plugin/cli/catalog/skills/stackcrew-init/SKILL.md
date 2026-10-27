@@ -88,7 +88,7 @@ Add `--wire` if approved. If sync exits 1 with `--wire`, show the user the messa
 Tell the user, briefly:
 - which files were written (`stackcrew.json`, rules, skills, agents, `docs/stackcrew/architecture-profile.md`);
 - the decisions recorded, one line each, and the `conventions` recorded (or that every convention kept its default);
-- how to change things later. In Claude Code: edit `stackcrew.json` and run `/stackcrew:sync`, add an add-on with `/stackcrew:add <addon>`, check changed lines with `/stackcrew:check`. In Cursor, Codex or Antigravity, which have no slash commands: `{{sc:cli}} sync|add|check`. Never print the path of the plugin cache as something for the user to remember.
+- how to change things later. In Claude Code: edit `stackcrew.json` and run `/stackcrew:sync`, add an add-on with `/stackcrew:add <addon>`, check changed lines with `/stackcrew:check`. In Cursor, Codex or Antigravity, which have no slash commands: `stackcrew sync|add|check` (the README explains how to run the CLI). Never print the path of the plugin cache as something for the user to remember.
 
 ## Re-profile
 When `stackcrew.json` already exists, update only `context` and `decisions` (add, amend or supersede entries; keep the ids of existing decisions stable). `conventions` may also be updated when the user asks (add, change or remove a key; a removed key falls back to its default). Do not change `stack`, `addons`, `tools`, `mode` or `java` unless the user explicitly asks. Never edit `node` by hand: `{{sc:cli}} sync --wire` sets `node.wired`. Never edit `addons` by hand here: when a decision implies a new add-on, run `{{sc:cli}} add <addon>` after the user approves. Interview only about what changed, propose, wait for approval, record, then run `{{sc:cli}} sync`.

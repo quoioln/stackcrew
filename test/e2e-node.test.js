@@ -214,9 +214,13 @@ for (const [id, s] of Object.entries(STACKS)) {
   test(`${id}: sync is idempotent`, (t) => {
     const dir = project(t, s.fixture);
     init(dir, id, s.addons);
+    const before = new Map(walk(dir).map((p) => [p, read(dir, p)]));
     const second = run(dir, 'sync');
     assert.equal(second.status, 0, second.stderr + second.stdout);
     assert.match(second.stdout, /stackcrew sync: 0 written, /);
+    const after = walk(dir);
+    assert.deepEqual(after.sort(), [...before.keys()].sort(), 'no file added or removed');
+    for (const p of after) assert.equal(read(dir, p), before.get(p), `${p} changed on the second sync`);
   });
 }
 
@@ -271,13 +275,9 @@ test('nestjs: sync --wire adds the ESLint devDependencies and creates eslint.con
   assert.deepEqual(JSON.parse(read(dir, 'package.json')), pkg);
 });
 
-// Numbers measured on the real catalog (bytes, 0.2.0 content), every applicable add-on, all four tools:
-//   spring-boot (kafka, camel, observability, rabbitmq): AGENTS.md block 13113, reduced to 3 bullets per rule
-//   nestjs (kafka, observability, rabbitmq, typeorm):    AGENTS.md block 12907, reduced to 3 bullets per rule
-//   nextjs (kafka, observability, rabbitmq, typeorm):    AGENTS.md block 13419, reduced to 3 bullets per rule
-//   nestjs (rabbitmq, typeorm) only:                      AGENTS.md block 15540, full Essentials (no warning)
-//   nextjs (typeorm) only:                                AGENTS.md block 15354, full Essentials (no warning)
-// A project with every add-on exceeds 16,000 bytes at full Essentials, so the R24 degrade is expected there.
+// Real catalog, every applicable add-on, all four tools. The measured sizes are printed as test diagnostics (t.diagnostic).
+// A project with every add-on exceeds 16,000 bytes at full Essentials, so the R24 degrade is expected there;
+// nestjs and nextjs with only their own add-ons stay under the limit at full Essentials.
 const BUDGET_CASES = [
   ['spring-boot', SPRING.fixture, SPRING.allAddons, true],
   ['nestjs', STACKS.nestjs.fixture, STACKS.nestjs.allAddons, true],
