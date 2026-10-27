@@ -149,7 +149,13 @@ describe('AcmeKycClient (against a local provider stub, never the real provider)
     expect(hits).toHaveLength(1);
   });
 
-  it.each([400, 404, 409, 422])('does not retry a %i: ProviderRejectedError after one call', async (status) => {
+  it.each([401, 403, 409])('retries a %i with the same key: a credential, a permission or a key still in use is not a refusal of this request', async (status) => {
+    replies.push({ status, body: '{}' }, ok());
+    await expect(provider.verify(COMMAND)).resolves.toMatchObject({ decision: KycDecision.APPROVED });
+    expect(hits.map((hit) => hit.idempotencyKey)).toEqual([VERIFICATION_ID, VERIFICATION_ID]);
+  });
+
+  it.each([400, 404, 422])('does not retry a %i: ProviderRejectedError after one call', async (status) => {
     replies.push({ status, body: '{"error":"bad request","idNumber":"079201001234"}' });
     await expect(provider.verify(COMMAND)).rejects.toBeInstanceOf(ProviderRejectedError);
     expect(hits).toHaveLength(1);

@@ -2,8 +2,10 @@ Goes to `test/kyc-completed.consumer.e2e.spec.ts`.
 
 ```ts
 // Default location: test/kyc-completed.consumer.e2e.spec.ts
+import { Module } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import type { NestExpressApplication } from '@nestjs/platform-express';
+import { Test } from '@nestjs/testing';
 import { PostgreSqlContainer, type StartedPostgreSqlContainer } from '@testcontainers/postgresql';
 import { RabbitMQContainer, type StartedRabbitMQContainer } from '@testcontainers/rabbitmq';
 import { connect, type ConfirmChannel, type GetMessage } from 'amqplib';
@@ -34,6 +36,8 @@ type Isolated = {
 };
 
 const CONTAINERS_MS = 180_000;
+/** The broker's own startup wait: rabbitmq:4-alpine takes 20 s and more on a loaded host, past Testcontainers' 30 s default. */
+const BROKER_START_MS = 120_000;
 const RETRY_TEST_MS = 60_000; // retryDelayMs is 5 s per wait-queue cycle
 const WAIT_MS = 30_000;
 const POLL_MS = 50;
@@ -41,6 +45,12 @@ const IN_FLIGHT_MS = 500;
 /** Well under RECONNECT_SECONDS (5 s): readiness drops when the channel closes, not when the reconnect comes. */
 const NOT_READY_WITHIN_MS = 2_000;
 const { exchange, routingKey } = KYC_COMPLETED_QUEUE;
+const ECHO_ROUTING_KEY = 'kyc.completed.echo';
+const ECHO_QUEUE = 'kyc-completed-echo';
+
+/** MessagingModule's shape (the connection and the publisher) with the vhost URL of one test; the real one needs the database too. */
+@Module({ providers: [ConfigService, RabbitMqConnection, MessagePublisher], exports: [RabbitMqConnection, MessagePublisher] })
+class ShutdownMessagingModule {}
 
 /** ConfigService reads process.env first: point RABBITMQ_URL at another vhost while a connection is created. */
 function withRabbitUrl<T>(url: string, create: () => T): T {
@@ -63,7 +73,10 @@ describe('kyc.completed consumer (e2e: RabbitMQ and Postgres in Testcontainers)'
   let channel: ConfirmChannel;
 
   beforeAll(async () => {
-    [postgres, rabbit] = await Promise.all([new PostgreSqlContainer('postgres:16-alpine').start(), new RabbitMQContainer('rabbitmq:4-alpine').start()]);
+    [postgres, rabbit] = await Promise.all([
+      new PostgreSqlContainer('postgres:16-alpine').start(),
+      new RabbitMQContainer('rabbitmq:4-alpine').withStartupTimeout(BROKER_START_MS).start(),
+    ]);
     process.env.DATABASE_URL = postgres.getConnectionUri();
     process.env.RABBITMQ_URL = rabbit.getAmqpUrl();
     await issuer.start();
@@ -311,6 +324,72 @@ describe('kyc.completed consumer (e2e: RabbitMQ and Postgres in Testcontainers)'
     } finally {
       spy.mockRestore();
       await isolated.close();
+    }
+  });
+
+  it('closes the publisher after every consumer drained: a handler still publishes during the shutdown, and the connection closes last', async () => {
+    // the real module graph: the consumer's module imports MessagingModule, so Nest runs the consumer's onModuleDestroy
+    // after the publisher's (deepest module first); only beforeApplicationShutdown runs after every onModuleDestroy
+    const vhost = 'shutdown-order';
+    await rabbit.exec(['rabbitmqctl', 'add_vhost', vhost]);
+    await rabbit.exec(['rabbitmqctl', 'set_permissions', '-p', vhost, 'guest', '.*', '.*', '.*']);
+    const url = `${rabbit.getAmqpUrl()}/${vhost}`;
+    const raw = await connect(url);
+    const rawChannel = await raw.createConfirmChannel();
+    const hooks: string[] = [];
+    let drainStarted = (): void => undefined;
+    const released = new Promise<void>((resolve) => {
+      drainStarted = resolve;
+    });
+    const context = await Test.createTestingModule({
+      imports: [ShutdownMessagingModule],
+      providers: [KycCompletedConsumer, {
+        provide: KycCompletedHandler,
+        inject: [MessagePublisher],
+        useFactory: (publisher: MessagePublisher): Pick<KycCompletedHandler, 'handle'> => ({
+          handle: async (message) => {
+            await released; // still in flight when the shutdown starts
+            await publisher.publish(exchange, ECHO_ROUTING_KEY, message); // a handler may publish during the drain
+            return true;
+          },
+        }),
+      }],
+    }).setLogger(logger).overrideProvider(ConfigService).useValue({ get: () => url }).compile(); // the same capturing logger: compile() would otherwise replace it
+    const consumer = context.get(KycCompletedConsumer);
+    const publisher = context.get(MessagePublisher);
+    const connection = context.get(RabbitMqConnection);
+    const spies = [
+      jest.spyOn(consumer, 'onModuleDestroy').mockImplementation(async function (this: KycCompletedConsumer) {
+        hooks.push('consumer.onModuleDestroy');
+        drainStarted();
+        await KycCompletedConsumer.prototype.onModuleDestroy.call(this);
+      }),
+      jest.spyOn(publisher, 'beforeApplicationShutdown').mockImplementation(async function (this: MessagePublisher) {
+        hooks.push('publisher.beforeApplicationShutdown');
+        await MessagePublisher.prototype.beforeApplicationShutdown.call(this);
+      }),
+      jest.spyOn(connection, 'onApplicationShutdown').mockImplementation(async function (this: RabbitMqConnection) {
+        hooks.push('connection.onApplicationShutdown');
+        await RabbitMqConnection.prototype.onApplicationShutdown.call(this);
+      }),
+    ];
+    try {
+      await context.init(); // onApplicationBootstrap: the consumer registers
+      await consumer.ready();
+      await rawChannel.assertQueue(ECHO_QUEUE, { durable: true }); // RabbitMQ 4 refuses a transient non-exclusive queue
+      await rawChannel.bindQueue(ECHO_QUEUE, exchange, ECHO_ROUTING_KEY);
+      const message = kycCompleted(randomUUID());
+      rawChannel.publish(exchange, routingKey, payload(message), { persistent: true, contentType: 'application/json', messageId: message.messageId, headers: { 'x-tenant-id': 'tenant-a', 'x-user-id': 'kyc-service' } });
+      await rawChannel.waitForConfirms();
+      await context.close(); // what enableShutdownHooks runs on SIGTERM; the handler is released once the drain started
+      expect(hooks).toEqual(['consumer.onModuleDestroy', 'publisher.beforeApplicationShutdown', 'connection.onApplicationShutdown']);
+      expect(outcomes(message.messageId)).toEqual([expect.objectContaining({ outcome: 'applied' })]); // the publish during the drain was confirmed
+      expect(await rawChannel.checkQueue(ECHO_QUEUE)).toMatchObject({ messageCount: 1 });
+      expect(connection.isConnected()).toBe(false);
+    } finally {
+      spies.forEach((spy) => spy.mockRestore());
+      await raw.close();
+      await rabbit.exec(['rabbitmqctl', 'delete_vhost', vhost]);
     }
   });
 

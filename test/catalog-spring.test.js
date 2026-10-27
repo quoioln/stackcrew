@@ -540,10 +540,13 @@ test('spring provider follows the outbound idempotency decision: stored key befo
     const s = c.stacks.get('spring-boot');
     const rules = s.rules.body;
     const provider = s.skills.find((k) => k.name === 'stackcrew-spring-integration-provider').body;
-    for (const text of [rules, provider]) {
+    const endpoint = s.skills.find((k) => k.name === 'stackcrew-spring-rest-endpoint').body;
+    for (const text of [rules, provider, endpoint]) {
       assert.ok(!/call first, then persist/i.test(text), 'no call-first wording left');
       assert.ok(!/derived from the business request id/i.test(text), 'the key is not derived from the request id');
     }
+    assert.ok(/store the operation[^\n]*idempotency key[^\n]*commit[^\n]*no transaction open[^\n]*persist/.test(endpoint),
+      'the rest-endpoint skill states the stored-operation order: store and commit, call with no transaction open, then persist');
     assert.ok(/stored before the call/.test(rules) && /never the inbound `x-request-id`/.test(rules), 'rules.md states the decision');
     // the domain command carries the stored key and a separate trace reference
     assert.ok(provider.includes('@NotBlank String idempotencyKey, @NotBlank String traceRef)') && !provider.includes('String requestId)'), 'VerifyCommand fields');

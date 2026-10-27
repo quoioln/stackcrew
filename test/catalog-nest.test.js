@@ -869,3 +869,43 @@ test('nest task 8 fix round 3: axios floor, operation lifecycle, neutral cancel 
     assert.ok(consumer.includes('settledWithin([this.channel.close()]') && !consumer.includes('async function settledWithin('), 'the channel close is bounded with the shared helper');
   });
 });
+
+test('nest task 8 fix round 4: a concurrent success is never overwritten; 409/401/403 are retryable; the publisher closes after the drain', async () => {
+  await withRealCatalog(async (c) => {
+    // N1. the adapter: a 409 (the key is in use), a 401 or a 403 is not a refusal of this request
+    const outbound = nestSkill(c, OUTBOUND);
+    const client = outbound.file('acme-kyc.client.ts');
+    for (const needle of ['CONFLICT = 409', 'UNAUTHORIZED = 401', 'FORBIDDEN = 403']) assert.ok(client.includes(needle), `client missing ${needle}`);
+    assert.ok(/RETRYABLE_STATUSES[^\n]*= new Set\(\[TOO_MANY_REQUESTS, CONFLICT, UNAUTHORIZED, FORBIDDEN\]\)/.test(client), 'the retryable statuses are one named set');
+    const clientSpec = outbound.file('acme-kyc.client.spec.ts');
+    assert.ok(clientSpec.includes('it.each([401, 403, 409])') && clientSpec.includes('it.each([400, 404, 422])'), 'client spec rows: retried with the same key, and refused');
+    // N1. the service: the COMPLETED update replaces anything but COMPLETED; an update of 0 rows reloads the row and acts on its state
+    const service = outbound.file('kyc-verification.service.ts');
+    assert.ok(service.includes('status: Not(KycVerificationStatus.COMPLETED)'), 'COMPLETED may replace FAILED');
+    assert.ok(!/update\(\s*\{ id: verification\.id, status: KycVerificationStatus\.PENDING \},\s*\{ status: KycVerificationStatus\.COMPLETED/.test(service), 'the COMPLETED update is no longer guarded on PENDING only');
+    assert.ok(/const completed = await this\.dataSource\.transaction/.test(service) && service.includes('if (completed === 0)'), 'the affected count of the COMPLETED update is read');
+    assert.ok(/const ended = await this\.verifications\.update/.test(service) && service.includes('if (ended === 0)'), 'the affected count of the FAILED update is read');
+    assert.ok(service.includes('private async completedDecision('), 'a 0-row update reloads the row');
+    const spec = outbound.file('kyc-verification.service.spec.ts');
+    for (const needle of ['one answered 409 (the key is in use) and one approved', 'COMPLETED replaces FAILED', 'the result stored first is the outcome of both callers',
+      'function raceProvider(', "{ userId: 'bob' }", "updatedBy: 'bob'", 'concurrent starts of a new profile']) {
+      assert.ok(spec.includes(needle), `service spec missing ${needle}`);
+    }
+    assert.ok(spec.indexOf('Promise.all(') < spec.indexOf("{ userId: 'bob' }"), 'the concurrent batch runs on the fresh profile, before any row exists');
+    const section6 = outbound.body.split('## 6.')[1]?.split('\n## ')[0] ?? '';
+    assert.ok(/409/.test(section6) && /401/.test(section6) && /403/.test(section6) && /ProviderUnavailableError/.test(section6), '§6 classifies 409, 401 and 403 as unavailable');
+    const section9 = outbound.body.split('## 9.')[1]?.split('\n## ')[0] ?? '';
+    for (const needle of ['affects no row', 'authoritative', 'reuses the old key', 'terminal']) assert.ok(section9.includes(needle), `outbound SKILL.md §9 missing ${needle}`);
+    assert.ok(!/the same key would be refused again, so `run` marks it FAILED/.test(section9) || /400, 404, 422/.test(section9), '§9 says what remains a refusal');
+    assert.ok(/400|422/.test(section9), '§9 names the statuses that remain refusals');
+
+    // N2. the publisher closes in beforeApplicationShutdown: after every onModuleDestroy (deepest module first), before the connection
+    const consumerSkill = nestSkill(c, CONSUMER);
+    const publisher = consumerSkill.file('message-publisher.ts');
+    assert.ok(publisher.includes('implements BeforeApplicationShutdown') && publisher.includes('async beforeApplicationShutdown(') && !/async onModuleDestroy\(/.test(publisher) && !publisher.includes('OnModuleDestroy'), 'the publisher closes in beforeApplicationShutdown');
+    assert.ok(/beforeApplicationShutdown/.test(consumerSkill.body) && /deepest/i.test(consumerSkill.body), 'SKILL.md explains the hook order');
+    const e2e = consumerSkill.file('kyc-completed.consumer.e2e.spec.ts');
+    assert.ok(e2e.includes("'consumer.onModuleDestroy', 'publisher.beforeApplicationShutdown', 'connection.onApplicationShutdown'"), 'the e2e row pins the shutdown order');
+    assert.ok(e2e.includes('.setLogger(logger)'), 'the extra testing module keeps the capturing logger');
+  });
+});

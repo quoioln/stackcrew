@@ -18,10 +18,20 @@ import { toAcmeRequest, toVerifyResult } from './acme-kyc.mapper';
 
 const VERIFY_PATH = '/v1/verifications';
 const IDEMPOTENCY_KEY_HEADER = 'Idempotency-Key';
+const UNAUTHORIZED = 401;
+const FORBIDDEN = 403;
+const CONFLICT = 409;
 const TOO_MANY_REQUESTS = 429;
 const SERVER_ERROR = 500;
 /** axios rejects a status from here on; below it, an error with a response is a body that broke after the headers. */
 const FIRST_ERROR_STATUS = 300;
+/**
+ * Statuses under 500 that are not a refusal of this request: 429, a 409 (the provider is still working on the same
+ * idempotency key: a concurrent run or a retry that overtook the first attempt; it replays the result once done), and
+ * 401 or 403 (our credential or its permissions, fixed in configuration, not in the request). The operation stays
+ * open and a retry sends the same key.
+ */
+const RETRYABLE_STATUSES: ReadonlySet<number> = new Set([TOO_MANY_REQUESTS, CONFLICT, UNAUTHORIZED, FORBIDDEN]);
 
 /**
  * The Acme adapter of KycProvider. Base URL, timeout, body size limits, the API key header and no redirects come from
@@ -62,9 +72,10 @@ export class AcmeKycClient extends KycProvider {
 }
 
 /**
- * Transient (retried, and counted by the circuit breaker): 5xx, 429, no reply at all (timeout, the attempt bound,
- * refused, reset), and a 2xx whose body broke mid-read (a reset or an aborted stream after the headers). Other statuses
- * are rejections. A retry is safe: every attempt sends the same idempotency key.
+ * Transient (retried, and counted by the circuit breaker): 5xx, the RETRYABLE_STATUSES, no reply at all (timeout, the
+ * attempt bound, refused, reset), and a 2xx whose body broke mid-read (a reset or an aborted stream after the
+ * headers). Other statuses (400, 404, 422, any other 4xx or a 3xx) are rejections of this request, which the provider
+ * would refuse again under the same key. A retry is safe: every attempt sends the same idempotency key.
  */
 function providerErrorFor(error: AxiosError): ProviderError {
   const status = error.response?.status;
@@ -72,7 +83,7 @@ function providerErrorFor(error: AxiosError): ProviderError {
     return new ProviderUnavailableError(); // the transport failed while reading a successful reply
   }
   if (status !== undefined) {
-    return status >= SERVER_ERROR || status === TOO_MANY_REQUESTS ? new ProviderUnavailableError() : new ProviderRejectedError();
+    return status >= SERVER_ERROR || RETRYABLE_STATUSES.has(status) ? new ProviderUnavailableError() : new ProviderRejectedError();
   }
   if (error.code === AxiosError.ERR_BAD_RESPONSE) {
     return new ProviderProtocolError(); // a reply over maxContentLength: sending it again gets the same reply

@@ -2,7 +2,7 @@ Goes to `src/common/messaging/message-publisher.ts`.
 
 ```ts
 // Default location: src/common/messaging/message-publisher.ts
-import { Injectable, type OnModuleDestroy } from '@nestjs/common';
+import { Injectable, type BeforeApplicationShutdown } from '@nestjs/common';
 import type { ChannelWrapper } from 'amqp-connection-manager';
 import { randomUUID } from 'node:crypto';
 import { currentContext, REQUEST_ID_HEADER, TENANT_ID_HEADER, USER_ID_HEADER, type RequestContext } from '../context/request-context';
@@ -30,9 +30,13 @@ export function contextHeaders(ctx: RequestContext | undefined): ContextHeaders 
  * headers. The promise resolves when the broker confirmed the message (confirm channel) and rejects on a nack or after
  * PUBLISH_TIMEOUT_MS. While the broker is down the message waits in this process's memory and a crash loses it: a
  * message that follows a database change goes through an outbox, and the relay passes the context stored with the row.
+ *
+ * Closed in beforeApplicationShutdown, not onModuleDestroy: Nest runs onModuleDestroy deepest module first, so this
+ * module's (imported by every consumer module) would run before the consumers drained, and a handler could no longer
+ * publish. beforeApplicationShutdown runs after every onModuleDestroy; the connection closes after it.
  */
 @Injectable()
-export class MessagePublisher implements OnModuleDestroy {
+export class MessagePublisher implements BeforeApplicationShutdown {
   private readonly channel: ChannelWrapper;
 
   constructor(rabbit: RabbitMqConnection) {
@@ -50,8 +54,8 @@ export class MessagePublisher implements OnModuleDestroy {
     });
   }
 
-  async onModuleDestroy(): Promise<void> {
-    await settledWithin([this.channel.close()], CLOSE_GRACE_MS); // rejects the publishes still waiting, at most CLOSE_GRACE_MS
+  async beforeApplicationShutdown(): Promise<void> {
+    await settledWithin([this.channel.close()], CLOSE_GRACE_MS); // after every consumer drained; rejects the publishes still waiting, at most CLOSE_GRACE_MS
   }
 }
 ```

@@ -210,7 +210,10 @@ test('negative checks: no baseline-breaking advice in pattern files', async () =
   assert.match(javaBlock, /audit\.success/);
   assert.match(javaBlock, /audit\.failure/);
   assert.match(javaBlock, /VerifyCommand\b/);
-  assert.match(javaBlock, /requestId\(\)/);
+  // the playbook's VerifyCommand carries idempotencyKey and traceRef (the outbound idempotency decision): the audit takes the trace reference
+  assert.doesNotMatch(javaBlock, /command\.requestId\(\)/, 'VerifyCommand has no requestId()');
+  assert.match(javaBlock, /audit\.success\(providerCode, command\.traceRef\(\)\)/);
+  assert.match(javaBlock, /audit\.failure\(providerCode, command\.traceRef\(\), outcome\)/);
 
   // Resilience: the breaker is declared last (outermost), the bulkhead first (innermost).
   const res = byId.resilience.match(/```java\n([\s\S]*?)```/)[1];

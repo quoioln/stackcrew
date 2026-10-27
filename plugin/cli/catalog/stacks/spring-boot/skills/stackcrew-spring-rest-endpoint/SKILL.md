@@ -53,7 +53,7 @@ class VerificationController {
 ## 3. Service and layering
 
 - The service owns the rules and the transaction (`@Transactional`, `readOnly = true` for queries). It takes a command and returns a domain result (`Verification`), never an API DTO.
-- It talks to ports for anything external (see `stackcrew-spring-integration-provider`) and to repositories for data. A remote call never runs inside its `@Transactional` method; call first, then persist through another bean.
+- It talks to ports for anything external (see `stackcrew-spring-integration-provider`) and to repositories for data. A remote call never runs inside its `@Transactional` method: store the operation (its id is the provider's idempotency key) and commit, call with no transaction open, then persist the result through another bean (`stackcrew-spring-integration-provider` section 8).
 - Map entity to domain result in the service or a mapper, and domain result to response record in the controller; reuse an existing mapper before writing one.
 
 ## 4. Errors as ProblemDetail

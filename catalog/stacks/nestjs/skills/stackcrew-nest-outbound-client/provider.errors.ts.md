@@ -12,13 +12,16 @@ import { ProblemError } from '../errors/problem-details';
  */
 export abstract class ProviderError extends ProblemError {}
 
-/** Timeout, connection refused or reset, 5xx, 429, an open circuit or a full bulkhead: a later call may succeed. */
+/**
+ * Timeout, connection refused or reset, 5xx, 429, a 409 (the idempotency key is still in use), a 401 or 403 (our
+ * credential or its permissions), an open circuit or a full bulkhead: a later call with the same key may succeed.
+ */
 export class ProviderUnavailableError extends ProviderError {
   readonly status = HttpStatus.SERVICE_UNAVAILABLE;
   readonly detail = 'A downstream provider is unavailable. Try again later.';
 }
 
-/** Any other 4xx (or 3xx: redirects are off): the provider refused this request, and sending it again will not help. */
+/** Any other 4xx (400, 404, 422, …) or a 3xx (redirects are off): the provider refused this request, and the same key would be refused again. */
 export class ProviderRejectedError extends ProviderError {
   readonly status = HttpStatus.BAD_GATEWAY;
   readonly detail = 'A downstream provider rejected the request.';

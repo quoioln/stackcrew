@@ -66,11 +66,11 @@ public abstract class AbstractProviderAdapter<REQ, RES> implements ProviderPort 
         try {
             authenticate();
             VerifyResult result = toDomain(call(toRequest(command)));
-            audit.success(providerCode, command.requestId());
+            audit.success(providerCode, command.traceRef());
             return result;
         } catch (RuntimeException e) {
             String outcome = e instanceof ProviderException pe ? ProviderMetrics.outcomeOf(pe) : ProviderMetrics.OUTCOME_ERROR;
-            audit.failure(providerCode, command.requestId(), outcome);
+            audit.failure(providerCode, command.traceRef(), outcome);
             throw e;
         }
     }

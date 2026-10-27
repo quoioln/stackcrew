@@ -3,7 +3,7 @@ Goes to `src/modules/kyc/kyc-verification.service.ts`.
 ```ts
 // Default location: src/modules/kyc/kyc-verification.service.ts
 import { Injectable } from '@nestjs/common';
-import { DataSource } from 'typeorm';
+import { DataSource, Not } from 'typeorm';
 import { currentContext } from '../../common/context/request-context';
 import { ProviderRejectedError } from '../../common/providers/provider.errors';
 import { KycVerificationStatus } from './entities/kyc-verification.entity';
@@ -18,6 +18,11 @@ import { KycVerificationRepository } from './kyc-verification.repository';
  * result in a transaction. A retry of the business operation (a job run again, a message redelivered, a client retry
  * of the same verification) runs step 2 again with the key it reloads from the row, so the provider applies it once.
  * The evidence is PII and never stored on the row: the caller passes it on every run, loaded by its reference.
+ *
+ * Two runs of one operation can overlap (a redelivery during a slow call, the orphan sweep, two requests that got
+ * the same pending operation). The row decides: every write is guarded by the status it expects, a write that
+ * affects no row reloads the row and answers with its stored state, and a provider success is authoritative, so
+ * COMPLETED replaces FAILED but nothing replaces COMPLETED.
  */
 @Injectable()
 export class KycVerificationService {
@@ -37,9 +42,9 @@ export class KycVerificationService {
   }
 
   /**
-   * Steps 2 and 3; safe to call again for the same id. A completed operation returns its decision without a call; a
-   * failed one throws KycVerificationFailed. A provider rejection ends the operation FAILED; any other failure leaves it
-   * PENDING, so a retry calls again with the same key.
+   * Steps 2 and 3; safe to call again for the same id, also while another run of it is in flight. A completed
+   * operation returns its decision without a call; a failed one throws KycVerificationFailed. A provider rejection
+   * ends the operation FAILED; any other failure leaves it PENDING, so a retry calls again with the same key.
    */
   async run(verificationId: string, evidence: KycEvidence): Promise<KycDecision> {
     const verification = await this.verifications.findOneBy({ id: verificationId });
@@ -62,19 +67,41 @@ export class KycVerificationService {
       });
     } catch (failure: unknown) {
       if (failure instanceof ProviderRejectedError) {
-        // the provider refused this request and would refuse it again under the same key: the operation ends here
-        await this.verifications.update({ id: verification.id, status: KycVerificationStatus.PENDING }, { status: KycVerificationStatus.FAILED });
+        // the provider refused this request and would refuse it again under the same key: the operation ends here,
+        // unless another run of it already completed it (nothing replaces COMPLETED)
+        const ended = await this.verifications.update({ id: verification.id, status: KycVerificationStatus.PENDING }, { status: KycVerificationStatus.FAILED });
+        if (ended === 0) {
+          const decision = await this.completedDecision(verification.id);
+          if (decision !== undefined) {
+            return decision;
+          }
+        }
       }
-      throw failure; // unavailable, or an invalid reply: still PENDING, so a retry runs it again with the same key
+      throw failure; // unavailable (a 5xx, 429, 409, 401, 403, no reply), or an invalid reply: still PENDING, so a retry runs it again with the same key
     }
-    await this.dataSource.transaction(async (manager) => {
-      // the outcome and any other write it causes (the profile status, an outbox row) commit together
-      await this.verifications.withManager(manager).update(
-        { id: verification.id, status: KycVerificationStatus.PENDING },
+    const completed = await this.dataSource.transaction(async (manager) => {
+      // the outcome and any other write it causes (the profile status, an outbox row) commit together. The provider's
+      // success is authoritative: it replaces PENDING and a FAILED that a concurrent run wrote, never a COMPLETED
+      return this.verifications.withManager(manager).update(
+        { id: verification.id, status: Not(KycVerificationStatus.COMPLETED) },
         { status: KycVerificationStatus.COMPLETED, decision: result.decision, providerReference: result.providerReference },
       );
     });
+    if (completed === 0) {
+      // another run completed it first: its stored result is the outcome of this operation, for every caller
+      const decision = await this.completedDecision(verification.id);
+      if (decision === undefined) {
+        throw new KycVerificationNotFound(); // the row is gone
+      }
+      return decision;
+    }
     return result.decision;
+  }
+
+  /** The stored decision of the operation when it is COMPLETED (reloaded, after a guarded write affected no row). */
+  private async completedDecision(verificationId: string): Promise<KycDecision | undefined> {
+    const stored = await this.verifications.findOneBy({ id: verificationId });
+    return stored?.status === KycVerificationStatus.COMPLETED && stored.decision !== null ? stored.decision : undefined;
   }
 }
 ```
