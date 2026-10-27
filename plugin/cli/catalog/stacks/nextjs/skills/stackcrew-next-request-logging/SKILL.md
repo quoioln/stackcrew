@@ -31,7 +31,7 @@ Search the codebase and the shared libraries ({{sc:sharedLibraries}}) for `maskB
 
 ## 2. Dependencies (ask the user before adding any)
 
-- `pino` 9 for the logger. `pg` and `pino` are on the built-in `serverExternalPackages` list of Next.js, so they stay unbundled without configuration.
+- `pino` 9 for the logger, listed in `serverExternalPackages` (stack rule). Later 16.x releases keep it unbundled by default, but Next.js 16.0 bundles it, test files of its `thread-stream` worker included, and `next build` fails.
 - `@t3-oss/env-nextjs` with `zod` 3 for `src/env.ts`; `next-auth` v5 for `auth()`; `server-only` for the server modules.
 - `@opentelemetry/api` for `traceId` and `spanId` (`activeTraceFields`); it comes with the OpenTelemetry SDK. Without OpenTelemetry in the project, ask before adding it, or leave `activeTraceFields` out.
 - Local text output: pipe the server through the `pino-pretty` CLI (a dev dependency): `next dev | pino-pretty`. Do not configure a pino transport: it runs in a worker thread that the Next.js server bundle does not carry.
@@ -76,6 +76,8 @@ export const GET = withRouteLogging('/api/v1/customer-profiles/[id]', async (_re
 - The action name is the export name; the route is the file's path template, never the requested path. Both are constants, so the log stays low-cardinality.
 - Server Components are not wrapped: they are rendered, not called, and they log no body. Their data loaders run inside `runInRequestContext(fn)`, which builds the same context from `auth()` once per render. Errors escaping a render reach `onRequestError`.
 - `src/instrumentation.ts` exports `onRequestError`. Next.js also builds that file for the Edge runtime; only the literal `process.env.NEXT_RUNTIME === 'nodejs'` check in it lets the build drop the Node-only logger from the Edge bundle (a helper function in `src/env.ts` does not). That one line carries the two waivers (`eslint-disable-next-line` and `stackcrew-allow: SC-ENV`): it is bootstrap code, read before any module.
+- A wrapped route handler reads `auth()` and the request headers, so Next.js never prerenders it: every wrapped GET is dynamic (`ƒ` in the build output). A GET that must stay static is not wrapped and touches no user or tenant data.
+- `RouteContext<'/path'>` is a type Next.js generates: run `next typegen` (or `next build`) before `tsc` in CI.
 - Health and metrics route handlers are not wrapped.
 
 ## 5. The masker contract

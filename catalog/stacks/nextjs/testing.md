@@ -81,6 +81,7 @@ CROSS_TENANT_ROLES=report_admin
 ```
 
 - `DATABASE_URL` points at a database that only tests use (`docker compose up -d db`, then create `app_test`). A test that clears tables must never run against a shared or production database. Unit specs never connect to it.
+- `tsc --noEmit` in CI runs after `next typegen`: route handlers use `RouteContext<'...'>`, a type Next.js generates into `.next/types`.
 - `tsconfig.json` has `"experimentalDecorators": true`, which Vitest's TypeScript transform reads for the entity decorators. It emits no decorator metadata: every column names its type (skill `stackcrew-next-typeorm-entity`).
 
 ## Server actions and route handlers

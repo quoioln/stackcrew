@@ -48,7 +48,7 @@ export function databaseEnv(): DatabaseEnv {
 }
 ```
 
-- `next.config.ts` lists `typeorm` in `serverExternalPackages` (stack rule, Persistence). The build passes without it, but TypeORM is then bundled into each server layer, and a webpack build warns about its optional drivers (`mysql`, `react-native-sqlite-storage` and others). `pg` is on the built-in list.
+- `next.config.ts` lists `typeorm` (and `pino`) in `serverExternalPackages` (stack rule, Persistence). The build passes without `typeorm` there, but TypeORM is then bundled into each server layer, and a webpack build warns about its optional drivers (`mysql`, `react-native-sqlite-storage` and others). `pg` is on the built-in list.
 - `tsconfig.json` sets `"experimentalDecorators": true`. Every column names its `type` (`{ type: 'varchar', length: 64 }`): Vitest never emits decorator metadata and Next.js does so only with `emitDecoratorMetadata`, so TypeORM cannot infer a type from the property.
 - `synchronize: false` and `migrationsRun: false` everywhere: migrations own the schema and run as a deploy step, never on boot.
 - `uuidExtension: 'pgcrypto'` makes TypeORM expect `gen_random_uuid()`, which Postgres 13+ has built in.

@@ -18,7 +18,7 @@ Next.js 16 App Router with React 19 and TypeScript strict, used full-stack: Serv
 - Environment variables only through the `env` object of `@t3-oss/env-nextjs` in `src/env.ts` (SC-ENV); never `process.env` in a component, action or route.
 - `zustand` holds client UI state only (open panels, selections, wizard steps). Server data comes from Server Components or server actions, never from a client store.
 - Every page has its loading, empty and error states: `loading.tsx`, `error.tsx` (a Client Component with a retry button) and an empty state in the page.
-- Persistence per `addon-typeorm`: one `DataSource` per server layer kept on `globalThis`, `typeorm` in `serverExternalPackages`, `experimentalDecorators` in `tsconfig.json`, tenant entities only through `TenantScopedRepository` (skill `stackcrew-next-typeorm-entity`).
+- Persistence per `addon-typeorm`: one `DataSource` per server layer kept on `globalThis`, `typeorm` and `pino` in `serverExternalPackages`, `experimentalDecorators` in `tsconfig.json`, tenant entities only through `TenantScopedRepository` (skill `stackcrew-next-typeorm-entity`).
 - Write tests per `stack-nextjs-testing`: Vitest for schemas, mappers and actions; Testing Library for client components; Playwright for async Server Components.
 
 ## Layout
@@ -209,9 +209,9 @@ Per `addon-typeorm` and skill `stackcrew-next-typeorm-entity`:
 import type { NextConfig } from 'next';
 
 const nextConfig: NextConfig = {
-  // TypeORM loads its database driver and optional packages with runtime require() calls the bundler cannot follow,
-  // so it stays a Node.js require. pg and pino are already on the built-in list of Next.js.
-  serverExternalPackages: ['typeorm'],
+  // Plain Node.js requires, never bundled: TypeORM (its optional drivers are runtime requires; one copy per process) and
+  // pino (Next.js 16.0 bundles it, test files of its worker included, and the build fails). pg is on the built-in list.
+  serverExternalPackages: ['typeorm', 'pino'],
 };
 
 export default nextConfig;

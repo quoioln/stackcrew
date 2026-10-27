@@ -440,6 +440,11 @@ test('next scratch findings: one DataSource per server layer, a literal NEXT_RUN
     const addon = c.addons.get('typeorm').rules.body;
     assert.ok(addon.includes('keyed by the module') && addon.includes('serverExternalPackages') && !addon.includes('one `DataSource` per process'), 'add-on Next.js section matches');
     assert.match(entity.body, /webpack build warns about its optional drivers/, 'the reason for serverExternalPackages is the observed one');
+    // Next.js 16.0 does not keep pino unbundled by default: its build fails on pino's worker test files
+    assert.ok(rules.includes("serverExternalPackages: ['typeorm', 'pino'],"), 'next.config.ts lists typeorm and pino');
+    assert.ok(nextSkill(c, LOGGING).body.includes('Next.js 16.0 bundles it'), 'the request-logging skill says why pino is listed');
+    assert.ok(nextSkill(c, LOGGING).body.includes('next typegen') && c.stacks.get('nextjs').testing.body.includes('next typegen'), 'RouteContext needs generated types before tsc');
+    assert.ok(nextSkill(c, LOGGING).body.includes('every wrapped GET is dynamic'), 'wrapping makes a GET handler dynamic');
     const logging = nextSkill(c, LOGGING);
     const instrumentation = logging.file('instrumentation.ts');
     assert.ok(instrumentation.includes("if (process.env.NEXT_RUNTIME === 'nodejs') { // stackcrew-allow: SC-ENV"), 'the literal check Next.js replaces at build time');
