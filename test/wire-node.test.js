@@ -214,7 +214,7 @@ test('eslint >= 9 wrapping an existing flat config notes a missing typescript-es
   assert.deepEqual(bare.wired, ['eslint.config.mjs'], 'still wired');
   assert.equal(bare.edits.length, 1);
   assert.equal(bare.notes.length, 1);
-  assert.match(bare.notes[0], /^eslint\.config\.mjs: the stackcrew rules use @typescript-eslint rules, but package\.json declares neither typescript-eslint nor @typescript-eslint\/eslint-plugin; install/);
+  assert.match(bare.notes[0], /^eslint\.config\.mjs: the stackcrew rules use @typescript-eslint rules, but package\.json declares neither typescript-eslint nor @typescript-eslint\/eslint-plugin; if your config does not already register the @typescript-eslint plugin \(eslint-config-next\/typescript does\), install typescript-eslint/);
   for (const dep of ['typescript-eslint', '@typescript-eslint/eslint-plugin']) {
     const dev = planNodeWiring({ packageJson: pkgWith({ eslint: '^9.0.0', [dep]: '^8.0.0' }), configs: { 'eslint.config.mjs': src } });
     assert.deepEqual([dev.wired, dev.notes], [['eslint.config.mjs'], []], `${dep} in devDependencies`);

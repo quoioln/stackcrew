@@ -177,7 +177,7 @@ export function planNodeWiring({ packageJson, configs = {} } = {}) {
   }
   if (plan.edit) edits.push(plan.edit);
   if (plan.edit && major >= 9 && !TS_ESLINT_PACKAGES.some(declared)) {
-    notes.push(`${plan.edit.path}: the stackcrew rules use @typescript-eslint rules, but package.json declares neither ${TS_ESLINT_PACKAGES.join(' nor ')}; install typescript-eslint and add its configs to your ESLint config`);
+    notes.push(`${plan.edit.path}: the stackcrew rules use @typescript-eslint rules, but package.json declares neither ${TS_ESLINT_PACKAGES.join(' nor ')}; if your config does not already register the @typescript-eslint plugin (eslint-config-next/typescript does), install typescript-eslint and add its recommended config`);
   }
   if (plan.wired) wired.push(plan.wired);
   if (plan.note) notes.push(plan.note);
