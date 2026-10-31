@@ -101,6 +101,15 @@ public class BodyMasker {
 
     /** Size-only placeholder: `<binary CT N bytes>` for files, `<CT N bytes>` for everything else. */
     public String placeholder(String contentType, long size) {
+        return sizePlaceholder(contentType, Long.toString(size));
+    }
+
+    /** The same placeholder for a body of unknown size, at least `size` bytes: `<CT N+ bytes>`. */
+    public String placeholderAtLeast(String contentType, long size) {
+        return sizePlaceholder(contentType, size + "+");
+    }
+
+    private String sizePlaceholder(String contentType, String size) {
         String type = mediaType(contentType);
         boolean binary = BINARY_TYPES.contains(type) || BINARY_PREFIXES.stream().anyMatch(type::startsWith);
         return (binary ? "<binary " : "<") + type + " " + size + " bytes>";

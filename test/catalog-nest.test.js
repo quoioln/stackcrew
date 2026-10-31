@@ -378,6 +378,8 @@ test('nest testing rule carries the harness: rawBody, setupApp, a local issuer a
       assert.ok(t.includes(needle), `testing.md missing ${needle}`);
     }
     assert.ok(!t.includes('testPathIgnorePatterns'), 'skill folders hold no runnable spec any more');
+    assert.ok(t.includes('a 400, 404 or 422 is not retried; a 5xx, 429, 409, 401 or 403 is retried'), 'provider status classification in testing.md');
+    assert.ok(!t.includes('a 4xx is not retried'), 'no blanket 4xx wording');
     assert.ok(/ask the user/i.test(t));
   });
 });

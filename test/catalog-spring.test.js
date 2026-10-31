@@ -561,3 +561,60 @@ test('spring provider follows the outbound idempotency decision: stored key befo
     assert.ok(/a retried 5xx sends the same `clientReference`/.test(provider), 'WireMock row for the key on retries');
   });
 });
+
+test('spring provider follows the provider status classification decision (5xx/429/409/401/403 retried, 400/404/422 refused)', async () => {
+  await withRealCatalog(async (c) => {
+    const s = c.stacks.get('spring-boot');
+    const provider = s.skills.find((k) => k.name === 'stackcrew-spring-integration-provider').body;
+    for (const st of ['TOO_MANY_REQUESTS', 'CONFLICT', 'UNAUTHORIZED', 'FORBIDDEN']) {
+      assert.ok(provider.includes(`HttpStatus.${st}.value()`), `retryable status ${st}`);
+    }
+    // a 401 drops the cached token before the retry
+    const attempt = provider.split('private VerifyResult attempt(')[1].split('\n    }\n')[0];
+    assert.ok(attempt.includes('dropCachedToken();'), 'attempt drops the cached token on a 401');
+    assert.ok(attempt.indexOf('dropCachedToken();') < attempt.indexOf('throw isRetryableStatus'), 'token dropped before the retryable exception is thrown');
+    assert.ok(provider.includes('protected void dropCachedToken()'), 'token providers override the drop hook');
+    // §11 WireMock rows
+    const s11 = provider.split('## 11.')[1].split('\n## ')[0];
+    assert.ok(s11.includes('400, 404 and 422 give `ProviderRejectedException` with no retry'), '§11 refused statuses');
+    assert.ok(s11.includes('5xx, 429, 409, 401 and 403 give `ProviderUnavailableException`'), '§11 retried statuses');
+    assert.ok(/401 drops the cached token/.test(s11), '§11 token row');
+    assert.ok(!/^- 4xx gives/m.test(s11), 'no blanket 4xx row left');
+    for (const old of ['a 4xx or protocol error must neither retry', 'do not retry or trip the breaker on 4xx', '// 4xx: our request was refused']) {
+      assert.ok(!provider.includes(old), `blanket 4xx wording left: ${old}`);
+    }
+    assert.ok(!s.rules.body.includes('5xx/429 to `ProviderUnavailableException`, other 4xx'), 'rules.md error translation names 409/401/403');
+    // rules.md and testing docs carry the same classification
+    const rules = s.rules.body;
+    assert.ok(!rules.includes('4xx and protocol errors neither retry nor trip the breaker'), 'blanket 4xx wording gone from rules.md');
+    assert.ok(rules.includes('5xx, 429, 409, 401 and 403 are retried and counted by the breaker; 400, 404 and 422 (a refusal) and protocol errors neither retry nor trip it'), 'rules.md classification');
+    const testingSkill = s.skills.find((k) => k.name === 'stackcrew-spring-boot-testing').body;
+    for (const text of [s.testing.body, testingSkill]) {
+      assert.ok(text.includes('400, 404 or 422') && text.includes('409, 401 or 403'), 'testing docs name the precise classification');
+      assert.ok(!/4xx \(one request, no retry\)|with a 4xx that must produce exactly one request/.test(text), 'no blanket 4xx case');
+    }
+  });
+});
+
+test('jpa-entity migration says the hardcoded tenant_id follows tenantColumn', async () => {
+  await withRealCatalog(async (c) => {
+    const body = c.stacks.get('spring-boot').skills.find((k) => k.name === 'stackcrew-spring-jpa-entity').body;
+    const s4 = body.split('## 4.')[1].split('\n## ')[0];
+    const note = '`tenant_id` here; rename to the snake_case of your `tenantColumn` if it is not the default';
+    assert.ok(s4.split('```sql')[0].includes(note), 'the migration text names the rename');
+    assert.ok(/tenant_id\s+varchar\(64\)\s+not null,\s+-- tenant_id here; rename to the snake_case of your tenantColumn if it is not the default/.test(s4), 'the migration comment names the rename');
+  });
+});
+
+test('request logging: a chunked request that filled the 2 MiB cache logs the unknown-size form', async () => {
+  await withRealCatalog(async (c) => {
+    const s = skillText(c, 'stackcrew-spring-request-logging');
+    const filter = s.file('HttpLoggingFilter.java');
+    const requestBody = filter.split('private String requestBody(')[1].split('\n    }\n')[0];
+    assert.ok(requestBody.includes('declared < 0 && cached.length >= CAPTURE_LIMIT_BYTES'), 'chunked + full cache is detected');
+    assert.ok(requestBody.includes('masker.placeholderAtLeast(request.getContentType(), CAPTURE_LIMIT_BYTES)'), 'logs <CT N+ bytes>');
+    const masker = s.file('BodyMasker.java');
+    assert.ok(masker.includes('public String placeholderAtLeast(String contentType, long size)') && masker.includes('size + "+"'), 'the masker renders N+');
+    assert.ok(s.body.includes('`<CT 2097152+ bytes>`'), 'SKILL.md documents the chunked case');
+  });
+});

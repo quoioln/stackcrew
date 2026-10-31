@@ -91,12 +91,12 @@ public class Verification extends {{sc:baseTenantEntity}} {
 
 ## 4. The migration
 
-Flyway, `src/main/resources/db/migration/V<n>__create_verification.sql`. Column names follow Spring Boot's naming strategy (snake_case): the tenant column is the snake_case of `{{sc:tenantColumn}}`.
+Flyway, `src/main/resources/db/migration/V<n>__create_verification.sql`. Column names follow Spring Boot's naming strategy (snake_case): the tenant column is the snake_case of `{{sc:tenantColumn}}`. The migration below hardcodes the default column, `tenant_id` here; rename to the snake_case of your `tenantColumn` if it is not the default (`tenantId`), in the table and in the index.
 
 ```sql
 create table verification (
     id         uuid         primary key,
-    tenant_id  varchar(64)  not null,
+    tenant_id  varchar(64)  not null,   -- tenant_id here; rename to the snake_case of your tenantColumn if it is not the default
     reference  varchar(64)  not null,
     status     varchar(16)  not null,
     created_at timestamptz  not null,

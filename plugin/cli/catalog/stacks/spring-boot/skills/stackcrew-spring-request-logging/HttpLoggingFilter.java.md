@@ -153,6 +153,10 @@ public class HttpLoggingFilter extends OncePerRequestFilter {
         if (declared > cached.length) {
             return masker.placeholder(request.getContentType(), declared);
         }
+        if (declared < 0 && cached.length >= CAPTURE_LIMIT_BYTES) {
+            // chunked (no Content-Length) and the cache is full: the real size is unknown, at least the cap
+            return masker.placeholderAtLeast(request.getContentType(), CAPTURE_LIMIT_BYTES);
+        }
         return masker.mask(cached, request.getContentType());
     }
 

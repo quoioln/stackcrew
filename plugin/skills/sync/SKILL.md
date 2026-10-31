@@ -32,4 +32,4 @@ With `--wire`, exit 1 also means the integration could not be wired:
 
 For TypeScript, an ESLint config snippet is printed in every one of these cases. In those cases `package.json` and the ESLint config files are left untouched and `node.wired` stays false; the rest of `sync` still writes its owned files (rules, skills, agents and the lint files under `.stackcrew/`).
 
-After a TypeScript wire that added dependencies, tell the user to run their package manager's install. Show the message and snippet to the user; do not retry blindly. Read the output, tell the user what it says, and stop; do not retry with `--force` unless the user asks.
+After a TypeScript wire that added dependencies, tell the user to run their package manager's install. A wire that created or wrapped an ESLint 9 config may also print a note that the packages it needs (`@eslint/js`, `typescript-eslint`) are not declared in `package.json`; the wire still succeeded, so relay the note. Show the message and snippet to the user; do not retry blindly. Read the output, tell the user what it says, and stop; do not retry with `--force` unless the user asks.

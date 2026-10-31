@@ -571,7 +571,7 @@ $ stackcrew init --stack spring-boot
 stackcrew: already initialized (stackcrew.json exists); use `stackcrew sync`
 
 $ stackcrew init --force --stack spring-boot --addons kafka,observability --tools claude
-overwriting existing stackcrew.json (kept: decisions, context, java settings)
+overwriting existing stackcrew.json (kept: decisions, context, conventions, java/node settings)
 …
 ```
 

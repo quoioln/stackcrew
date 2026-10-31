@@ -49,7 +49,7 @@ class VerificationServiceTest {
 
 - Use `@WireMockTest` and point the adapter's `RestClient` at `wm.getHttpBaseUrl()`.
 - Resilience4j is applied in the adapter's template, so build the adapter by hand with `CircuitBreakerRegistry` and `RetryRegistry` (a short `waitDuration`, `retryExceptions(ProviderUnavailableException.class)`, `ignoreExceptions(ProviderRejectedException.class, ProviderProtocolException.class)`) and short client timeouts. No Spring context is needed.
-- Cases: success, 4xx (one request, no retry), 5xx, timeout (`withFixedDelay`), malformed body, retry scenario (fail then succeed), duplicate callback.
+- Cases: success, 400, 404 or 422 (one request, no retry), 5xx, 429, 409, 401 or 403 (retried up to `maxAttempts`; a 401 refetches the token), timeout (`withFixedDelay`), malformed body, retry scenario (fail then succeed), duplicate callback.
 - Assert the domain result and typed exception; assert no provider record type appears in the public signature.
 - Response fixtures live in `src/test/resources/<provider>/`.
 

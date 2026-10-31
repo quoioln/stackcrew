@@ -128,6 +128,8 @@ test('core-logging: deep nesting becomes a placeholder and logging never throws'
     assert.ok(log.includes('nested deeper than 64 objects or arrays') && log.includes('<CT N bytes>'), 'nesting cap in the masker contract');
     assert.ok(log.includes('Logging never throws'), 'logging never changes a result');
     assert.ok(log.includes('`<CT N+ bytes>`'), 'the over-the-cap placeholder is part of the masker contract');
+    assert.ok(log.includes('Skip health checks and metrics. Streaming (SSE) and download responses are logged with a size placeholder; their bodies are never buffered.'), 'SSE/download responses are logged, never buffered');
+    assert.ok(!/Skip[^.\n]*streaming/i.test(log), 'streaming responses are not skipped');
     const persistence = c.coreRules.find((r) => r.id === 'core-persistence').body;
     assert.ok(!/through its manager|through the manager/i.test(persistence), 'no transaction path that bypasses the tenant mechanism');
   });

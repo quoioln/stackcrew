@@ -133,6 +133,9 @@ test('README and manual checklist cover the 0.2.0 stacks and golden tasks', () =
     assert.ok(row, `README row for ${key}`);
     assert.ok(row.includes(`\`${JSON.stringify(def)}\``), `README default of ${key}: ${row}`);
   }
+  // the --force sample output quotes the message init really prints
+  const forceMsg = read('src', 'commands', 'init.js').match(/'(overwriting existing stackcrew\.json \(kept: [^)]*\))/)[1];
+  assert.ok(readme.includes(forceMsg), `README --force sample: ${forceMsg}`);
   const checklist = read('docs', 'manual-checklist.md');
   for (const needle of ['N1. NestJS: consumer RabbitMQ', 'N2. NestJS: endpoint khách hàng', 'N3. Next.js: form eKYC']) assert.ok(checklist.includes(needle), `checklist: ${needle}`);
 });

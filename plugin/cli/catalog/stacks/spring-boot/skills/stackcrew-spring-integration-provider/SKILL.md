@@ -53,11 +53,11 @@ public abstract class ProviderException extends RuntimeException {
     protected ProviderException(String providerCode, String message, Throwable cause) { super(message, cause); this.providerCode = providerCode; }
     public String providerCode() { return providerCode; }
 }
-public class ProviderUnavailableException extends ProviderException {   // timeout, connection refused, 5xx, 429
+public class ProviderUnavailableException extends ProviderException {   // timeout, connection refused, 5xx, 429, 409, 401, 403
     @Serial private static final long serialVersionUID = 1L;
     public ProviderUnavailableException(String code, String message, Throwable cause) { super(code, message, cause); }
 }
-public class ProviderRejectedException extends ProviderException {      // 4xx: our request was refused; retrying will not help
+public class ProviderRejectedException extends ProviderException {      // 400, 404, 422 (any other 4xx): our request was refused; retrying will not help
     @Serial private static final long serialVersionUID = 1L;
     public ProviderRejectedException(String code, String message, Throwable cause) { super(code, message, cause); }
 }
@@ -166,6 +166,8 @@ A real template: the public `verify` fixes the order, the subclass fills the ste
 
 ```java
 public abstract class AbstractProviderAdapter<REQ, RES> implements ProviderPort {
+    private static final Set<Integer> RETRYABLE_STATUSES = Set.of(HttpStatus.TOO_MANY_REQUESTS.value(),   // see isRetryableStatus
+        HttpStatus.CONFLICT.value(), HttpStatus.UNAUTHORIZED.value(), HttpStatus.FORBIDDEN.value());
     private final String providerCode;
     private final ProviderAudit audit;
     private final MeterRegistry meters;
@@ -217,6 +219,7 @@ public abstract class AbstractProviderAdapter<REQ, RES> implements ProviderPort 
         } catch (ResourceAccessException e) {                 // timeout, connection refused
             throw new ProviderUnavailableException(providerCode, "provider unreachable", e);
         } catch (RestClientResponseException e) {             // HTTP error status
+            if (e.getStatusCode().value() == HttpStatus.UNAUTHORIZED.value()) { dropCachedToken(); }   // the retry authenticates again
             throw isRetryableStatus(e.getStatusCode())
                 ? new ProviderUnavailableException(providerCode, "provider error " + e.getStatusCode().value(), e)
                 : new ProviderRejectedException(providerCode, "provider rejected " + e.getStatusCode().value(), e);
@@ -236,11 +239,16 @@ public abstract class AbstractProviderAdapter<REQ, RES> implements ProviderPort 
         }
     }
 
+    /**
+     * Unavailable (retried, counted by the breaker, the operation stays PENDING): 5xx, 429, 409 (the idempotency key is still
+     * in use) and 401 or 403 (our credential or its permissions, not this request). Anything else (400, 404, 422) is a refusal.
+     */
     private static boolean isRetryableStatus(HttpStatusCode status) {
-        return status.is5xxServerError() || status.value() == HttpStatus.TOO_MANY_REQUESTS.value();
+        return status.is5xxServerError() || RETRYABLE_STATUSES.contains(status.value());
     }
 
     protected void authenticate() { }                         // default no-op; token providers override and cache the token
+    protected void dropCachedToken() { }                      // token providers clear the cached token; called on a 401
     protected abstract REQ toRequest(VerifyCommand command);
     protected abstract RES call(REQ request);
     protected abstract VerifyResult toDomain(RES response);
@@ -271,7 +279,7 @@ class C06Adapter extends AbstractProviderAdapter<C06VerifyRequest, C06VerifyResp
 
 - `ProviderMetrics` holds the metric and tag names, the outcome constants (`OUTCOME_SUCCESS`, `OUTCOME_SHORT_CIRCUITED`, `OUTCOME_ERROR`, one per `ProviderException` subtype) and `outcomeOf(ProviderException)`.
 - Adapters carry no class-level aspects or annotations that proxy them; resilience lives in the template.
-- Token providers override `authenticate()` and cache the token until shortly before expiry; never fetch one per call.
+- Token providers override `authenticate()` and cache the token until shortly before expiry; never fetch one per call. They also override `dropCachedToken()` to clear it: the template calls it on a 401 before the retry, so the retry authenticates again instead of replaying a token the provider no longer accepts.
 - Providers that differ in every step do not need a base; the port alone is enough.
 
 ## 6. Registry: Strategy + Factory
@@ -303,7 +311,7 @@ public class ProviderRegistry {
 ## 7. Resilience: breaker, retry, bulkhead, jitter
 
 - Timeouts first: connect and read timeouts come from `ProviderProperties` (step 4).
-- Circuit breaker, retry and bulkhead are applied by the template (step 5) using the registries. The Spring Boot starter builds those registries from `application.yml`, so tuning is per provider and outside the code. Count only real provider trouble: a 4xx or protocol error must neither retry nor open the breaker.
+- Circuit breaker, retry and bulkhead are applied by the template (step 5) using the registries. The Spring Boot starter builds those registries from `application.yml`, so tuning is per provider and outside the code. Count only real provider trouble: 5xx, 429, 409 (the idempotency key is still in use), 401 and 403 (our credential or its permissions) are `ProviderUnavailableException`, retried and counted; a refusal (400, 404, 422) or a protocol error must neither retry nor open the breaker.
 
 ```yaml
 resilience4j:
@@ -478,8 +486,9 @@ log.info("provider call ok provider={} requestId={} traceId={}", providerCode, r
 One test class per adapter (`C06AdapterTest`) with `@WireMockTest`. Because Resilience4j is applied in the template, a hand-built adapter test exercises retry and breaker with no Spring context.
 
 - success mapped to the domain result;
-- 4xx gives `ProviderRejectedException` with no retry (verify one request);
-- 5xx gives `ProviderUnavailableException` after the configured attempts;
+- 400, 404 and 422 give `ProviderRejectedException` with no retry (verify one request);
+- 5xx, 429, 409, 401 and 403 give `ProviderUnavailableException` after the configured attempts (verify `maxAttempts` requests);
+- for a token provider, a 401 drops the cached token: a 401 then 200 scenario succeeds and the token endpoint is called twice;
 - timeout gives `ProviderUnavailableException`; with retry on, the call takes about `maxAttempts` read timeouts plus backoff, so use `maxAttempts(1)` or short timeouts in the test when asserting duration;
 - malformed body and unknown or missing result code give `ProviderProtocolException`;
 - retry: a WireMock scenario that fails once then succeeds;
@@ -505,7 +514,7 @@ Skip this section unless `stackcrew.json` has `camel` in `addons`. When it does,
 - Do not hardcode URLs, provider codes, header names, status strings, qualifier names, endpoints or timeouts.
 - Do not add an `if/else` chain on the provider code; use the registry.
 - Do not build a template base, registry or strategy for a single provider when `docs/stackcrew/architecture-profile.md` does not record that more are expected (`ProviderClientFactory` and `ProviderProperties` are plain configuration plumbing and are fine from the first provider).
-- Do not retry non-idempotent calls blindly, do not retry or trip the breaker on 4xx, and do not swallow provider errors into `null` or an empty result.
+- Do not retry non-idempotent calls blindly, do not retry or trip the breaker on a refusal (400, 404, 422), and do not swallow provider errors into `null` or an empty result.
 - Do not call the provider inside a `@Transactional` method, and do not rely on `@Transactional`, `@Retry` or `@CircuitBreaker` through `this.` self-invocation.
 - Do not return provider messages or codes to API clients; use a stable `ProblemDetail` detail.
 - Do not test against the real provider; use WireMock.

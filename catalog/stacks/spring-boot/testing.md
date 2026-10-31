@@ -8,7 +8,7 @@ JUnit 5, AssertJ, Mockito, Spring Boot test slices, Testcontainers, WireMock. Ex
 
 ## Essentials
 
-- Every third-party provider has a WireMock contract test covering success, 4xx, 5xx, timeout and a malformed body. Never call a real provider from a test.
+- Every third-party provider has a WireMock contract test covering success, a refusal (400, 404 or 422: one request), a retried status (5xx, 429, 409, 401 or 403), timeout and a malformed body. Never call a real provider from a test.
 - Use the narrowest test that proves the behavior: plain JUnit for domain logic, `@WebMvcTest` for controllers, `@DataJpaTest` for repositories, `@SpringBootTest` only for a few end-to-end paths.
 - Test the database with Testcontainers running the real engine; H2 does not stand in for PostgreSQL, MySQL or Oracle behavior.
 - Assertions use AssertJ (`assertThat`); structure each test as Arrange-Act-Assert and name it for the behavior (`rejectsExpiredToken`).
@@ -105,10 +105,10 @@ class HypervergeAdapterTest {
 ```
 
 - One test class per adapter. The provider response bodies are fixtures that mirror the provider's documented payloads, including its error shapes.
-- Cover: success, validation error (4xx), provider outage (5xx), timeout, malformed or missing fields, and a callback delivered twice (idempotency).
+- Cover: success, a refusal (400, 404 or 422), provider outage (5xx, 429, 409, 401 or 403), timeout, malformed or missing fields, and a callback delivered twice (idempotency).
 - Assert the mapping to the domain type, the typed exception for each failure, and that no provider record leaks out of the adapter.
 - The test kit builds `ProviderClientFactory` by hand (public constructor), plus all three registries (`CircuitBreakerRegistry`, `RetryRegistry`, `BulkheadRegistry`) programmatically; the default registries do not carry the production exception lists, so set them as above when retry matters.
-- Retry and circuit-breaker behavior is tested with a scenario (`inScenario`) that fails then succeeds, and with a 4xx that must produce exactly one request (`verify(1, postRequestedFor(...))`) and `ProviderRejectedException`.
+- Retry and circuit-breaker behavior is tested with a scenario (`inScenario`) that fails then succeeds, and with a 400, 404 or 422 that must produce exactly one request (`verify(1, postRequestedFor(...))`) and `ProviderRejectedException`; a 5xx, 429, 409, 401 or 403 produces `maxAttempts` requests.
 
 ## Entity base, audit and tenant isolation
 

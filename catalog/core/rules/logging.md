@@ -43,7 +43,7 @@ One JSON line per call. Fields: `event` (`http_in`, `http_out` or `message_in`),
 - Log inbound calls in one place (a filter, interceptor or wrapper) and outbound calls in one shared HTTP client or client interceptor. Services, adapters and controllers never log bodies themselves.
 - Use the templated route (not the raw path with ids) to avoid cardinality blow-up.
 - Log completion at INFO (2xx/3xx), WARN (4xx), ERROR (5xx); on failure include exception type and redacted message. The error path logs through the same writer as the success path.
-- Skip health checks, metrics and streaming (SSE) responses. Emit a latency metric and error counter alongside the log.
+- Skip health checks and metrics. Streaming (SSE) and download responses are logged with a size placeholder; their bodies are never buffered. Emit a latency metric and error counter alongside the log.
 - Message consumers log a `message_in` line with the payload in `reqBody`, through the same masker.
 - Log only the headers `content-type`, `content-length` and `user-agent`. `Authorization` and cookies never appear.
 

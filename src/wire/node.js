@@ -10,6 +10,8 @@ export const FLAT_IMPORT = "import stackcrewConfig from './.stackcrew/lint/eslin
 export const LEGACY_EXTENDS = './.stackcrew/lint/eslintrc.stackcrew.cjs';
 
 const FLAT_MARKER = '.stackcrew/lint/eslint.stackcrew.mjs';
+/** Either one supplies the @typescript-eslint plugin that the stackcrew flat config's rules need. */
+const TS_ESLINT_PACKAGES = ['typescript-eslint', '@typescript-eslint/eslint-plugin'];
 const FLAT_EDITABLE = /\.(js|mjs|ts|mts)$/;
 const EXPORT_DEFAULT = /^export default /gm;
 
@@ -141,6 +143,7 @@ export function planNodeWiring({ packageJson, configs = {} } = {}) {
   }
 
   const hasConfig = isObject(pkg.eslintConfig) || [...FLAT_CONFIG_FILES, ...LEGACY_CONFIG_FILES].some((f) => typeof configs[f] === 'string');
+  const declared = (name) => pkg.dependencies?.[name] !== undefined || pkg.devDependencies?.[name] !== undefined;
   const hasDep = (pkg.dependencies?.eslint ?? pkg.devDependencies?.eslint) !== undefined;
   const major = eslintMajor(pkg);
 
@@ -158,7 +161,9 @@ export function planNodeWiring({ packageJson, configs = {} } = {}) {
     return result();
   }
   if (major === null || major < 8) {
-    notes.push(`unsupported ESLint version "${pkg.dependencies?.eslint ?? pkg.devDependencies?.eslint}" (stackcrew wires ESLint 8 and 9+); add the stackcrew config yourself:\n${FLAT_SNIPPET}`);
+    const range = pkg.dependencies?.eslint ?? pkg.devDependencies?.eslint;
+    const why = major === null ? `cannot read the ESLint major from "${range}"` : `unsupported ESLint version "${range}"`;
+    notes.push(`${why} (stackcrew wires ESLint 8 and 9+); add the stackcrew config yourself:\n${FLAT_SNIPPET}`);
     return result();
   }
 
@@ -166,11 +171,14 @@ export function planNodeWiring({ packageJson, configs = {} } = {}) {
   if (plan.create) {
     edits.push({ path: 'eslint.config.mjs', content: NEW_FLAT_CONFIG });
     wired.push('eslint.config.mjs');
-    const missing = ['@eslint/js', 'typescript-eslint'].filter((n) => pkg.dependencies?.[n] === undefined && pkg.devDependencies?.[n] === undefined);
+    const missing = ['@eslint/js', 'typescript-eslint'].filter((n) => !declared(n));
     if (missing.length > 0) notes.push(`eslint.config.mjs imports ${missing.join(', ')}, which package.json does not declare; install ${missing.length > 1 ? 'them' : 'it'}`);
     return result();
   }
   if (plan.edit) edits.push(plan.edit);
+  if (plan.edit && major >= 9 && !TS_ESLINT_PACKAGES.some(declared)) {
+    notes.push(`${plan.edit.path}: the stackcrew rules use @typescript-eslint rules, but package.json declares neither ${TS_ESLINT_PACKAGES.join(' nor ')}; install typescript-eslint and add its configs to your ESLint config`);
+  }
   if (plan.wired) wired.push(plan.wired);
   if (plan.note) notes.push(plan.note);
   return result();

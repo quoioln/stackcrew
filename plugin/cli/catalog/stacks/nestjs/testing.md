@@ -143,8 +143,8 @@ export async function createTestApp(logger: CapturingLogger): Promise<NestExpres
 
 ## Third-party fakes
 
-- Start a `node:http` server on port 0 in `beforeAll`, point the provider's base URL config at it, and script its answers per test: success, 4xx, 5xx, a slow answer past the client `timeout`, and a malformed body.
-- Assert the typed result or typed error of the client, how many requests reached the stub (a 4xx is not retried), and the one `http_out` line per attempt.
+- Start a `node:http` server on port 0 in `beforeAll`, point the provider's base URL config at it, and script its answers per test: success, a refusal (400, 404 or 422), a retried status (5xx, 429, 409, 401 or 403), a slow answer past the client `timeout`, and a malformed body.
+- Assert the typed result or typed error of the client, how many requests reached the stub (a 400, 404 or 422 is not retried; a 5xx, 429, 409, 401 or 403 is retried), and the one `http_out` line per attempt.
 - Provider payloads in the stub mirror the provider's documented shapes, including its error bodies.
 
 ## Naming and structure

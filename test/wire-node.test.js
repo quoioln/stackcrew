@@ -191,11 +191,35 @@ test('eslint 8 with no config: note, not wired', () => {
   assert.ok(r.notes[0].includes(LEGACY_EXTENDS));
 });
 
-test('unsupported ESLint version: eslint < 8, or a dependency with no version number', () => {
-  for (const eslint of ['^7.32.0', 'latest', 'workspace:*']) {
+test('unsupported ESLint version: eslint < 8', () => {
+  const r = planNodeWiring({ packageJson: pkgWith({ eslint: '^7.32.0' }), configs: { 'eslint.config.mjs': 'export default [];\n' } });
+  assert.deepEqual([r.edits, r.wired], [[], []]);
+  assert.match(r.notes[0], /unsupported ESLint version "\^7\.32\.0"/);
+  assert.ok(r.notes[0].includes(FLAT_IMPORT));
+});
+
+test('an eslint range with no digits: the note says the major cannot be read, not "unsupported"', () => {
+  for (const eslint of ['latest', 'workspace:*', 'npm:@acme/eslint-fork']) {
     const r = planNodeWiring({ packageJson: pkgWith({ eslint }), configs: { 'eslint.config.mjs': 'export default [];\n' } });
     assert.deepEqual([r.edits, r.wired], [[], []], eslint);
-    assert.match(r.notes[0], /unsupported ESLint version/);
+    assert.ok(r.notes[0].startsWith(`cannot read the ESLint major from "${eslint}"`), r.notes[0]);
+    assert.doesNotMatch(r.notes[0], /unsupported ESLint version/);
+    assert.ok(r.notes[0].includes(FLAT_IMPORT), eslint);
+  }
+});
+
+test('eslint >= 9 wrapping an existing flat config notes a missing typescript-eslint (not a failure)', () => {
+  const src = 'export default [];\n';
+  const bare = planNodeWiring({ packageJson: pkgWith({ eslint: '^9.0.0' }), configs: { 'eslint.config.mjs': src } });
+  assert.deepEqual(bare.wired, ['eslint.config.mjs'], 'still wired');
+  assert.equal(bare.edits.length, 1);
+  assert.equal(bare.notes.length, 1);
+  assert.match(bare.notes[0], /^eslint\.config\.mjs: the stackcrew rules use @typescript-eslint rules, but package\.json declares neither typescript-eslint nor @typescript-eslint\/eslint-plugin; install/);
+  for (const dep of ['typescript-eslint', '@typescript-eslint/eslint-plugin']) {
+    const dev = planNodeWiring({ packageJson: pkgWith({ eslint: '^9.0.0', [dep]: '^8.0.0' }), configs: { 'eslint.config.mjs': src } });
+    assert.deepEqual([dev.wired, dev.notes], [['eslint.config.mjs'], []], `${dep} in devDependencies`);
+    const prod = planNodeWiring({ packageJson: JSON.stringify({ devDependencies: { eslint: '^9.0.0' }, dependencies: { [dep]: '^8.0.0' } }), configs: { 'eslint.config.mjs': src } });
+    assert.deepEqual([prod.wired, prod.notes], [['eslint.config.mjs'], []], `${dep} in dependencies`);
   }
 });
 
