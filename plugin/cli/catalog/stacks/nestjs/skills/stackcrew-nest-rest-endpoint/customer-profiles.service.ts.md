@@ -31,11 +31,11 @@ export class CustomerProfilesService {
 
   async list(query: ListCustomerProfilesQuery): Promise<CustomerProfilePageResponse> {
     const where: FindOptionsWhere<CustomerProfile> = query.status === undefined ? {} : { status: query.status };
-    const [rows, total] = await Promise.all([
-      this.profiles.find({ where, order: sortOrder(query), skip: (query.page - 1) * query.size, take: query.size }),
+    const [rows, totalElements] = await Promise.all([
+      this.profiles.find({ where, order: sortOrder(query), skip: query.page * query.size, take: query.size }),
       this.profiles.count({ where }),
     ]);
-    return toCustomerProfilePage(rows, total, query);
+    return toCustomerProfilePage(rows, totalElements, query);
   }
 
   async create(request: CreateCustomerProfileRequest): Promise<CustomerProfileResponse> {

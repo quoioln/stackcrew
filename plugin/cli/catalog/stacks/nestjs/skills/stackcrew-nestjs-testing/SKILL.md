@@ -20,7 +20,7 @@ The stack rule `stack-nestjs-testing` is in force: Jest with `ts-jest`, the Jest
 | Pure logic: a mapper, the codec, the masker, a policy | unit | plain Jest, no Nest |
 | A service and its ports | unit | `Test.createTestingModule` with fakes of the ports |
 | An entity, its migration, the subscribers, a repository method | integration | Postgres in Testcontainers, the real migrations |
-| An endpoint: status, body, problem details, guards, validation | e2e | `createTestApp` and supertest, real token issuer |
+| An endpoint: status, envelope, error codes, guards, validation | e2e | `createTestApp` and supertest, real token issuer |
 | A provider client | integration | a local `node:http` stub, the real `HttpService` |
 | A message consumer | e2e | RabbitMQ and Postgres in Testcontainers |
 
@@ -50,7 +50,7 @@ After `runMigrations()`, `dataSource.driver.createSchemaBuilder().log()` returns
 - `AppModule` validates every env section at import. Give the sections a spec does not exercise safe values in a Jest `setupFiles` module (`process.env.X ??= ...`: local addresses that refuse connections, dummy keys, never a real endpoint); the spec that needs one sets it in `beforeAll` (the consumer e2e sets `RABBITMQ_URL` to its container).
 - Use supertest on `app.getHttpServer()`: `request(server).post(path).set('authorization', bearer).send(body).expect(201)`.
 - Assert the exact response keys (`Object.keys(body).sort()`): no `{{sc:tenantColumn}}`, audit field or `deletedAt` reaches a client.
-- Assert problem details for every error path: `type`, `title`, `status`, `detail` and `errors`, never an exception message. Cover 400 (body, query, path), 401 without a token, 403 from a role guard, 404 for another tenant's id.
+- Assert the error envelope for every error path: `success: false`, `error.errorCode`, `error.errorNumber` (`^\d{7}$`), `error.details`, and `supportCode` and `requestId` equal to the response headers, never an exception message. `createTestApp` sets `SERVICE_NUMBER` before importing `AppModule`. Cover 400 (body, query, path), 401 without a token, 403 from a role guard, 404 for another tenant's id.
 - Logging: exactly one `http_in` line per request, with PII and secrets masked in `reqBody` and `resBody`. The line is written after the client has the response: wait for it.
 
 ## 6. Third-party providers: local fakes only

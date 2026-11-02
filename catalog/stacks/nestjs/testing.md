@@ -9,7 +9,7 @@ Jest with `ts-jest` and `@nestjs/testing`; Postgres in Testcontainers for integr
 ## Essentials
 
 - Test files are `*.spec.ts`: unit and integration tests next to the source, e2e tests in `test/` as `*.e2e.spec.ts`.
-- Use the narrowest test that proves the behavior: a plain unit test for logic, `Test.createTestingModule` with fakes for a provider's wiring, Postgres for persistence, supertest e2e for HTTP behavior (status, body, problem details, guards).
+- Use the narrowest test that proves the behavior: a plain unit test for logic, `Test.createTestingModule` with fakes for a provider's wiring, Postgres for persistence, supertest e2e for HTTP behavior (status, envelope, guards).
 - Persistence runs against a real Postgres (`@testcontainers/postgresql`, `postgres:16-alpine`) with the real migrations and both subscribers. SQLite or an in-memory fake does not stand in for Postgres.
 - Every tenant entity has the audit and tenant tests from `core-persistence` (section "Entity base, audit and tenant isolation").
 - Never call a real third party from a test. Fake it with a local HTTP stub server (`node:http`) so the real `HttpService`, timeouts and `OutboundHttpLogger` run.
@@ -124,8 +124,12 @@ export class CapturingLogger implements LoggerService {
   }
 }
 
+/** The service number of every test errorNumber (SSCCNNN): 07 + category + seq. */
+const TEST_SERVICE_NUMBER = '07';
+
 /** Set DATABASE_URL and start the issuer first: AppModule validates the environment when it is imported. */
 export async function createTestApp(logger: CapturingLogger): Promise<NestExpressApplication> {
+  process.env.SERVICE_NUMBER ??= TEST_SERVICE_NUMBER; // required by the env validation: without it no e2e app boots
   const { AppModule } = await import('../../src/app.module');
   const moduleRef = await Test.createTestingModule({ imports: [AppModule] }).compile();
   const app = moduleRef.createNestApplication<NestExpressApplication>({ rawBody: true });
@@ -138,7 +142,7 @@ export async function createTestApp(logger: CapturingLogger): Promise<NestExpres
 
 - `ConfigModule.forRoot({ validate })` runs when `AppModule` is imported, so `createTestApp` imports it only after `beforeAll` has set `DATABASE_URL` (from the Testcontainers database) and started the issuer. Never import `AppModule` at the top of an e2e file. The migrations run in `beforeAll` (`app.get(DataSource).runMigrations()`).
 - One app per test file, created in `beforeAll` and closed in `afterAll` (`app.close()`, then the container and the issuer).
-- Assert the problem details of every error path (`status`, `title`, `detail`, `errors`), never the exception message.
+- Assert the error envelope of every error path (`success: false`, `error.errorCode`, `error.errorNumber` matching `^d{7}$`, `error.details`), and that `supportCode` and `requestId` equal the `x-support-code` and `x-request-id` headers; never an exception message. `createTestApp` sets `SERVICE_NUMBER` (`07`) before it imports `AppModule`, so errorNumbers read `07CCNNN`.
 - Request bodies used by several tests live in constants or fixture files.
 
 ## Third-party fakes

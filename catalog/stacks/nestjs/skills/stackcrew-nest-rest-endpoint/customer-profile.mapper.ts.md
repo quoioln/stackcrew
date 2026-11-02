@@ -3,7 +3,8 @@ Goes to `src/modules/customer-profiles/customer-profile.mapper.ts`.
 ```ts
 // Default location: src/modules/customer-profiles/customer-profile.mapper.ts
 import { plainToInstance } from 'class-transformer';
-import { CustomerProfilePageResponse } from './dto/customer-profile-page.response';
+import { toPageData } from '../../common/api/api-response';
+import type { CustomerProfilePageResponse } from './dto/customer-profile-page.response';
 import { CustomerProfileResponse } from './dto/customer-profile.response';
 import type { ListCustomerProfilesQuery } from './dto/list-customer-profiles.query';
 import type { CustomerProfile } from './entities/customer-profile.entity';
@@ -16,8 +17,8 @@ export function toCustomerProfileResponse(entity: CustomerProfile): CustomerProf
   return plainToInstance(CustomerProfileResponse, entity, { excludeExtraneousValues: true });
 }
 
-export function toCustomerProfilePage(entities: readonly CustomerProfile[], total: number, query: ListCustomerProfilesQuery): CustomerProfilePageResponse {
-  const items = entities.map((entity) => toCustomerProfileResponse(entity));
-  return plainToInstance(CustomerProfilePageResponse, { items, page: query.page, size: query.size, total }, { excludeExtraneousValues: true });
+/** The rows of one page and the total count of the same filter; page and size are the (capped) values of the query. */
+export function toCustomerProfilePage(entities: readonly CustomerProfile[], totalElements: number, query: ListCustomerProfilesQuery): CustomerProfilePageResponse {
+  return toPageData(entities.map((entity) => toCustomerProfileResponse(entity)), query.page, query.size, totalElements);
 }
 ```

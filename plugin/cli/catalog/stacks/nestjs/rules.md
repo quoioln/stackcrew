@@ -15,7 +15,7 @@ NestJS 10 on Express with TypeScript strict. Applies with the TypeScript rule (S
 - Configuration comes from `@nestjs/config` with `validate` at boot (class-validator); `process.env` is read only in `src/config/` (SC-ENV). Inject `ConfigService<Env, true>`; never read a variable in a service.
 - Authentication: passport-jwt verifying the signature through the identity provider's JWKS (`jwks-rsa`, ask first), checking `issuer`, `audience` and the algorithm; one global `JwtAuthGuard` (`APP_GUARD`) with a `@Public()` decorator for open routes. The strategy binds `sub`, claim `{{sc:tenantClaim}}` and claim `{{sc:rolesClaim}}` to the request; `RequestContextInterceptor` runs the handler inside `runWithRequestContext`. Nothing else decodes a token.
 - Persistence with TypeORM per `addon-typeorm`: entities extend `{{sc:baseEntity}}`/`{{sc:baseTenantEntity}}`, tenant entities only through their `TenantScopedRepository`, migrations only (skill `stackcrew-nest-typeorm-entity`).
-- Errors: one global `AllExceptionsFilter` answers RFC 7807 `application/problem+json` with a constant `detail`; domain errors extend `ProblemError`. Never send `exception.message`.
+- Responses: a controller returns its data and `TransformInterceptor` wraps it in the common envelope; one global `AllExceptionsFilter` answers every error with the error envelope (`errorNumber`, `errorCode`, `details`). Domain errors extend `ApiError` with their own row. Never send `exception.message`.
 - Outbound HTTP only through `HttpService` (`@nestjs/axios`) with a `timeout` per client, base URLs from config, and `OutboundHttpLogger` on that module. Never `fetch` or a bare axios instance.
 - Logging per `core-logging` with `nestjs-pino` 4.x (ask first; 5.x needs Nest 11): one `http_in` line per request from `httpLoggingMiddleware`, one `http_out` per call, bodies only through the shared masker (skill `stackcrew-nest-request-logging`). Services log events with `Logger`, never bodies.
 - Inject through constructors; providers are stateless singletons. Request-scoped providers are a last resort; use the request context instead.
@@ -86,7 +86,7 @@ export class CustomerProfileResponse {
 
 ## Validation and config
 
-- `ValidationPipe` options: `whitelist` drops undecorated fields, `forbidNonWhitelisted` rejects them, `transform` builds the DTO class. Its `exceptionFactory` returns `RequestValidationError` (request-logging skill) so the filter answers 400 with `errors: [{ field, messages }]`.
+- `ValidationPipe` options: `whitelist` drops undecorated fields, `forbidNonWhitelisted` rejects them, `transform` builds the DTO class. Its `exceptionFactory` returns `RequestValidationError` (request-logging skill) so the filter answers 400 `VALIDATION_FAILED` with `details: [{ field, code, message }]`.
 - Nested DTOs need `@ValidateNested()` and `@Type(() => Child)`; arrays `@IsArray()` plus `each: true`.
 - `ConfigModule.forRoot({ isGlobal: true, validate: validateEnv })`: a missing or invalid variable fails the boot and the error names the variable, never its value. Secrets come from the environment or a vault, never from the repository.
 
@@ -202,10 +202,13 @@ Per `addon-typeorm` and skill `stackcrew-nest-typeorm-entity`:
 - Jobs and migrations run inside `runAsSystem(tenantId, work)`; consumers inside `runWithRequestContext(contextFromMessageHeaders(headers), work)`. Cross-tenant reads only through `runCrossTenant(reason, work)`, allowed for `CROSS_TENANT_ROLES` (default {{sc:crossTenantRoles}}) and the system job entry.
 - Transactions: `dataSource.transaction(async (manager) => ...)`. Inside, a tenant entity goes only through its repository's `withManager(manager)` (`this.profiles.withManager(manager).update(...)`). Never use any manager method on a tenant entity (getRepository, update, delete, increment, decrement, softDelete, restore, upsert, createQueryBuilder…): none carries the tenant condition, so tenant B would change tenant A's rows. Never a remote call inside a transaction.
 
-## Errors (RFC 7807)
+## Responses and errors (the envelope)
 
-- `AllExceptionsFilter` (`APP_FILTER`) maps every exception: `RequestValidationError` 400 with field errors, `ProblemError` subclasses to their status and constant detail, other `HttpException`s to their status with the standard title, body-parser errors to their 4xx, `CrossTenantDeniedError` to 404, everything else to 500.
-- Throw domain errors from services (`class CustomerProfileNotFound extends ProblemError`), not `HttpException`s with free text.
+- `TransformInterceptor` (`APP_INTERCEPTOR`) wraps what a handler returns in `{ success, timestamp, supportCode, requestId, data }`; a handler that returns nothing answers 200 with `data: null`. A list is `PageData` from `toPageData(items, page, size, totalElements)`, `page` 0-based. `@RawResponse()` (health, a fixed third-party format), `StreamableFile`, `@Sse()` and `@Res()` are not wrapped.
+- `AllExceptionsFilter` (`APP_FILTER`) maps every exception through `toFailure`: `ApiError` to its row, `RequestValidationError` to `VALIDATION_FAILED` with details, body-parser errors to `MALFORMED_REQUEST`, `PAYLOAD_TOO_LARGE` or `UNSUPPORTED_MEDIA_TYPE`, `CrossTenantDeniedError` to `RESOURCE_NOT_FOUND`, everything else to `INTERNAL_ERROR`. Status, `errorCode` and `message` come from the error table, never from the exception.
+- Any other `HttpException` maps by status, the same table as Spring: 401 `UNAUTHENTICATED`, 403 `ACCESS_DENIED`, 404 `ENDPOINT_NOT_FOUND`, 405 `METHOD_NOT_ALLOWED`, 409 `BUSINESS_CONFLICT`, 413 `PAYLOAD_TOO_LARGE`, 415 `UNSUPPORTED_MEDIA_TYPE`, 422 `BUSINESS_RULE_VIOLATION`, 429 `RATE_LIMIT_EXCEEDED`, any other 4xx `INVALID_PARAMETER`, any 5xx `INTERNAL_ERROR`. An `HttpException` of a `@RawResponse()` handler (terminus 503) keeps its own status and body.
+- Throw domain errors from services (`class CustomerProfileNotFound extends ApiError` with a row of seq 100-999), not `HttpException`s with free text; features never throw `NotFoundException`.
+- `SERVICE_NUMBER` (two digits, required) is the first part of every `errorNumber`. If CORS is enabled, expose `x-request-id` and `x-support-code` (`exposedHeaders` in `app.enableCors`, called after `setupApp`) so a browser client can read them.
 
 ## Outbound HTTP
 
@@ -216,4 +219,4 @@ Per `addon-typeorm` and skill `stackcrew-nest-typeorm-entity`:
 
 - `LoggerModule.forRootAsync` with `pinoHttpOptions` (request-logging skill); `app.useLogger(app.get(Logger))` in `setupApp`, with `bufferLogs: true`. JSON to stdout; `LOG_LEVEL` from config.
 - In code, `private readonly logger = new Logger(Feature.name)` and `this.logger.log({ event, ...fields }, event)`: a stable message plus fields. Never interpolate data into the message, never log a DTO, entity or body.
-- Health: `@nestjs/terminus` at `/health` (`@Public()`), skipped by the request log.
+- Health: `@nestjs/terminus` at `/health` (`@Public()` and `@RawResponse()`: the terminus body is not wrapped, and a DOWN check keeps its 503 and details), skipped by the request log.

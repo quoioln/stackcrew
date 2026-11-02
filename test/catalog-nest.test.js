@@ -158,7 +158,7 @@ test('nest rules forbid returning entities and require response DTOs', async () 
     for (const needle of ['src/modules/<feature>/', '`dto/`', '`entities/`', '`interfaces/`', '@Expose()', '@ApiProperty()',
       'plainToInstance(', 'excludeExtraneousValues: true', 'ClassSerializerInterceptor', 'whitelist: true', 'forbidNonWhitelisted: true',
       'transform: true', '@nestjs/config', 'passport-jwt', 'JWKS', 'issuer', 'audience', '@Public()', 'APP_GUARD', 'runWithRequestContext',
-      '{{sc:tenantClaim}}', '{{sc:rolesClaim}}', 'addon-typeorm', 'RFC 7807', 'HttpService', 'timeout', 'nestjs-pino', 'core-logging',
+      '{{sc:tenantClaim}}', '{{sc:rolesClaim}}', 'addon-typeorm', 'ApiError', 'HttpService', 'timeout', 'nestjs-pino', 'core-logging',
       'Nest 11', LOGGING, ENTITY]) {
       assert.ok(rules.includes(needle), `rules.md missing ${needle}`);
     }
@@ -282,7 +282,7 @@ test('nest request logging writes one line per request from a middleware ahead o
     const errors = (s.file('all-exceptions.filter.ts') + s.file('api-response.ts') + s.file('api-error.ts')).replace(/\/\/.*$/gm, '');
     assert.ok(s.file('api-response.ts') !== '' && s.file('api-error.ts') !== '', 'the envelope siblings exist');
     assert.ok(!/\.message\b/.test(errors), 'the filter never sends or logs an exception message');
-    assert.ok(errors.includes('success: false') && errors.includes('stackFrames(exception)'));
+    assert.ok(errors.includes('success: false') && errors.includes('stackFrames(cause)'));
     const out = s.file('outbound-http-logger.ts');
     for (const needle of ['axios.interceptors.request.use', 'axios.interceptors.response.use', 'sanitizeUrl(', 'data instanceof Readable',
       'isMaskable(contentType) && size <= CAPTURE_LIMIT_BYTES ? serializeMasked', 'error.code ?? error.name']) {
@@ -408,12 +408,14 @@ test('nest transform interceptor skips streams, SSE, @Res and @RawResponse', asy
     const s = nestSkill(c, LOGGING);
     const interceptor = s.file('transform.interceptor.ts');
     for (const needle of ['instanceof StreamableFile', 'RAW_RESPONSE_KEY', 'SSE_METADATA', 'ROUTE_ARGS_METADATA', 'RESPONSE_PASSTHROUGH_METADATA',
-      'RouteParamtypes.RESPONSE', 'RouteParamtypes.NEXT', 'successEnvelope(value, requestIdsOf(req))', "context.getType() !== 'http'",
+      'RouteParamtypes.RESPONSE', 'RouteParamtypes.NEXT', 'successEnvelope(value, ids)', "context.getType() !== 'http'", 'markRawRequest(req)', 'if (!res.headersSent)',
+      'res.setHeader(REQUEST_ID_HEADER, ids.requestId)', 'res.setHeader(SUPPORT_CODE_HEADER, ids.supportCode)',
       'getAllAndOverride<boolean | undefined>(RAW_RESPONSE_KEY, [handler, context.getClass()])']) {
       assert.ok(interceptor.includes(needle), `transform.interceptor.ts missing ${needle}`);
     }
     const raw = s.file('raw-response.decorator.ts');
     assert.ok(raw.includes('export const RAW_RESPONSE_KEY') && raw.includes('export const RawResponse = (): CustomDecorator<string> => SetMetadata(RAW_RESPONSE_KEY, true);'));
+    assert.ok(raw.includes('export function markRawRequest(req: IncomingMessage): void') && raw.includes('export function isRawRequest(req: IncomingMessage): boolean'), 'the raw marker the filter reads');
     const swagger = s.file('api-envelope-response.decorator.ts');
     for (const needle of ['type SuccessStatus = 200 | 201;', 'export function ApiEnvelopeResponse(model: Type<unknown>, options: { status?: SuccessStatus; page?: boolean } = {}): MethodDecorator',
       'ApiExtraModels(model)', 'getSchemaPath(model)', "status: '4XX'", "status: '5XX'", "required: ['items', 'pagination']"]) {
@@ -445,10 +447,12 @@ test('nest filter answers body-parser and unknown-route errors with the envelope
     const filter = s.file('all-exceptions.filter.ts');
     for (const needle of ['toFailure(malformedBody(req, exception) ? new ApiError(CommonError.MALFORMED_REQUEST) : exception, this.serviceNumber)',
       'exception instanceof BadRequestException && hasBody && !routeMatched(req)','failureEnvelope(failure.body, ids)', 'requestIdsOf(req)', 'res.setHeader(REQUEST_ID_HEADER, ids.requestId)',
-      'res.setHeader(SUPPORT_CODE_HEADER, ids.supportCode)', "config.get('SERVICE_NUMBER', { infer: true })", 'recordFailure(res, errorName)', 'if (res.headersSent) {']) {
+      'res.setHeader(SUPPORT_CODE_HEADER, ids.supportCode)', "config.get('SERVICE_NUMBER', { infer: true })", 'recordFailure(res, exception instanceof Error ? exception.name : typeof exception)', 'if (res.headersSent) {',
+      'isRawRequest(req) && exception instanceof HttpException', 'res.status(exception.getStatus()).json(body)', 'catch (broken: unknown)', 'toFailure(new ApiError(CommonError.INTERNAL_ERROR), this.serviceNumber)',
+      'Known false positives', 'a URIError', 'MiddlewareConsumer']) {
       assert.ok(filter.includes(needle), `all-exceptions.filter.ts missing ${needle}`);
     }
-    assert.match(filter, /failure\.status >= HttpStatus\.INTERNAL_SERVER_ERROR && !isExpected\(exception\)[^]*?event: UNHANDLED_ERROR/, 'only unexpected errors log the stack');
+    assert.match(filter, /failure\.status >= HttpStatus\.INTERNAL_SERVER_ERROR && !isExpected\(cause\)[^]*?event: UNHANDLED_ERROR/, 'only unexpected errors log the stack');
     const spec = s.file('api-response.spec.ts');
     for (const needle of ["bodyParser('entity.parse.failed', 400)", "bodyParser('entity.too.large', 413)", "bodyParser('charset.unsupported', 415)", 'new NotFoundException(', "'ENDPOINT_NOT_FOUND'",
       "'MALFORMED_REQUEST'", "'PAYLOAD_TOO_LARGE'", "'UNSUPPORTED_MEDIA_TYPE'", "'INVALID_PARAMETER'", "'RESOURCE_NOT_FOUND'", "'0530101'"]) {
@@ -751,17 +755,18 @@ test('new nest SKILL.md files are at most 350 lines', async () => {
 /** The ts code block of a markdown document whose first line is `// Default location: <file>`, as in a sibling. */
 const blockAt = (md, file) => new RegExp('```ts\\n(// Default location: ' + file.replace(/[.*+?^${}()|[\]\\/]/g, '\\$&') + '\\n[\\s\\S]*?)```').exec(md)?.[1];
 
-test('nest rest-endpoint skill: request, query, response DTOs and mapper in their own files; DTOs only from the controller; pagination; RFC 7807', async () => {
+test('nest rest-endpoint skill: request, query, response DTOs and mapper in their own files; DTOs only from the controller; 0-based PageData pagination; ApiError on the envelope', async () => {
   await withRealCatalog(async (c) => {
     const s = nestSkill(c, REST);
-    for (const needle of ['SC-PREFLIGHT', 'TenantScopedRepository', 'RFC 7807', 'plainToInstance', 'excludeExtraneousValues: true', '@Type(() => Number)',
+    for (const needle of ['SC-PREFLIGHT', 'TenantScopedRepository', 'ApiError', 'toPageData(', '@ApiEnvelopeResponse(', '@Min(0)', 'plainToInstance', 'excludeExtraneousValues: true', '@Type(() => Number)',
       'supertest', 'Idempotency-Key', 'stackcrew-nest-typeorm-entity', 'stackcrew-nest-request-logging', 'ask the user']) {
       assert.ok(s.body.includes(needle), `SKILL.md missing ${needle}`);
     }
     const request = s.file('create-customer-profile.request.ts');
     assert.ok(/@IsString\(\)/.test(request) && /@Length\(/.test(request) && !/tenantId|createdBy|status/.test(request), 'request DTO: validated, no tenant, audit or status');
     const query = s.file('list-customer-profiles.query.ts');
-    assert.ok(query.includes('@Type(() => Number)') && query.includes('@Max(MAX_PAGE_SIZE)') && query.includes('@IsIn('), 'query DTO: converted numbers, page cap, sort allowlist');
+    assert.ok(query.includes('@Type(() => Number)') && query.includes('@Min(0)') && query.includes('@Max(MAX_PAGE - 1)') && query.includes('@Min(1)') && !query.includes('@Max(MAX_PAGE_SIZE)') && query.includes('@IsIn('),
+      'query DTO: converted numbers, 0-based page below MAX_PAGE, size capped by a transform, sort allowlist');
     const response = s.file('customer-profile.response.ts');
     const fields = response.match(/^\s+readonly \w+!?:/gm) ?? [];
     assert.ok(fields.length >= 4, 'response DTO fields');
@@ -777,11 +782,17 @@ test('nest rest-endpoint skill: request, query, response DTOs and mapper in thei
     const service = s.file('customer-profiles.service.ts');
     assert.ok(service.includes('private readonly profiles: CustomerProfileRepository') && !service.includes('Repository<'), 'the service uses the tenant repository');
     assert.ok(service.includes('throw new CustomerProfileNotFound()') && service.includes('toCustomerProfileResponse('));
-    assert.ok(s.file('customer-profile.errors.ts').includes('extends ProblemError'), 'domain errors are ProblemError subclasses');
+    const errors = s.file('customer-profile.errors.ts');
+    assert.ok(errors.includes('extends ApiError') && !errors.includes('ProblemError'), 'domain errors are ApiError subclasses');
+    assert.ok(errors.includes("{\n  category: 30,\n  seq: 101,\n  code: 'RESOURCE_NOT_FOUND',\n  status: 404,\n  summary: 'The resource does not exist',\n}"), 'the domain row is the common row with seq 101');
+    assert.ok(mapper.includes('toPageData(') && controller.includes('@ApiEnvelopeResponse(') && controller.includes('{ page: true }') && s.file('customer-profile-page.response.ts').includes('PageData<CustomerProfileResponse>'),
+      'the page is PageData built by the mapper and documented as the envelope');
     const unit = s.file('customer-profiles.service.spec.ts');
     assert.ok(unit.includes('jest.Mocked<Pick<CustomerProfileRepository'), 'the unit spec fakes only the repository port');
     const e2e = s.file('customer-profiles.e2e.spec.ts');
-    for (const needle of ['request(app.getHttpServer())', "'tenant-b'", '.expect(404)', '.expect(400)', 'Object.keys(', 'createTestApp(', 'http_in']) {
+    for (const needle of ['request(app.getHttpServer())', "'tenant-b'", '.expect(404)', '.expect(400)', 'Object.keys(', 'createTestApp(', 'http_in', 'success: true',
+      'pagination: expect.objectContaining({ page: 0, size: 2, totalElements: 3, totalPages: 2, hasNext: true, hasPrevious: false })', "errorCode: 'RESOURCE_NOT_FOUND'", '/^\\d{7}$/',
+      "errorCode).toBe('MALFORMED_REQUEST')", 'size: 500', 'size: 100']) {
       assert.ok(e2e.includes(needle), `e2e spec missing ${needle}`);
     }
     const rules = c.stacks.get('nestjs').rules.body;
@@ -953,8 +964,8 @@ test('nest task 8 fix round 1: channel error listener and consumer health, serve
 
     // 4. page has an upper bound
     const rest = nestSkill(c, REST);
-    assert.ok(rest.file('list-customer-profiles.query.ts').includes('@Max(MAX_PAGE)'), 'page is capped');
-    assert.ok(rest.file('customer-profiles.e2e.spec.ts').includes('{ page: 1001 }'), 'e2e covers a page over the cap');
+    assert.ok(rest.file('list-customer-profiles.query.ts').includes('@Max(MAX_PAGE - 1)'), 'page is capped');
+    assert.ok(rest.file('customer-profiles.e2e.spec.ts').includes('{ page: 1000 }'), 'e2e covers the first page over the cap');
   });
 });
 
@@ -1158,4 +1169,22 @@ test('nest task 9 housekeeping: the outcome effects are always bound (no-op defa
     assert.match(table, /`kyc\.constants\.ts\.md` \| [^\n]*`KYC_OUTCOME_EFFECTS`/, 'file table: constants row');
     assert.match(table, /`kyc-verification\.service\.spec\.ts\.md` \| [^\n]*throwing side write rolls the status back/, 'file table: spec row');
   });
+});
+
+test('nest rules and skills no longer mention problem+json, RFC 7807 or ProblemError', async () => {
+  const { readdirSync, readFileSync: read, statSync } = await import('node:fs');
+  const path = await import('node:path');
+  const root = path.join(import.meta.dirname, '..', 'catalog', 'stacks', 'nestjs');
+  const files = [];
+  const walk = (dir) => { for (const name of readdirSync(dir)) { const p = path.join(dir, name); if (statSync(p).isDirectory()) walk(p); else files.push(p); } };
+  walk(root);
+  assert.ok(files.length > 20, 'the walk found the nest catalog');
+  // ProblemError: the deprecated alias lives in api-error.ts; Task 7 converts the outbound-client siblings and tightens this list
+  const aliasAllowed = (file) => file.endsWith('api-error.ts.md') || file.includes(`${path.sep}stackcrew-nest-outbound-client${path.sep}`);
+  for (const file of files) {
+    const text = read(file, 'utf8');
+    assert.ok(!text.includes('problem+json'), `${file} mentions problem+json`);
+    assert.ok(!text.includes('RFC 7807'), `${file} mentions RFC 7807`);
+    assert.ok(aliasAllowed(file) || !text.includes('ProblemError'), `${file} mentions ProblemError`);
+  }
 });

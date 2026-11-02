@@ -65,7 +65,7 @@ describe('maskBody (core-logging masker contract)', () => {
     expect(maskBody(Buffer.alloc(5000), 'image/jpeg', DEFAULTS)).toBe('<binary image/jpeg 5000 bytes>');
     expect(maskBody('x', undefined, DEFAULTS)).toBe('<unknown 1 bytes>');
     expect(maskBody('{"a":1}', 'Application/JSON; charset=utf-8', DEFAULTS)).toBe('{"a":1}');
-    expect(maskBody('{"password":"p"}', 'application/problem+json', DEFAULTS)).toBe('{"password":"***"}');
+    expect(maskBody('{"password":"p"}', 'application/vnd.api+json', DEFAULTS)).toBe('{"password":"***"}');
     expect(maskBody('', JSON_TYPE, DEFAULTS)).toBeUndefined();
     expect(maskBody(undefined, JSON_TYPE, DEFAULTS)).toBeUndefined();
   });
@@ -89,7 +89,7 @@ describe('maskBody (core-logging masker contract)', () => {
     expect(mask(`{"a":${nest(70)}}`)).toBe('<application/json 146 bytes>');
     expect(maskValue(JSON.parse(nest(65)), DEFAULTS)).toBe('<application/json 130 bytes>');
     // N+ means the size is unknown: JSON.stringify threw (here the nesting overflows the stack; also a cycle, a BigInt or a throwing getter)
-    expect(serializeMasked(JSON.parse(nest(50000)), DEFAULTS, 'application/problem+json')).toBe('<application/problem+json 16384+ bytes>');
+    expect(serializeMasked(JSON.parse(nest(50000)), DEFAULTS, 'application/vnd.api+json')).toBe('<application/vnd.api+json 16384+ bytes>');
   });
 
   it('returns for a cyclic value and for a toJSON that returns itself', () => {
