@@ -61,9 +61,9 @@ test('no file under catalog/, fixtures/, plugin/ or test/fixtures/ matches the n
   assert.deepEqual(found, []);
 });
 
-test('release version is 0.2.0 everywhere it is written', () => {
+test('release version is 0.3.0 everywhere it is written', () => {
   const version = JSON.parse(read('package.json')).version;
-  assert.equal(version, '0.2.0');
+  assert.equal(version, '0.3.0');
   assert.equal(JSON.parse(read('plugin', '.claude-plugin', 'plugin.json')).version, version);
   assert.equal(JSON.parse(read('.claude-plugin', 'marketplace.json')).plugins[0].version, version);
 });

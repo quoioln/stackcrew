@@ -17,7 +17,7 @@ Ba lớp phòng thủ (spec §8):
 2. **L2, chặn lúc ghi**: PreToolUse guard hook, chỉ có trên Claude Code.
 3. **L3, chặn lúc build và CI**: ArchUnit (đã đóng băng bằng `FreezingArchRule`), Checkstyle, `stackcrew check` trong Jenkins.
 
-Stack hỗ trợ (bản 0.2.0):
+Stack hỗ trợ (bản 0.3.0):
 
 | Stack | Ngôn ngữ | Phiên bản | Skill theo việc |
 | --- | --- | --- | --- |
@@ -221,6 +221,8 @@ claude plugin uninstall stackcrew@stackcrew    # gỡ; thêm --scope tương ứ
 Sau khi cập nhật, gõ `/reload-plugins` trong phiên đang mở hoặc mở phiên mới. Plugin khai `version` cố định, nên `update` chỉ lấy bản mới khi `version` đã tăng (xem "Phát triển"); nếu chưa tăng, nó báo `already at the latest version`.
 
 Rule, skill và agent nằm trong từng dự án, nên sau khi cập nhật plugin, chạy `/stackcrew:sync` trong mỗi dự án đã init để render lại theo bản mới.
+
+**Lên 0.3.0**: cập nhật plugin và chạy `/stackcrew:sync` như dưới. Bản này thay RFC 7807 `problem+json` bằng một envelope chung cho mọi response: success `{ success, timestamp, supportCode, requestId, data }`, error `{ success, message, timestamp, supportCode, requestId, error: { errorNumber, errorCode, details } }`; `errorNumber` dạng `SSCCNNN` giữ số của service gốc, `errorCode` là key dịch cho frontend; header `x-request-id` và `x-support-code`; service cần config số service (Spring `app.service-number`, NestJS biến môi trường `SERVICE_NUMBER`, 2 chữ số). Đã chuyển xong: core rule, Spring Boot, NestJS. **Next.js chưa chuyển** trong bản này (skill vẫn dùng `problem+json` và `ActionResult`); bản sau sẽ chuyển. Code đã sinh theo bản cũ không tự đổi: sau khi sync, agent viết code mới theo envelope.
 
 **Lên 0.2.0**: (1) `claude plugin marketplace update stackcrew` rồi `claude plugin update stackcrew@stackcrew`, sau đó `/reload-plugins`; (2) trong **từng dự án** đã init, chạy `/stackcrew:sync`. Profile 0.1.x (không có `conventions`, không có `node`) vẫn hợp lệ: `sync` dùng quy ước mặc định (bản 0.2.0 thêm cho Spring skill `stackcrew-spring-jpa-entity`, `stackcrew-spring-request-logging`, rule `core-persistence` và rule log body có che dữ liệu). Nếu entity gốc hay claim tenant của dự án khác mặc định, thêm khối `conventions` (xem "Quy ước dự án") trước khi sync; dự án TypeScript chạy thêm `/stackcrew:sync --wire` để nối ESLint. Ví dụ bản 0.1.1 bỏ `paths` khỏi skill: trước bản này, skill theo stack chỉ hiện ra sau khi Claude đụng tới một file của stack, và vai không nạp sẵn được skill.
 
