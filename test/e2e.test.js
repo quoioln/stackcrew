@@ -84,6 +84,8 @@ test('init all tools renders the expected spring-boot file set', (t) => {
     '.agents/skills/stackcrew-spring-boot-rules/SKILL.md',
     '.claude/skills/stackcrew-spring-integration-provider/SKILL.md',
     '.agents/skills/stackcrew-spring-integration-provider/SKILL.md',
+    '.claude/skills/stackcrew-spring-rest-endpoint/ApiResponse.java.md',
+    '.claude/skills/stackcrew-spring-rest-endpoint/GlobalExceptionHandler.java.md',
     '.claude/skills/stackcrew-spring-jpa-entity/SKILL.md',
     '.claude/skills/stackcrew-spring-jpa-entity/TenantContext.java.md',
     '.agents/skills/stackcrew-spring-jpa-entity/SKILL.md',

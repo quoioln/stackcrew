@@ -15,7 +15,7 @@ Spring Boot 3.x on Java 17+. Applies with the Java rule (SC-TYPE, SC-CONST, SC-R
 - Provider callbacks (webhooks) are authenticated, idempotent (dedupe on the provider event id with an atomic insert, not a caught exception) and acknowledged fast; process from the persisted row.
 - Entities extend `{{sc:baseEntity}}` (tenant data: `{{sc:baseTenantEntity}}` with Hibernate `@TenantId`); Spring Data JPA auditing fills the four audit fields; the tenant comes from the JWT through `JwtTenantIdentifierResolver`; no native SQL on tenant tables; cross-tenant reads only through `TenantContext.runCrossTenant`. Use skill `stackcrew-spring-jpa-entity`.
 - Log with SLF4J and structured fields: `traceId` (Micrometer Tracing), provider code, outcome, duration. HTTP bodies are logged only by `HttpLoggingFilter` (inbound) and `LoggingClientInterceptor` (outbound) through the shared `BodyMasker` (skill `stackcrew-spring-request-logging`); never log a request or record by hand (its `toString` prints every field). Add a Micrometer metric tagged by provider.
-- Errors are RFC 7807 `ProblemDetail` through one `@RestControllerAdvice` with a stable, safe `detail`; request DTOs are records with `@Valid` and Bean Validation (`jakarta.validation.*`).
+- Every response is the common envelope (skill `stackcrew-spring-rest-endpoint`): a controller returns data or throws `ApiException` with an `ErrorCode`, `ApiResponseAdvice` wraps it, and one `GlobalExceptionHandler` answers every error with the code's fixed summary, never `ex.getMessage()`. A controller never returns `String`, a `void` handler never has `@ResponseStatus`, and nothing answers 204 (ArchUnit SC-ENVELOPE). Request DTOs are records with `@Valid` and Bean Validation (`jakarta.validation.*`).
 - Configuration is typed `@ConfigurationProperties` records (`@Validated`), one map keyed by provider code rather than a class per provider; no scattered `@Value`, no secrets in `application.yml` (env or a vault).
 - Use `RestClient` (or `WebClient` on a reactive stack) for HTTP; `RestTemplate` is legacy. URLs come from properties, paths and header names from constants.
 - `@Transactional` on service methods only, `readOnly = true` for queries, never around a remote call, and never relied on through `this.` self-invocation.
@@ -43,19 +43,10 @@ RestClient create(String providerCode) {
 }
 ```
 
-- Error responses use `ProblemDetail` with a constant, safe `detail`; never `ex.getMessage()` (it can carry provider codes or PII):
+- Error responses are the error envelope built by `GlobalExceptionHandler` from the error table: `errorNumber`, `errorCode` and the code's fixed summary; never `ex.getMessage()` (it can carry provider codes or PII). Framework exceptions go through the same handler, not through Spring's own error body. A provider failure is one of this service's group-80 errors with no handler to add: `ProviderUnavailableException` extends `ApiException` with `DEPENDENCY_UNAVAILABLE`, `ProviderRejectedException` and `ProviderProtocolException` with `BAD_GATEWAY` (a feature may catch a rejection and throw its own domain error).
 
-```java
-@RestControllerAdvice
-class ApiExceptionHandler {
-    @ExceptionHandler(ProviderUnavailableException.class)
-    ProblemDetail onProviderDown(ProviderUnavailableException ex) {
-        return ProblemDetail.forStatusAndDetail(HttpStatus.BAD_GATEWAY, ProblemDetails.PROVIDER_UNAVAILABLE);
-    }
-}
-```
-
-- Enable `spring.mvc.problemdetails.enabled=true` so framework exceptions use `ProblemDetail` too.
+- A JSON controller never returns `String`: the String converter is chosen before the advice wraps the body and the call fails. Return a record, or mark a deliberately raw method `@RawResponse`.
+- `app.service-number` (two digits, quoted in YAML) is the `SS` of every `errorNumber`; it comes from configuration, never from code.
 - Observability: Actuator (`health` with liveness and readiness groups), Micrometer metrics, Micrometer Tracing with the OpenTelemetry or Brave bridge. A `RestClient` built from the injected `RestClient.Builder` propagates `traceparent` automatically.
 
 ## Layering and design
@@ -124,14 +115,15 @@ Full steps with code: skill `stackcrew-spring-integration-provider`.
 
 ## Security
 
-- Spring Security with method-level authorization (`@PreAuthorize`), deny by default, CSRF protection for cookie auth, a CORS allowlist, and object-level checks (no IDOR).
+- Spring Security with method-level authorization (`@PreAuthorize`), deny by default, CSRF protection for cookie auth, a CORS allowlist and expose `x-request-id` and `x-support-code` (`Access-Control-Expose-Headers`), and object-level checks (no IDOR). 401 and 403 from the filter chain are written by `ApiSecurityHandlers` as the error envelope.
 - Store provider credentials in a vault or env variables bound through `@ConfigurationProperties`; never in code, logs or the repository.
 
 ## Logging and observability config
 
 - Logback with a plain pattern for dev (add `%kvp` so the key-value fields print) and JSON for prod (`logging.structured.format.console=logstash` on Boot 3.4+, logstash-logback-encoder before), switched by Spring profile.
 - Request logging per `core-logging`: `HttpLoggingFilter` (a `OncePerRequestFilter` with `ContentCachingRequestWrapper` for the request and the write-through `TeeResponseWrapper` for the response) is added to the security filter chain before `CorsFilter`, so CORS, 401 and 403 rejections get their line too, and `HttpLoggingFilter.UserMdc` after `BearerTokenAuthenticationFilter`. MDC carries `requestId`, `userId` and `tenantId` (`traceId`, `spanId` come from Micrometer Tracing) and is cleared in `finally`. One `http_in` line per request: method, templated route, status, `durationMs`, `reqBody`, `resBody`. Responses are never held back: headers and bytes go straight to the client, and only JSON and form bodies of non-streaming requests are copied for masking; everything else logs its size.
-- Message consumers check the `x-request-id`, `x-tenant-id` and `x-user-id` headers, put them in MDC, log one `message_in` line with the masked payload, run the handler inside `TenantContext.runAs` (never as the system identity), and clear MDC in `finally`. Producers send the three headers.
+- Message consumers check the `x-request-id`, `x-tenant-id` and `x-user-id` headers, put them in MDC, mint their own `supportCode` (`LogFields.newSupportCode()`, never read from a header), log one `message_in` line with the masked payload, run the handler inside `TenantContext.runAs` (never as the system identity), and clear MDC (including `supportCode`) in `finally`. Producers send the three headers.
+- Calling another internal service of ours: keep the retry and breaker below, and give `RestClient` the `InternalServiceErrors` helper (skill `stackcrew-spring-integration-provider`, section "Calling another internal service"): its 4xx envelope keeps the origin `errorNumber`.
 - Outbound calls: one `LoggingClientInterceptor` per `RestClient`, on a `BufferingClientHttpRequestFactory`, writes one `http_out` line with target, sanitized URL, status, duration and both bodies.
 - Bodies go only through `BodyMasker`, configured by `MaskingProperties`: `app.logging.mask-fields` (PII list; empty means the default), `app.logging.max-body-bytes` (16384), `app.logging.log-bodies` (true). Never the `Authorization` header or cookies. Do not log a command or request record directly: its `toString` prints every field. Full setup: skill `stackcrew-spring-request-logging`.
 - Levels per package through `logging.level.*`; never DEBUG SQL in prod. Use `org.hibernate.SQL=DEBUG` and `org.hibernate.orm.jdbc.bind=TRACE` in dev only, and a slow-query log (datasource-proxy or p6spy at about 300 ms) in prod.

@@ -158,7 +158,7 @@ test('nest rules forbid returning entities and require response DTOs', async () 
     for (const needle of ['src/modules/<feature>/', '`dto/`', '`entities/`', '`interfaces/`', '@Expose()', '@ApiProperty()',
       'plainToInstance(', 'excludeExtraneousValues: true', 'ClassSerializerInterceptor', 'whitelist: true', 'forbidNonWhitelisted: true',
       'transform: true', '@nestjs/config', 'passport-jwt', 'JWKS', 'issuer', 'audience', '@Public()', 'APP_GUARD', 'runWithRequestContext',
-      '{{sc:tenantClaim}}', '{{sc:rolesClaim}}', 'addon-typeorm', 'RFC 7807', 'HttpService', 'timeout', 'nestjs-pino', 'core-logging',
+      '{{sc:tenantClaim}}', '{{sc:rolesClaim}}', 'addon-typeorm', 'ApiError', 'HttpService', 'timeout', 'nestjs-pino', 'core-logging',
       'Nest 11', LOGGING, ENTITY]) {
       assert.ok(rules.includes(needle), `rules.md missing ${needle}`);
     }
@@ -203,7 +203,7 @@ const GOES_TO = /^Goes to `((?:src|test)\/[^`]+\.ts)`\.\n\n```ts\n/;
 const codeOfSibling = (md) => /```ts\n([\s\S]*?)```\n$/.exec(md ?? '')?.[1] ?? '';
 const nestSkill = (c, name) => {
   const k = c.stacks.get('nestjs').skills.find((s) => s.name === name);
-  return { body: k.body, files: k.files, file: (rel) => codeOfSibling(k.files.find((f) => f.relPath === `${rel}.md`)?.content) };
+  return { body: k.body, description: k.description, files: k.files, file:(rel) => codeOfSibling(k.files.find((f) => f.relPath === `${rel}.md`)?.content) };
 };
 const renderedFile = (c, skill, rel, conventions) => codeOfSibling(
   nestCtx(c, { addons: ['typeorm'], conventions }).skills.find((k) => k.name === skill).files.find((f) => f.relPath === `${rel}.md`).content);
@@ -279,9 +279,10 @@ test('nest request logging writes one line per request from a middleware ahead o
       'forbidNonWhitelisted: true', 'exceptionFactory: requestValidationError']) {
       assert.ok(common.includes(needle), `common.module.ts missing ${needle}`);
     }
-    const errors = (s.file('all-exceptions.filter.ts') + s.file('problem-details.ts')).replace(/\/\/.*$/gm, '');
+    const errors = (s.file('all-exceptions.filter.ts') + s.file('api-response.ts') + s.file('api-error.ts')).replace(/\/\/.*$/gm, '');
+    assert.ok(s.file('api-response.ts') !== '' && s.file('api-error.ts') !== '', 'the envelope siblings exist');
     assert.ok(!/\.message\b/.test(errors), 'the filter never sends or logs an exception message');
-    assert.ok(errors.includes("'application/problem+json'") && errors.includes('stackFrames(exception)'));
+    assert.ok(errors.includes('success: false') && errors.includes('stackFrames(cause)'));
     const out = s.file('outbound-http-logger.ts');
     for (const needle of ['axios.interceptors.request.use', 'axios.interceptors.response.use', 'sanitizeUrl(', 'data instanceof Readable',
       'isMaskable(contentType) && size <= CAPTURE_LIMIT_BYTES ? serializeMasked', 'error.code ?? error.name']) {
@@ -301,8 +302,8 @@ test('nest request context: only runAsSystem grants the system identity; roles d
     assert.equal(ctx.match(/system: true/g)?.length, 1, 'system: true is set in one place');
     assert.match(ctx, /export function runAsSystem[^]*?system: true/, 'that place is runAsSystem');
     assert.equal(ctx.match(/crossTenant: true/g)?.length, 1, 'crossTenant: true is set only by runCrossTenant');
-    assert.ok(ctx.includes('Object.freeze({ requestId: ctx.requestId, userId: ctx.userId, tenantId: ctx.tenantId, roles: Object.freeze([...ctx.roles]) })'),
-      'runWithRequestContext copies only the plain fields');
+    assert.ok(ctx.includes('Object.freeze({ requestId: ctx.requestId, supportCode: ctx.supportCode ?? newSupportCode(), userId: ctx.userId, tenantId: ctx.tenantId,'
+      + ' roles: Object.freeze([...ctx.roles]) })'), 'runWithRequestContext copies only the plain fields');
     assert.ok(ctx.includes('tenantId: undefined, crossTenant: true'), 'cross-tenant work has no tenant to write with');
     assert.ok(!ctx.includes('=== SYSTEM_USER') && !ctx.includes('enterWith'));
     assert.ok(ctx.includes("reason.replace(/[\\r\\n]+/g, ' ')"), 'CR/LF stripped from the reason');
@@ -316,6 +317,183 @@ test('nest request context: only runAsSystem grants the system identity; roles d
       'runAsSystem(undefined', 'keeps concurrent contexts apart']) {
       assert.ok(spec.includes(needle), `request-context.spec.ts missing ${needle}`);
     }
+  });
+});
+
+const NEST_ERROR_TABLE = [
+  [10, 1, 'VALIDATION_FAILED', 400, 'Request validation failed'],
+  [11, 1, 'MALFORMED_REQUEST', 400, 'The request body is malformed'],
+  [11, 2, 'METHOD_NOT_ALLOWED', 405, 'The HTTP method is not supported'],
+  [11, 3, 'UNSUPPORTED_MEDIA_TYPE', 415, 'The content type is not supported'],
+  [11, 4, 'INVALID_PARAMETER', 400, 'A query or path parameter is invalid'],
+  [11, 5, 'PAYLOAD_TOO_LARGE', 413, 'The request body is too large'],
+  [11, 6, 'ENDPOINT_NOT_FOUND', 404, 'The endpoint does not exist'],
+  [20, 1, 'UNAUTHENTICATED', 401, 'Authentication is required'],
+  [21, 1, 'ACCESS_DENIED', 403, 'You are not allowed to do this'],
+  [30, 1, 'RESOURCE_NOT_FOUND', 404, 'The resource does not exist'],
+  [40, 1, 'BUSINESS_CONFLICT', 409, 'The request conflicts with the current state'],
+  [41, 1, 'BUSINESS_RULE_VIOLATION', 422, 'The request violates a business rule'],
+  [50, 1, 'RATE_LIMIT_EXCEEDED', 429, 'Too many requests'],
+  [80, 1, 'DEPENDENCY_UNAVAILABLE', 503, 'A required service is unavailable'],
+  [80, 2, 'BAD_GATEWAY', 502, 'An upstream service returned an invalid response'],
+  [80, 3, 'GATEWAY_TIMEOUT', 504, 'An upstream service did not respond in time'],
+  [90, 1, 'INTERNAL_ERROR', 500, 'An unexpected error occurred'],
+];
+const NEST_DETAIL_CODES = ['REQUIRED', 'INVALID_FORMAT', 'INVALID_TYPE', 'TOO_SHORT', 'TOO_LONG', 'OUT_OF_RANGE', 'INVALID_VALUE', 'ALREADY_EXISTS'];
+/** The class-validator column of the contract's validator table. */
+const CLASS_VALIDATOR_CODES = {
+  REQUIRED: ['isDefined', 'isNotEmpty'],
+  INVALID_FORMAT: ['isEmail', 'matches', 'isUuid', 'isUUID', 'isUrl', 'isISO8601', 'isDateString'],
+  INVALID_TYPE: ['isString', 'isInt', 'isNumber', 'isBoolean', 'isArray', 'isObject'],
+  TOO_SHORT: ['minLength', 'arrayMinSize'],
+  TOO_LONG: ['maxLength', 'arrayMaxSize'],
+  OUT_OF_RANGE: ['min', 'max', 'isPositive', 'isNegative'],
+  INVALID_VALUE: ['isEnum', 'isIn', 'whitelistValidation'],
+};
+
+test('nest envelope: error table, formatter and DetailCode match the contract', async () => {
+  await withRealCatalog(async (c) => {
+    const s = nestSkill(c, LOGGING);
+    const codes = s.file('error-codes.ts');
+    for (const [category, seq, code, status, summary] of NEST_ERROR_TABLE) {
+      const row = `${code}: { category: ${category}, seq: ${seq}, code: '${code}', status: ${status}, summary: '${summary}' },`;
+      assert.ok(codes.includes(row), `error-codes.ts missing row ${row}`);
+    }
+    const rows = [...codes.matchAll(/\{ category: (\d+), seq: (\d+), code: '([A-Z_]+)', status: (\d+), summary: '([^']+)' \}/g)];
+    assert.equal(rows.length, NEST_ERROR_TABLE.length, 'exactly the contract rows, one per line, nothing else in that form');
+    for (const needle of ['export type ErrorDefinition = {', 'export const CommonError = {', 'export function formatErrorNumber(serviceNumber: string, def: ErrorDefinition): string',
+      'CATEGORY_DIGITS = 2', 'SEQ_DIGITS = 3', "padStart(CATEGORY_DIGITS, '0')", "padStart(SEQ_DIGITS, '0')", 'export function errorForStatus(status: number): ErrorDefinition',
+      '[HttpStatus.NOT_FOUND, CommonError.ENDPOINT_NOT_FOUND]', '[HttpStatus.CONFLICT, CommonError.BUSINESS_CONFLICT]', '[HttpStatus.TOO_MANY_REQUESTS, CommonError.RATE_LIMIT_EXCEEDED]']) {
+      assert.ok(codes.includes(needle), `error-codes.ts missing ${needle}`);
+    }
+    assert.deepEqual([...codes.split('export const DetailCode = {')[1].split('} as const')[0].matchAll(/([A-Z_]+): '\1'/g)].map((m) => m[1]), NEST_DETAIL_CODES);
+    const validation = s.file('validation-details.ts');
+    for (const [code, names] of Object.entries(CLASS_VALIDATOR_CODES)) {
+      for (const name of names) assert.ok(validation.includes(`['${name}', DetailCode.${code}]`), `validation-details.ts maps ${name} to ${code}`);
+    }
+    assert.ok(validation.includes("['isIso8601', DetailCode.INVALID_FORMAT]"), 'the key class-validator really uses for @IsISO8601');
+    assert.ok(validation.includes('?? DetailCode.INVALID_VALUE') && validation.includes('`${parent}[${property}]`'), 'unmapped is INVALID_VALUE; array items in brackets');
+    const spec = s.file('api-response.spec.ts');
+    for (const needle of ["toBe('0710001')", "toBe('0730101')", "field: 'address.city'", "field: 'items[1].sku'", 'DetailCode.INVALID_TYPE', 'DetailCode.TOO_LONG',
+      'DetailCode.INVALID_FORMAT']) {
+      assert.ok(spec.includes(needle), `api-response.spec.ts missing ${needle}`);
+    }
+    assert.ok(!s.files.some((f) => f.relPath === 'problem-details.ts.md'), 'problem-details.ts is replaced');
+  });
+});
+
+test('nest envelope: undefined becomes data null', async () => {
+  await withRealCatalog(async (c) => {
+    const s = nestSkill(c, LOGGING);
+    const api = s.file('api-response.ts');
+    for (const needle of ['data: data === undefined ? null : data', 'export function successEnvelope<T>(data: T | undefined, ids: CorrelationIds): ApiSuccess<T | null>',
+      'export type ApiSuccess<T> = {', 'export type ApiFailure = {', 'export type ApiResponse<T> = ApiSuccess<T> | ApiFailure;', 'export type ErrorPayload = {',
+      'export type ErrorDetail = {', 'export type PageData<T> = {', 'export type Pagination = {', 'export function toPageData<T>(', 'new Date().toISOString()',
+      'totalElements === 0 ? 0 : Math.ceil(totalElements / size)', 'hasNext: page + 1 < totalPages', 'hasPrevious: page > 0']) {
+      assert.ok(api.includes(needle), `api-response.ts missing ${needle}`);
+    }
+    assert.match(api, /return \{ success: true, timestamp: [^,]+, supportCode: ids\.supportCode, requestId: ids\.requestId, data: /, 'success keys in contract order');
+    assert.match(api, /return \{\s+success: false,\s+message: [^,]+,\s+timestamp: [^,]+,\s+supportCode: ids\.supportCode,\s+requestId: ids\.requestId,\s+error,/,
+      'error keys in contract order');
+    const spec = s.file('api-response.spec.ts');
+    for (const needle of ['toEqual(expect.objectContaining({ data: null }))', "['success', 'timestamp', 'supportCode', 'requestId', 'data']",
+      "['success', 'message', 'timestamp', 'supportCode', 'requestId', 'error']"]) {
+      assert.ok(spec.includes(needle), `api-response.spec.ts missing ${needle}`);
+    }
+  });
+});
+
+test('nest transform interceptor skips streams, SSE, @Res and @RawResponse', async () => {
+  await withRealCatalog(async (c) => {
+    const s = nestSkill(c, LOGGING);
+    const interceptor = s.file('transform.interceptor.ts');
+    for (const needle of ['instanceof StreamableFile', 'RAW_RESPONSE_KEY', 'SSE_METADATA', 'ROUTE_ARGS_METADATA', 'RESPONSE_PASSTHROUGH_METADATA',
+      'RouteParamtypes.RESPONSE', 'RouteParamtypes.NEXT', 'successEnvelope(value, ids)', "context.getType() !== 'http'", 'markRawRequest(req)', 'if (!res.headersSent)',
+      'res.setHeader(REQUEST_ID_HEADER, ids.requestId)', 'res.setHeader(SUPPORT_CODE_HEADER, ids.supportCode)',
+      'getAllAndOverride<boolean | undefined>(RAW_RESPONSE_KEY, [handler, context.getClass()])']) {
+      assert.ok(interceptor.includes(needle), `transform.interceptor.ts missing ${needle}`);
+    }
+    const raw = s.file('raw-response.decorator.ts');
+    assert.ok(raw.includes('export const RAW_RESPONSE_KEY') && raw.includes('export const RawResponse = (): CustomDecorator<string> => SetMetadata(RAW_RESPONSE_KEY, true);'));
+    assert.ok(raw.includes('export function markRawRequest(req: IncomingMessage): void') && raw.includes('export function isRawRequest(req: IncomingMessage): boolean'), 'the raw marker the filter reads');
+    const swagger = s.file('api-envelope-response.decorator.ts');
+    for (const needle of ['type SuccessStatus = 200 | 201;', 'export function ApiEnvelopeResponse(model: Type<unknown>, options: { status?: SuccessStatus; page?: boolean } = {}): MethodDecorator',
+      'ApiExtraModels(model)', 'getSchemaPath(model)', "status: '4XX'", "status: '5XX'", "required: ['items', 'pagination']"]) {
+      assert.ok(swagger.includes(needle), `api-envelope-response.decorator.ts missing ${needle}`);
+    }
+    const common = s.file('common.module.ts');
+    assert.ok(common.includes('provide: APP_INTERCEPTOR, useClass: TransformInterceptor') && common.includes('exceptionFactory: requestValidationError'));
+    assert.ok(common.indexOf('useClass: RequestContextInterceptor') < common.indexOf('useClass: TransformInterceptor'));
+    for (const needle of ['`StreamableFile`', '`@Sse()`', '`@Res()`', '`@RawResponse()`', '`@ApiEnvelopeResponse(', 'data: null']) {
+      assert.ok(s.body.includes(needle), `SKILL.md missing ${needle}`);
+    }
+  });
+});
+
+test('nest filter answers body-parser and unknown-route errors with the envelope and headers', async () => {
+  await withRealCatalog(async (c) => {
+    const s = nestSkill(c, LOGGING);
+    const mw = s.file('http-logging.middleware.ts');
+    const headers = mw.indexOf('res.setHeader(SUPPORT_CODE_HEADER, supportCode);');
+    assert.ok(headers > 0 && mw.includes('res.setHeader(REQUEST_ID_HEADER, requestId);'), 'the middleware sets both headers');
+    assert.ok(headers < mw.lastIndexOf('next();'), 'before next(): guard, parser and 404 errors carry them too');
+    const api = s.file('api-response.ts');
+    for (const needle of ['export function toFailure(exception: unknown, serviceNumber: string): Failure', 'exception instanceof HttpException',
+      'errorForStatus(exception.getStatus())', 'status === HttpStatus.BAD_REQUEST ? CommonError.MALFORMED_REQUEST : errorForStatus(status)',
+      'exception instanceof CrossTenantDeniedError', 'CommonError.RESOURCE_NOT_FOUND', 'exception instanceof UpstreamApiError', 'formatErrorNumber(serviceNumber, definition)',
+      'CommonError.INTERNAL_ERROR']) {
+      assert.ok(api.includes(needle), `api-response.ts missing ${needle}`);
+    }
+    const filter = s.file('all-exceptions.filter.ts');
+    for (const needle of ['toFailure(malformedBody(req, exception) ? new ApiError(CommonError.MALFORMED_REQUEST) : exception, this.serviceNumber)',
+      'exception instanceof BadRequestException && hasBody && !routeMatched(req)','failureEnvelope(failure.body, ids)', 'requestIdsOf(req)', 'res.setHeader(REQUEST_ID_HEADER, ids.requestId)',
+      'res.setHeader(SUPPORT_CODE_HEADER, ids.supportCode)', "config.get('SERVICE_NUMBER', { infer: true })", 'recordFailure(res, exception instanceof Error ? exception.name : typeof exception)', 'if (res.headersSent) {',
+      'isRawRequest(req) && exception instanceof HttpException', 'res.status(exception.getStatus()).json(body)', 'catch (broken: unknown)', 'toFailure(new ApiError(CommonError.INTERNAL_ERROR), this.serviceNumber)',
+      'Known false positives', 'a URIError', 'MiddlewareConsumer']) {
+      assert.ok(filter.includes(needle), `all-exceptions.filter.ts missing ${needle}`);
+    }
+    assert.match(filter, /failure\.status >= HttpStatus\.INTERNAL_SERVER_ERROR && !isExpected\(cause\)[^]*?event: UNHANDLED_ERROR/, 'only unexpected errors log the stack');
+    const spec = s.file('api-response.spec.ts');
+    for (const needle of ["bodyParser('entity.parse.failed', 400)", "bodyParser('entity.too.large', 413)", "bodyParser('charset.unsupported', 415)", 'new NotFoundException(', "'ENDPOINT_NOT_FOUND'",
+      "'MALFORMED_REQUEST'", "'PAYLOAD_TOO_LARGE'", "'UNSUPPORTED_MEDIA_TYPE'", "'INVALID_PARAMETER'", "'RESOURCE_NOT_FOUND'", "'0530101'"]) {
+      assert.ok(spec.includes(needle), `api-response.spec.ts missing ${needle}`);
+    }
+    const errorApi = s.file('api-error.ts');
+    assert.ok(errorApi.includes('export class ApiError extends Error {') && errorApi.includes('constructor(readonly definition: ErrorDefinition, readonly details: readonly ErrorDetail[] = [])'));
+    assert.ok(errorApi.includes('export class UpstreamApiError extends Error {') && errorApi.includes('constructor(readonly status: number, readonly payload: ErrorPayload, readonly summary: string)'));
+  });
+});
+
+test('nest correlation: UUID request id for HTTP, supportCode in every context', async () => {
+  await withRealCatalog(async (c) => {
+    const s = nestSkill(c, LOGGING);
+    const mw = s.file('http-logging.middleware.ts');
+    for (const needle of ['requestIdOrNew(req.header(REQUEST_ID_HEADER))', 'const supportCode = newSupportCode();', 'bindRequestContext(req, { requestId, supportCode, roles: [] })',
+      '          supportCode,\n']) {
+      assert.ok(mw.includes(needle), `middleware missing ${JSON.stringify(needle)}`);
+    }
+    assert.ok(!mw.includes('safeRequestIdOrNew'), 'HTTP takes only a UUID (P3-R2)');
+    const ctx = s.file('request-context.ts');
+    for (const needle of ["SUPPORT_CODE_LETTERS = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ'", 'SUPPORT_CODE_LENGTH = 6', 'randomInt(0, SUPPORT_CODE_LETTERS.length)',
+      'export function newSupportCode(): string', 'export function requestIdOrNew(value: unknown): string', "export const SUPPORT_CODE_HEADER = 'x-support-code';",
+      '  supportCode: string;\n', 'export function requestIdsOf(req: IncomingMessage)', 'supportCode: bound?.supportCode ?? newSupportCode()']) {
+      assert.ok(ctx.includes(needle), `request-context.ts missing ${needle}`);
+    }
+    assert.match(ctx, /export function runAsSystem[^]*?supportCode: parent\?\.supportCode \?\? newSupportCode\(\)/, 'runAsSystem gets a support code');
+    assert.match(ctx, /export function contextFromMessageHeaders[^]*?supportCode: newSupportCode\(\),/, 'consumers get a support code, never one from a header');
+    assert.match(ctx, /export function contextLogFields[^]*?supportCode: ctx\.supportCode/, 'every log line carries the support code');
+    assert.ok(ctx.includes('safeRequestIdOrNew(header(REQUEST_ID_HEADER))'), 'message headers keep the plain-id rule (P3-R2)');
+    const fields = s.file('log-fields.ts');
+    for (const field of ['supportCode', 'upstreamErrorNumber', 'upstreamSupportCode', 'upstreamRequestId']) assert.ok(fields.includes(`  ${field}?: string;`), `CallLogLine.${field}`);
+    const env = s.file('env.ts');
+    assert.ok(env.includes('@Matches(/^\\d{2}$/)\n  SERVICE_NUMBER!: string;'), 'SERVICE_NUMBER: two digits, required');
+    assert.ok(env.includes('parseEnvSection(ApiEnv, raw)'), 'validateEnv checks it at boot');
+    const envSpec = s.file('env.spec.ts');
+    assert.ok(envSpec.includes("SERVICE_NUMBER: '7'") && envSpec.includes("toThrow(/^Invalid environment: SERVICE_NUMBER$/)"));
+    const spec = s.file('request-context.spec.ts');
+    for (const needle of ['toMatch(/^[A-Z]{6}$/)', 'requestIdOrNew(', 'newSupportCode()']) assert.ok(spec.includes(needle), `request-context.spec.ts missing ${needle}`);
+    assert.ok(!s.body.includes('short and plain') && s.body.includes('`requestIdOrNew`') && s.body.includes('`x-support-code`'), 'SKILL.md: a caller id is kept only as a UUID');
+    assert.ok(!/RFC 7807|problem\+json|ProblemError/.test(s.body + s.description), 'SKILL.md describes the envelope');
   });
 });
 
@@ -577,17 +755,18 @@ test('new nest SKILL.md files are at most 350 lines', async () => {
 /** The ts code block of a markdown document whose first line is `// Default location: <file>`, as in a sibling. */
 const blockAt = (md, file) => new RegExp('```ts\\n(// Default location: ' + file.replace(/[.*+?^${}()|[\]\\/]/g, '\\$&') + '\\n[\\s\\S]*?)```').exec(md)?.[1];
 
-test('nest rest-endpoint skill: request, query, response DTOs and mapper in their own files; DTOs only from the controller; pagination; RFC 7807', async () => {
+test('nest rest-endpoint skill: request, query, response DTOs and mapper in their own files; DTOs only from the controller; 0-based PageData pagination; ApiError on the envelope', async () => {
   await withRealCatalog(async (c) => {
     const s = nestSkill(c, REST);
-    for (const needle of ['SC-PREFLIGHT', 'TenantScopedRepository', 'RFC 7807', 'plainToInstance', 'excludeExtraneousValues: true', '@Type(() => Number)',
+    for (const needle of ['SC-PREFLIGHT', 'TenantScopedRepository', 'ApiError', 'toPageData(', '@ApiEnvelopeResponse(', '@Min(0)', 'plainToInstance', 'excludeExtraneousValues: true', '@Type(() => Number)',
       'supertest', 'Idempotency-Key', 'stackcrew-nest-typeorm-entity', 'stackcrew-nest-request-logging', 'ask the user']) {
       assert.ok(s.body.includes(needle), `SKILL.md missing ${needle}`);
     }
     const request = s.file('create-customer-profile.request.ts');
     assert.ok(/@IsString\(\)/.test(request) && /@Length\(/.test(request) && !/tenantId|createdBy|status/.test(request), 'request DTO: validated, no tenant, audit or status');
     const query = s.file('list-customer-profiles.query.ts');
-    assert.ok(query.includes('@Type(() => Number)') && query.includes('@Max(MAX_PAGE_SIZE)') && query.includes('@IsIn('), 'query DTO: converted numbers, page cap, sort allowlist');
+    assert.ok(query.includes('@Type(() => Number)') && query.includes('@Min(0)') && query.includes('@Max(MAX_PAGE - 1)') && query.includes('@Min(1)') && !query.includes('@Max(MAX_PAGE_SIZE)') && query.includes('@IsIn('),
+      'query DTO: converted numbers, 0-based page below MAX_PAGE, size capped by a transform, sort allowlist');
     const response = s.file('customer-profile.response.ts');
     const fields = response.match(/^\s+readonly \w+!?:/gm) ?? [];
     assert.ok(fields.length >= 4, 'response DTO fields');
@@ -603,11 +782,17 @@ test('nest rest-endpoint skill: request, query, response DTOs and mapper in thei
     const service = s.file('customer-profiles.service.ts');
     assert.ok(service.includes('private readonly profiles: CustomerProfileRepository') && !service.includes('Repository<'), 'the service uses the tenant repository');
     assert.ok(service.includes('throw new CustomerProfileNotFound()') && service.includes('toCustomerProfileResponse('));
-    assert.ok(s.file('customer-profile.errors.ts').includes('extends ProblemError'), 'domain errors are ProblemError subclasses');
+    const errors = s.file('customer-profile.errors.ts');
+    assert.ok(errors.includes('extends ApiError') && !errors.includes('ProblemError'), 'domain errors are ApiError subclasses');
+    assert.ok(errors.includes("{\n  category: 30,\n  seq: 101,\n  code: 'RESOURCE_NOT_FOUND',\n  status: 404,\n  summary: 'The resource does not exist',\n}"), 'the domain row is the common row with seq 101');
+    assert.ok(mapper.includes('toPageData(') && controller.includes('@ApiEnvelopeResponse(') && controller.includes('{ page: true }') && s.file('customer-profile-page.response.ts').includes('PageData<CustomerProfileResponse>'),
+      'the page is PageData built by the mapper and documented as the envelope');
     const unit = s.file('customer-profiles.service.spec.ts');
     assert.ok(unit.includes('jest.Mocked<Pick<CustomerProfileRepository'), 'the unit spec fakes only the repository port');
     const e2e = s.file('customer-profiles.e2e.spec.ts');
-    for (const needle of ['request(app.getHttpServer())', "'tenant-b'", '.expect(404)', '.expect(400)', 'Object.keys(', 'createTestApp(', 'http_in']) {
+    for (const needle of ['request(app.getHttpServer())', "'tenant-b'", '.expect(404)', '.expect(400)', 'Object.keys(', 'createTestApp(', 'http_in', 'success: true',
+      'pagination: expect.objectContaining({ page: 0, size: 2, totalElements: 3, totalPages: 2, hasNext: true, hasPrevious: false })', "errorCode: 'RESOURCE_NOT_FOUND'", '/^\\d{7}$/',
+      "errorCode).toBe('MALFORMED_REQUEST')", 'size: 500', 'size: 100']) {
       assert.ok(e2e.includes(needle), `e2e spec missing ${needle}`);
     }
     const rules = c.stacks.get('nestjs').rules.body;
@@ -779,8 +964,8 @@ test('nest task 8 fix round 1: channel error listener and consumer health, serve
 
     // 4. page has an upper bound
     const rest = nestSkill(c, REST);
-    assert.ok(rest.file('list-customer-profiles.query.ts').includes('@Max(MAX_PAGE)'), 'page is capped');
-    assert.ok(rest.file('customer-profiles.e2e.spec.ts').includes('{ page: 1001 }'), 'e2e covers a page over the cap');
+    assert.ok(rest.file('list-customer-profiles.query.ts').includes('@Max(MAX_PAGE - 1)'), 'page is capped');
+    assert.ok(rest.file('customer-profiles.e2e.spec.ts').includes('{ page: 1000 }'), 'e2e covers the first page over the cap');
   });
 });
 
@@ -984,4 +1169,22 @@ test('nest task 9 housekeeping: the outcome effects are always bound (no-op defa
     assert.match(table, /`kyc\.constants\.ts\.md` \| [^\n]*`KYC_OUTCOME_EFFECTS`/, 'file table: constants row');
     assert.match(table, /`kyc-verification\.service\.spec\.ts\.md` \| [^\n]*throwing side write rolls the status back/, 'file table: spec row');
   });
+});
+
+test('nest rules and skills no longer mention problem+json, RFC 7807 or ProblemError', async () => {
+  const { readdirSync, readFileSync: read, statSync } = await import('node:fs');
+  const path = await import('node:path');
+  const root = path.join(import.meta.dirname, '..', 'catalog', 'stacks', 'nestjs');
+  const files = [];
+  const walk = (dir) => { for (const name of readdirSync(dir)) { const p = path.join(dir, name); if (statSync(p).isDirectory()) walk(p); else files.push(p); } };
+  walk(root);
+  assert.ok(files.length > 20, 'the walk found the nest catalog');
+  // ProblemError: the deprecated alias lives in api-error.ts; Task 7 converts the outbound-client siblings and tightens this list
+  const aliasAllowed = (file) => file.endsWith('api-error.ts.md') || file.includes(`${path.sep}stackcrew-nest-outbound-client${path.sep}`);
+  for (const file of files) {
+    const text = read(file, 'utf8');
+    assert.ok(!text.includes('problem+json'), `${file} mentions problem+json`);
+    assert.ok(!text.includes('RFC 7807'), `${file} mentions RFC 7807`);
+    assert.ok(aliasAllowed(file) || !text.includes('ProblemError'), `${file} mentions ProblemError`);
+  }
 });

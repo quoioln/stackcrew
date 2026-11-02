@@ -3,7 +3,7 @@ Goes to `src/modules/customer-profiles/customer-profiles.service.spec.ts`.
 ```ts
 // Default location: src/modules/customer-profiles/customer-profiles.service.spec.ts
 import { Test } from '@nestjs/testing';
-import { CustomerProfileNotFound } from './customer-profile.errors';
+import { CUSTOMER_PROFILE_NOT_FOUND, CustomerProfileNotFound } from './customer-profile.errors';
 import { CustomerProfileRepository } from './customer-profile.repository';
 import { CustomerProfilesService } from './customer-profiles.service';
 import { ListCustomerProfilesQuery } from './dto/list-customer-profiles.query';
@@ -44,18 +44,28 @@ describe('CustomerProfilesService', () => {
 
   it('throws CustomerProfileNotFound when the repository finds nothing (no row, or another tenant)', async () => {
     repository.findOneBy.mockResolvedValue(null);
-    await expect(service.get(ID)).rejects.toBeInstanceOf(CustomerProfileNotFound);
+    const failure = await service.get(ID).catch((error: unknown) => error);
+    expect(failure).toBeInstanceOf(CustomerProfileNotFound);
+    expect(failure).toMatchObject({ definition: CUSTOMER_PROFILE_NOT_FOUND });
+    expect(CUSTOMER_PROFILE_NOT_FOUND).toEqual({ category: 30, seq: 101, code: 'RESOURCE_NOT_FOUND', status: 404, summary: 'The resource does not exist' });
   });
 
-  it('pages with skip and take, a stable order and the same filter for the count', async () => {
+  it('pages 0-based with skip and take, a stable order and the same filter for the count', async () => {
     repository.find.mockResolvedValue([entity()]);
     repository.count.mockResolvedValue(11);
-    const page = await service.list(query({ page: 2, size: 10, status: CustomerProfileStatus.PENDING }));
+    const page = await service.list(query({ page: 1, size: 10, status: CustomerProfileStatus.PENDING }));
     const where = { status: CustomerProfileStatus.PENDING };
     expect(repository.find).toHaveBeenCalledWith({ where, order: { createdAt: 'desc', id: 'desc' }, skip: 10, take: 10 });
     expect(repository.count).toHaveBeenCalledWith({ where });
-    expect(page).toMatchObject({ page: 2, size: 10, total: 11 });
+    expect(page.pagination).toEqual({ page: 1, size: 10, totalElements: 11, totalPages: 2, hasNext: false, hasPrevious: true });
     expect(page.items.map((item) => Object.keys(item).sort())).toEqual([RESPONSE_KEYS]);
+  });
+
+  it('answers an empty list with no pages', async () => {
+    repository.find.mockResolvedValue([]);
+    repository.count.mockResolvedValue(0);
+    expect((await service.list(query())).pagination).toEqual({ page: 0, size: 20, totalElements: 0, totalPages: 0, hasNext: false, hasPrevious: false });
+    expect(repository.find).toHaveBeenCalledWith(expect.objectContaining({ skip: 0, take: 20 }));
   });
 
   it('sorts only by an allowlisted key', async () => {

@@ -60,7 +60,7 @@ class VerificationServiceTest {
 
 ## 5. Controller tests
 
-- Cover validation failure (400 and a `ProblemDetail` body), not found, forbidden, and the happy path with the exact response record.
+- Cover validation failure (400, `$.error.errorCode` `VALIDATION_FAILED` and the `details` fields and codes), not found, forbidden, a delete (200, `$.data` null), and the happy path with the exact response record in `$.data`.
 - Use `@MockitoBean` on Spring Boot 3.4+, `@MockBean` before that.
 
 ## 6. Before you finish

@@ -153,3 +153,20 @@ test('cross-stack content has no banned phrases and bounded essentials', async (
     }
   });
 });
+
+test('core rules define the common envelope, not problem+json', async () => {
+  await withRealCatalog(async (c) => {
+    const rule = (id) => c.coreRules.find((r) => r.id === id);
+    const api = rule('core-backend-api');
+    const err = rule('core-error-handling');
+    const sec = rule('core-security');
+    const both = `${api.body}\n${err.body}`;
+    for (const banned of ['RFC 7807', 'problem+json']) assert.ok(!both.includes(banned), `${banned} must be gone`);
+    for (const needle of ['success', 'data', 'error', 'errorNumber', 'errorCode', 'supportCode', 'requestId', 'SSCCNNN', '200', '204']) {
+      assert.ok(both.includes(needle), `core api/error rules mention ${needle}`);
+    }
+    assert.ok(bullets(api.essentials) <= 15, 'backend-api essentials');
+    assert.ok(bullets(err.essentials) <= 15, 'error-handling essentials');
+    assert.ok(sec.body.includes('x-support-code'), 'security CORS line exposes x-support-code');
+  });
+});

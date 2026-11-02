@@ -21,10 +21,15 @@ export type CallLogLine = {
   reqBody?: string;
   resBody?: string;
   requestId?: string;
+  supportCode?: string;
   userId?: string;
   tenantId?: string;
   traceId?: string;
   spanId?: string;
+  /** http_out, when another internal service answered with an envelope: its errorNumber, supportCode and requestId. */
+  upstreamErrorNumber?: string;
+  upstreamSupportCode?: string;
+  upstreamRequestId?: string;
 };
 
 export type LogLevel = 'log' | 'warn' | 'error';

@@ -202,7 +202,7 @@ describe('kyc.completed consumer (e2e: RabbitMQ and Postgres in Testcontainers)'
   it('applies a duplicate delivery once; the producer sends the three context headers', async () => {
     const profileId = await seedProfile('tenant-a');
     const message = kycCompleted(profileId);
-    const context: RequestContext = { requestId: 'req-dup', tenantId: 'tenant-a', userId: 'kyc-service', roles: [] };
+    const context: RequestContext = { requestId: 'req-dup', supportCode: 'QAZWSX', tenantId: 'tenant-a', userId: 'kyc-service', roles: [] };
     await app.get(MessagePublisher).publish(exchange, routingKey, message, context);
     await app.get(MessagePublisher).publish(exchange, routingKey, message, context); // the duplicate: same messageId
     // with prefetch > 1 both deliveries run concurrently, so wait for both outcomes (a later message proves nothing)

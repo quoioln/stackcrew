@@ -3,6 +3,7 @@ Goes to `src/main/java`, package `{{sc:basePackage}}.common.logging`, as `LogFie
 ```java
 package {{sc:basePackage}}.common.logging;
 
+import java.security.SecureRandom;
 import java.util.UUID;
 import java.util.regex.Pattern;
 
@@ -25,25 +26,60 @@ public final class LogFields {
     public static final String ERROR = "error";
     public static final String REQ_BODY = "reqBody";
     public static final String RES_BODY = "resBody";
+    /** http_out, when another internal service answered with an envelope: its errorNumber, supportCode and requestId. */
+    public static final String UPSTREAM_ERROR_NUMBER = "upstreamErrorNumber";
+    public static final String UPSTREAM_SUPPORT_CODE = "upstreamSupportCode";
+    public static final String UPSTREAM_REQUEST_ID = "upstreamRequestId";
 
     /** MDC keys; traceId and spanId come from Micrometer Tracing. */
     public static final String REQUEST_ID = "requestId";
     public static final String USER_ID = "userId";
     public static final String TENANT_ID = "tenantId";
+    public static final String SUPPORT_CODE = "supportCode";
 
     /** Header names shared by HTTP and messages. */
     public static final String REQUEST_ID_HEADER = "x-request-id";
     public static final String TENANT_ID_HEADER = "x-tenant-id";
     public static final String USER_ID_HEADER = "x-user-id";
+    /** Response only: a support code is never read from a request. */
+    public static final String SUPPORT_CODE_HEADER = "x-support-code";
 
-    /** A request id from outside is kept only when it is short and plain. */
+    /** Request attributes set by HttpLoggingFilter before the chain; the error envelope reads them from the request. */
+    public static final String REQUEST_ID_ATTRIBUTE = LogFields.class.getName() + ".requestId";
+    public static final String SUPPORT_CODE_ATTRIBUTE = LogFields.class.getName() + ".supportCode";
+
+    /** A message-header request id from outside is kept only when it is short and plain. */
     private static final Pattern SAFE_REQUEST_ID = Pattern.compile("[A-Za-z0-9._-]{1,64}");
     /** A tenant or user id from outside: visible ASCII only (no spaces, no CR/LF), at most 128 characters. */
     private static final Pattern SAFE_ID = Pattern.compile("\\p{Graph}{1,128}");
 
+    private static final SecureRandom RANDOM = new SecureRandom();
+    private static final int SUPPORT_CODE_LENGTH = 6;
+
     private LogFields() {}
 
-    /** The caller's request id when it is safe to log, else a new UUID. */
+    /** The caller's HTTP request id when it parses as a UUID (returned in canonical form), else a new random UUID. */
+    public static String requestIdOrNew(String incoming) {
+        if (incoming != null && incoming.length() == 36) {
+            try {
+                return UUID.fromString(incoming).toString();
+            } catch (IllegalArgumentException notAUuid) {
+                // falls through to a new id
+            }
+        }
+        return UUID.randomUUID().toString();
+    }
+
+    /** Six letters A-Z, drawn unbiased with SecureRandom.nextInt(26). A new one per request, never read from a header. */
+    public static String newSupportCode() {
+        StringBuilder code = new StringBuilder(SUPPORT_CODE_LENGTH);
+        for (int i = 0; i < SUPPORT_CODE_LENGTH; i++) {
+            code.append((char) ('A' + RANDOM.nextInt(26)));
+        }
+        return code.toString();
+    }
+
+    /** For message headers: the sender's request id when it is safe to log, else a new UUID. HTTP uses requestIdOrNew. */
     public static String safeRequestIdOrNew(String incoming) {
         return incoming != null && SAFE_REQUEST_ID.matcher(incoming).matches() ? incoming : UUID.randomUUID().toString();
     }

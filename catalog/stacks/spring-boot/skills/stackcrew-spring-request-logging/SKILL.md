@@ -15,8 +15,8 @@ Search the codebase and the shared libraries ({{sc:sharedLibraries}}) for `BodyM
 |---|---|
 | `MaskingProperties.java.md` | `@ConfigurationProperties("app.logging")`: `mask-fields`, `max-body-bytes`, `log-bodies`. |
 | `BodyMasker.java.md` | The masker: `String mask(byte[] body, String contentType)` and `placeholder(contentType, size)`. |
-| `LogFields.java.md` | Field, MDC and header names (`event`, `reqBody`, `requestId`, `x-tenant-id`...), and `warnLineNotWritten`, the last-resort warning. |
-| `HttpLoggingFilter.java.md` | `OncePerRequestFilter` with `ContentCachingRequestWrapper` and the response wrapper below: one `http_in` line, MDC `requestId`, `userId`, `tenantId`; its nested `UserMdc` filter fills the user after authentication. |
+| `LogFields.java.md` | Field, MDC, header and request-attribute names (`event`, `reqBody`, `requestId`, `supportCode`, `x-tenant-id`...), `requestIdOrNew`, `newSupportCode`, and `warnLineNotWritten`, the last-resort warning. |
+| `HttpLoggingFilter.java.md` | `OncePerRequestFilter` with `ContentCachingRequestWrapper` and the response wrapper below: one `http_in` line, MDC `requestId`, `supportCode`, `userId`, `tenantId`; its nested `UserMdc` filter fills the user after authentication. |
 | `TeeResponseWrapper.java.md` | Write-through response wrapper: every byte and header goes straight to the client; a JSON or form body is also copied, up to 2 MiB, for masking; everything else is only counted. |
 | `LoggingClientInterceptor.java.md` | `ClientHttpRequestInterceptor`: one `http_out` line per outbound call. |
 | `LoggingConfig.java.md` | The beans; keeps the filter out of the plain servlet chain. |
@@ -72,13 +72,13 @@ public class SecurityConfig {
 ```
 
 - `addFilterBefore(..., CorsFilter.class)`: the filter runs before CORS and authentication, so every request gets its line, including a 403 for a disallowed origin, a 401 for an invalid or expired token, and a 403 from authorization. The security context is still filled when the line is written, so the line carries `userId` and `tenantId` when the caller was authenticated. `CorsFilter` is `org.springframework.web.filter.CorsFilter`; the position holds even without `.cors(...)`.
-- `HttpLoggingFilter.UserMdc` after `BearerTokenAuthenticationFilter` puts `userId` and `tenantId` in MDC for every log line of the request and removes them in `finally`. `HttpLoggingFilter` removes `requestId`, `userId` and `tenantId` in an outer `finally`, so a client abort cannot leave them on a pooled thread.
+- `HttpLoggingFilter.UserMdc` after `BearerTokenAuthenticationFilter` puts `userId` and `tenantId` in MDC for every log line of the request and removes them in `finally`. `HttpLoggingFilter` removes `requestId`, `supportCode`, `userId` and `tenantId` in an outer `finally`, so a client abort cannot leave them on a pooled thread.
 - `LoggingConfig` disables the automatic servlet registration of the filter bean; keep that, or it runs outside the security chain.
 - The line: `event=http_in`, `method`, `route` (the templated pattern such as `/verifications/{id}`, `UNMATCHED` when no handler matched), `status`, `durationMs`, `reqBody`, `resBody`, and `error` with the exception class when one escaped (logged as 500). INFO for 2xx/3xx, WARN for 4xx, ERROR for 5xx. `traceId` and `spanId` come from Micrometer Tracing's MDC.
 - Async handlers (`Callable`, `DeferredResult`, SSE, `StreamingResponseBody`) log once, when the async dispatch completes. Only `/actuator` is skipped.
 - The response is never held back. `TeeResponseWrapper` writes every byte and header straight to the client, so `Content-Length`, `Content-Disposition`, flushes and SSE behave as without logging, at any size. Only a JSON, `*+json` or form body of a non-streaming request is also copied (up to 2 MiB) and masked. Everything else (images, PDF, zip, video, CSV, octet-stream, SSE, `StreamingResponseBody`, bodies above 2 MiB) logs `<CT N bytes>` or `<binary CT N bytes>` with the counted size. The choice is made at the first write, when the content type is set.
 - Request bodies are cached up to 2 MiB so a base64 image can be measured; larger ones, and bodies the handler never read, log `<CT N bytes>` from `Content-Length` (a `long`). A chunked request (no `Content-Length`) that fills the 2 MiB cache has an unknown size and logs `<CT 2097152+ bytes>`.
-- A caller's `x-request-id` is kept only when it is short and plain (`LogFields.safeRequestIdOrNew`); otherwise a new UUID is used.
+- Correlation: a caller's `x-request-id` is kept only when it is a UUID (`LogFields.requestIdOrNew`); anything else is replaced by a new UUID. `supportCode` is six letters A-Z drawn per request (`LogFields.newSupportCode`) and is never read from a request. The filter stores both in the request attributes `LogFields.REQUEST_ID_ATTRIBUTE` and `LogFields.SUPPORT_CODE_ATTRIBUTE` (the error envelope reads them there), in MDC, and sets the response headers `x-request-id` and `x-support-code` before the chain runs, so a 401 or 403 from the security chain carries them. An async re-dispatch reuses the ids. Message headers keep the lenient `safeRequestIdOrNew` (section 6).
 
 ## 5. Outbound: one interceptor per client, on a buffering factory
 
@@ -92,19 +92,20 @@ RestClient client = builder.clone().baseUrl(baseUrl)
 ```
 
 - `BufferingClientHttpRequestFactory` is required: the interceptor reads the response body to log it, and without buffering the caller then reads an empty body. Set it after any other `requestFactory(...)` call on the builder, since the last one wins.
-- `target` is the service or provider code. The line: `event=http_out`, `target`, `method`, `url` (scheme, host, port and path; no query string, no user info), `status`, `durationMs`, `reqBody`, `resBody`, or `error` with the exception class on an I/O failure. A response body that breaks off while it is read still gives one line, with the status and `error` and no `resBody`.
+- `target` is the service or provider code. The line: `event=http_out`, `target`, `method`, `url` (scheme, host, port and path; no query string, no user info), `status`, `durationMs`, `reqBody`, `resBody`, or `error` with the exception class on an I/O failure. When the response is another internal service's envelope, the line also has `upstreamErrorNumber`, `upstreamSupportCode` and `upstreamRequestId` (each checked before it is written). A response body that breaks off while it is read still gives one line, with the status and `error` and no `resBody`.
 - On Boot 3.0 and 3.1 (no `RestClient`), add the same interceptor to `RestTemplateBuilder` with `.requestFactory(() -> new BufferingClientHttpRequestFactory(...))`.
 - Adapters, services and controllers never log bodies themselves.
 
 ## 6. Message consumers
 
-Producers send the headers `x-request-id`, `x-tenant-id` and `x-user-id` (`LogFields.*_HEADER`). A consumer checks them (`LogFields.safeRequestIdOrNew`, `safeIdOrNull`: an unsafe tenant or user counts as absent), puts them in MDC, logs one `message_in` line with the payload through the same masker, runs the handler inside `TenantContext.runAs` (skill `stackcrew-spring-jpa-entity`), and clears MDC on every exit path. `runAs` never grants the system identity, so `x-user-id: {{sc:systemUser}}` cannot read across tenants. The Kafka version is in `stackcrew-spring-kafka-consumer` (`ConsumerMdc`); any other broker follows the same shape:
+Producers send the headers `x-request-id`, `x-tenant-id` and `x-user-id` (`LogFields.*_HEADER`). A consumer checks them (`LogFields.safeRequestIdOrNew`, `safeIdOrNull`: an unsafe tenant or user counts as absent), puts them in MDC, mints its own `supportCode` (`LogFields.newSupportCode()`, never read from a header), logs one `message_in` line with the payload through the same masker, runs the handler inside `TenantContext.runAs` (skill `stackcrew-spring-jpa-entity`), and clears MDC on every exit path. `runAs` never grants the system identity, so `x-user-id: {{sc:systemUser}}` cannot read across tenants. The Kafka version is in `stackcrew-spring-kafka-consumer` (`ConsumerMdc`); any other broker follows the same shape:
 
 ```java
 void onMessage(String payload, String requestIdHeader, String tenantIdHeader, String userIdHeader) {
     String tenantId = LogFields.safeIdOrNull(tenantIdHeader);
     String userId = LogFields.safeIdOrNull(userIdHeader);
     MDC.put(LogFields.REQUEST_ID, LogFields.safeRequestIdOrNew(requestIdHeader));
+    MDC.put(LogFields.SUPPORT_CODE, LogFields.newSupportCode());   // minted here: a support code is never read from a header
     if (tenantId != null) { MDC.put(LogFields.TENANT_ID, tenantId); }
     if (userId != null) { MDC.put(LogFields.USER_ID, userId); }
     try {
@@ -118,6 +119,7 @@ void onMessage(String payload, String requestIdHeader, String tenantIdHeader, St
         TenantContext.runAs(tenantId, userId, () -> handler.handle(codec.read(payload)));
     } finally {
         MDC.remove(LogFields.REQUEST_ID);
+        MDC.remove(LogFields.SUPPORT_CODE);
         MDC.remove(LogFields.TENANT_ID);
         MDC.remove(LogFields.USER_ID);
     }

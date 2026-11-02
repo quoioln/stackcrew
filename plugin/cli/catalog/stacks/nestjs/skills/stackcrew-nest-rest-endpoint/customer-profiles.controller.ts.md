@@ -3,11 +3,12 @@ Goes to `src/modules/customer-profiles/customer-profiles.controller.ts`.
 ```ts
 // Default location: src/modules/customer-profiles/customer-profiles.controller.ts
 import { Body, Controller, Get, Param, ParseUUIDPipe, Post, Query } from '@nestjs/common';
-import { ApiCreatedResponse, ApiOkResponse, ApiTags } from '@nestjs/swagger';
+import { ApiTags } from '@nestjs/swagger';
+import { ApiEnvelopeResponse } from '../../common/api/api-envelope-response.decorator';
 import { CustomerProfilesService } from './customer-profiles.service';
 // value imports, not `import type`: the ValidationPipe reads these classes from the decorator metadata
 import { CreateCustomerProfileRequest } from './dto/create-customer-profile.request';
-import { CustomerProfilePageResponse } from './dto/customer-profile-page.response';
+import type { CustomerProfilePageResponse } from './dto/customer-profile-page.response';
 import { CustomerProfileResponse } from './dto/customer-profile.response';
 import { ListCustomerProfilesQuery } from './dto/list-customer-profiles.query';
 
@@ -16,8 +17,8 @@ const CUSTOMER_PROFILES_TAG = 'customer-profiles';
 const ID = 'id';
 
 /**
- * Thin: each handler maps HTTP to one service call and returns its response DTO. The tenant comes from the token
- * (request context), never from a parameter; errors become RFC 7807 responses in AllExceptionsFilter.
+ * Thin: each handler maps HTTP to one service call and returns its data, never an envelope: TransformInterceptor wraps it
+ * and AllExceptionsFilter answers the errors. The tenant comes from the token (request context), never from a parameter.
  */
 @ApiTags(CUSTOMER_PROFILES_TAG)
 @Controller(CUSTOMER_PROFILES_PATH)
@@ -25,19 +26,19 @@ export class CustomerProfilesController {
   constructor(private readonly service: CustomerProfilesService) {}
 
   @Get()
-  @ApiOkResponse({ type: CustomerProfilePageResponse })
+  @ApiEnvelopeResponse(CustomerProfileResponse, { page: true })
   list(@Query() query: ListCustomerProfilesQuery): Promise<CustomerProfilePageResponse> {
     return this.service.list(query);
   }
 
   @Get(`:${ID}`)
-  @ApiOkResponse({ type: CustomerProfileResponse })
+  @ApiEnvelopeResponse(CustomerProfileResponse)
   get(@Param(ID, ParseUUIDPipe) id: string): Promise<CustomerProfileResponse> {
     return this.service.get(id);
   }
 
   @Post()
-  @ApiCreatedResponse({ type: CustomerProfileResponse })
+  @ApiEnvelopeResponse(CustomerProfileResponse, { status: 201 })
   create(@Body() request: CreateCustomerProfileRequest): Promise<CustomerProfileResponse> {
     return this.service.create(request);
   }

@@ -39,7 +39,6 @@ public class HttpLoggingFilter extends OncePerRequestFilter {
 
     private static final Logger log = LoggerFactory.getLogger(HttpLoggingFilter.class);
     private static final String START_ATTRIBUTE = HttpLoggingFilter.class.getName() + ".start";
-    private static final String REQUEST_ID_ATTRIBUTE = HttpLoggingFilter.class.getName() + ".requestId";
     /** JSON and form bodies are parsed whole so base64 images shrink to their size; above this they log a size placeholder. */
     private static final int CAPTURE_LIMIT_BYTES = 2 * 1024 * 1024;
     private static final String UNMATCHED_ROUTE = "UNMATCHED";
@@ -82,6 +81,11 @@ public class HttpLoggingFilter extends OncePerRequestFilter {
         }
         try {
             putRequestContext(request);
+            if (firstDispatch) {
+                // before the chain: a rejection from the security filters carries them too
+                response.setHeader(LogFields.REQUEST_ID_HEADER, request.getAttribute(LogFields.REQUEST_ID_ATTRIBUTE).toString());
+                response.setHeader(LogFields.SUPPORT_CODE_HEADER, request.getAttribute(LogFields.SUPPORT_CODE_ATTRIBUTE).toString());
+            }
             Throwable failure = null;
             try {
                 chain.doFilter(request, response);
@@ -96,6 +100,7 @@ public class HttpLoggingFilter extends OncePerRequestFilter {
         } finally {
             // every exit path: a pooled thread must not keep this request's ids
             MDC.remove(LogFields.REQUEST_ID);
+            MDC.remove(LogFields.SUPPORT_CODE);
             MDC.remove(LogFields.USER_ID);
             MDC.remove(LogFields.TENANT_ID);
         }
@@ -170,11 +175,20 @@ public class HttpLoggingFilter extends OncePerRequestFilter {
         return written == 0 ? null : masker.placeholder(response.getContentType(), written);
     }
 
+    /**
+     * The ids of this request: a UUID request id (the caller's when it is one) and a fresh supportCode that is never read
+     * from the request. They go in request attributes (the error envelope reads them there) and in MDC; doFilterInternal
+     * writes them as response headers before the chain runs. An async re-dispatch reuses the ids found in the attributes.
+     */
     private static void putRequestContext(HttpServletRequest request) {
-        Object known = request.getAttribute(REQUEST_ID_ATTRIBUTE);
-        String requestId = known != null ? known.toString() : LogFields.safeRequestIdOrNew(request.getHeader(LogFields.REQUEST_ID_HEADER));
-        request.setAttribute(REQUEST_ID_ATTRIBUTE, requestId);
+        Object knownRequestId = request.getAttribute(LogFields.REQUEST_ID_ATTRIBUTE);
+        Object knownSupportCode = request.getAttribute(LogFields.SUPPORT_CODE_ATTRIBUTE);
+        String requestId = knownRequestId != null ? knownRequestId.toString() : LogFields.requestIdOrNew(request.getHeader(LogFields.REQUEST_ID_HEADER));
+        String supportCode = knownSupportCode != null ? knownSupportCode.toString() : LogFields.newSupportCode();
+        request.setAttribute(LogFields.REQUEST_ID_ATTRIBUTE, requestId);
+        request.setAttribute(LogFields.SUPPORT_CODE_ATTRIBUTE, supportCode);
         MDC.put(LogFields.REQUEST_ID, requestId);
+        MDC.put(LogFields.SUPPORT_CODE, supportCode);
         putUserContext();
     }
 

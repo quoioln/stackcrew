@@ -5,7 +5,9 @@ Goes to `src/common/logging/http-logging.middleware.ts`.
 import { Logger, type RawBodyRequest } from '@nestjs/common';
 import type { NextFunction, Request, RequestHandler, Response } from 'express';
 import type { IncomingMessage, ServerResponse } from 'node:http';
-import { activeTraceFields, bindRequestContext, requestContextOf, REQUEST_ID_HEADER, safeRequestIdOrNew } from '../context/request-context';
+import {
+  activeTraceFields, bindRequestContext, newSupportCode, requestContextOf, REQUEST_ID_HEADER, requestIdOrNew, SUPPORT_CODE_HEADER,
+} from '../context/request-context';
 import { bodyPlaceholder, CAPTURE_LIMIT_BYTES, isMaskable, loadLogBodies, loadMaskOptions, maskBody, type MaskOptions } from './body-masker';
 import { elapsedMs, LogEvent, writeCallLine, type CallLogLine } from './log-fields';
 
@@ -41,6 +43,11 @@ export function recordRouteTemplate(req: Request): void {
   }
 }
 
+/** True once a handler's route matched (RouteTemplateGuard ran): body parsing and routing are behind the request. */
+export function routeMatched(req: IncomingMessage): boolean {
+  return routeTemplates.has(req);
+}
+
 /**
  * One http_in line per request (core-logging), written once when the response finishes or the connection closes.
  * Register it in setupApp with app.use(), before app.init(): it then runs ahead of Nest's body parsers, CORS and every
@@ -60,9 +67,13 @@ export function httpLoggingMiddleware(skippedPaths: readonly string[] = SKIPPED_
       return;
     }
     const started = process.hrtime.bigint();
-    const requestId = safeRequestIdOrNew(req.header(REQUEST_ID_HEADER));
+    const requestId = requestIdOrNew(req.header(REQUEST_ID_HEADER)); // a caller's id only when it is a UUID
+    const supportCode = newSupportCode();
     const traceFields = activeTraceFields(); // the server span of OpenTelemetry's HTTP instrumentation, when there is one
-    bindRequestContext(req, { requestId, roles: [] });
+    bindRequestContext(req, { requestId, supportCode, roles: [] });
+    // before next(): a guard's 401, a parser error or an unknown route answers with the same ids as its body
+    res.setHeader(REQUEST_ID_HEADER, requestId);
+    res.setHeader(SUPPORT_CODE_HEADER, supportCode);
     const tee = teeResponse(res);
     let written = false;
     const writeLine = (): void => {
@@ -81,6 +92,7 @@ export function httpLoggingMiddleware(skippedPaths: readonly string[] = SKIPPED_
           durationMs: elapsedMs(started),
           error: aborted ? CLIENT_ABORT : failures.get(res),
           requestId,
+          supportCode,
           userId: ctx?.userId, // set explicitly, even when undefined, so a log mixin cannot fill them from another context
           tenantId: ctx?.tenantId,
           ...traceFields,

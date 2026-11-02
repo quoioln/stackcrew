@@ -8,7 +8,8 @@ categories: [backend, fullstack]
 ## Essentials
 
 - Version the API (`/v1`); never ship a breaking change without a version bump, and give deprecations a `Sunset` header and timeline.
-- Return errors as RFC 7807 `application/problem+json` with semantically correct status codes (404 vs 403 vs 409 vs 422).
+- Answer every endpoint with the common envelope (`success`, `data` | `error`) and semantically correct status codes (404 vs 403 vs 409 vs 422). Success returns `data` only, no `message`, with `200` or `201`, never `204` (a handler that returns nothing yields `data: null`).
+- Controllers return data or throw; one shared layer wraps the result, so no handler builds an envelope by hand.
 - Bind requests through DTOs or field allowlists; never map a request body straight onto an entity (mass assignment).
 - Require an Idempotency-Key on non-idempotent endpoints such as creation and payments.
 - Call downstreams with a timeout, retry with exponential backoff and jitter, a circuit breaker and a bulkhead.

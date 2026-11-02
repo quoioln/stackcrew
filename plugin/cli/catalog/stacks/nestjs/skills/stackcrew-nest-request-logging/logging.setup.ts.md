@@ -11,7 +11,7 @@ import { httpLoggingMiddleware, SKIPPED_PATHS } from './http-logging.middleware'
 /**
  * pino-http options for LoggerModule.forRootAsync. autoLogging is off: the logging middleware writes the one http_in
  * line, and pino-http would add a second. quietReqLogger keeps the request object (and its Authorization and cookie
- * headers) off every line; the mixin adds requestId, userId, tenantId, traceId and spanId from the request context.
+ * headers) off every line; the mixin adds requestId, supportCode, userId, tenantId, traceId and spanId from the request context.
  */
 export function pinoHttpOptions(level: string): Options {
   return {

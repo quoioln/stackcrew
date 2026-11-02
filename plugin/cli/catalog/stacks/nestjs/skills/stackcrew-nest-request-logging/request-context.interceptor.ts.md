@@ -5,7 +5,7 @@ Goes to `src/common/context/request-context.interceptor.ts`.
 import { CallHandler, ExecutionContext, Injectable, NestInterceptor } from '@nestjs/common';
 import type { IncomingMessage } from 'node:http';
 import { Observable } from 'rxjs';
-import { requestContextOf, runWithRequestContext, safeRequestIdOrNew } from './request-context';
+import { requestContextOf, requestIdsOf, runWithRequestContext } from './request-context';
 
 /**
  * Global (APP_INTERCEPTOR): runs the pipes, the handler and everything it awaits inside the request's context, which
@@ -19,7 +19,7 @@ export class RequestContextInterceptor implements NestInterceptor {
       return next.handle();
     }
     const req = context.switchToHttp().getRequest<IncomingMessage>();
-    const ctx = requestContextOf(req) ?? { requestId: safeRequestIdOrNew(undefined), roles: [] };
+    const ctx = requestContextOf(req) ?? { ...requestIdsOf(req), roles: [] }; // a skipped path: the same ids its response carries
     return new Observable<unknown>((subscriber) => runWithRequestContext(ctx, () => next.handle().subscribe(subscriber)));
   }
 }

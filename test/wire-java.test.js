@@ -310,3 +310,33 @@ test('sync --wire with a half-marker AGENTS.md aborts before ANY wiring write', 
   assert.equal(await readFile(path.join(dir, 'AGENTS.md'), 'utf8'), agents);
   assert.ok(!existsSync(path.join(dir, TEST_FILE)));
 });
+
+// The real spring-boot wire template (this file's other tests run against catalog-mini).
+const SPRING_WIRE = fileURLToPath(new URL('../catalog/stacks/spring-boot/wire/StackcrewArchitectureTest.java', import.meta.url));
+
+test('wire template declares SC-ENVELOPE as an @ArchTest method', async () => {
+  const content = await readFile(SPRING_WIRE, 'utf8');
+  const method = content.split('static void rest_controllers_answer_with_the_envelope(JavaClasses classes) {')[1];
+  assert.ok(method, 'SC-ENVELOPE method present');
+  assert.match(content, /\* SC-ENVELOPE: [^\n]*\n[\s\S]*?\*\/\n {4}@ArchTest\n {4}static void rest_controllers_answer_with_the_envelope\(JavaClasses classes\) \{\n {8}freeze\(methods\(\)/,
+    'a documented, frozen @ArchTest method');
+  const rule = method.split('.check(classes);')[0];
+  assert.ok(rule.includes('.that().areDeclaredInClassesThat().areMetaAnnotatedWith(REST_CONTROLLER)'), 'only @RestController classes');
+  assert.ok(rule.includes('.and().areMetaAnnotatedWith(REQUEST_MAPPING)'), 'only handler methods');
+  assert.ok(rule.includes('.allowEmptyShould(true)'));
+  const condition = content.split('private static ArchCondition<JavaMethod> answerWithTheEnvelope()')[1];
+  assert.ok(condition, 'condition present');
+  for (const needle of ['STRING', 'RESPONSE_STATUS', 'NO_CONTENT', 'RAW_RESPONSE']) {
+    assert.ok(condition.includes(needle), `condition uses ${needle}`);
+  }
+  for (const [name, value] of [['STRING', 'java.lang.String'], ['RESPONSE_STATUS', 'org.springframework.web.bind.annotation.ResponseStatus'],
+    ['NO_CONTENT', 'NO_CONTENT'], ['RAW_RESPONSE', '{{sc:basePackage}}.common.api.RawResponse'],
+    ['REST_CONTROLLER', 'org.springframework.web.bind.annotation.RestController'], ['REQUEST_MAPPING', 'org.springframework.web.bind.annotation.RequestMapping']]) {
+    assert.ok(content.includes(`private static final String ${name} = "${value}";`), `constant ${name}`);
+  }
+  // NO_CONTENT is checked before the @RawResponse exemption, so it stays banned on raw handlers too
+  assert.ok(condition.indexOf('isNoContent(methodStatus)') < condition.indexOf('if (raw)'));
+  assert.ok(condition.indexOf('if (raw)') < condition.indexOf('returnsString(method)'));
+  assert.ok(content.includes('import static com.tngtech.archunit.lang.syntax.ArchRuleDefinition.methods;'));
+  assert.equal(content.split('{').length, content.split('}').length, 'braces balance');
+});

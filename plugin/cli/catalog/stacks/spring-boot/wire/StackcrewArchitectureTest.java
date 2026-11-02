@@ -2,9 +2,12 @@ package {{sc:basePackage}}.stackcrew;
 
 import com.tngtech.archunit.ArchConfiguration;
 import com.tngtech.archunit.core.domain.JavaClass;
+import com.tngtech.archunit.core.domain.JavaAnnotation;
 import com.tngtech.archunit.core.domain.JavaClasses;
 import com.tngtech.archunit.core.domain.JavaCodeUnit;
+import com.tngtech.archunit.core.domain.JavaEnumConstant;
 import com.tngtech.archunit.core.domain.JavaField;
+import com.tngtech.archunit.core.domain.JavaMethod;
 import com.tngtech.archunit.core.domain.JavaParameterizedType;
 import com.tngtech.archunit.core.domain.JavaType;
 import com.tngtech.archunit.core.domain.JavaWildcardType;
@@ -16,9 +19,11 @@ import com.tngtech.archunit.lang.ConditionEvents;
 import com.tngtech.archunit.lang.SimpleConditionEvent;
 
 import java.util.List;
+import java.util.Optional;
 
 import static com.tngtech.archunit.library.freeze.FreezingArchRule.freeze;
 import static com.tngtech.archunit.lang.syntax.ArchRuleDefinition.classes;
+import static com.tngtech.archunit.lang.syntax.ArchRuleDefinition.methods;
 import static com.tngtech.archunit.lang.syntax.ArchRuleDefinition.noClasses;
 import static com.tngtech.archunit.lang.syntax.ArchRuleDefinition.noFields;
 
@@ -39,6 +44,13 @@ class StackcrewArchitectureTest {
     private static final String AUTOWIRED = "org.springframework.beans.factory.annotation.Autowired";
     private static final String JPA_ENTITY = "jakarta.persistence.Entity";
     private static final String BASE_ENTITY = "{{sc:baseEntity}}";
+    private static final String STRING = "java.lang.String";
+    private static final String HTTP_ENTITY = "org.springframework.http.HttpEntity";
+    private static final String REST_CONTROLLER = "org.springframework.web.bind.annotation.RestController";
+    private static final String REQUEST_MAPPING = "org.springframework.web.bind.annotation.RequestMapping";
+    private static final String RESPONSE_STATUS = "org.springframework.web.bind.annotation.ResponseStatus";
+    private static final String NO_CONTENT = "NO_CONTENT";
+    private static final String RAW_RESPONSE = "{{sc:basePackage}}.common.api.RawResponse";
 
     // Brownfield safety: every rule is frozen. Existing violations are recorded in the archunit_store
     // directory (commit it; it may only shrink) and only NEW violations fail. The store may be created
@@ -104,6 +116,22 @@ class StackcrewArchitectureTest {
     }
 
     /**
+     * SC-ENVELOPE: a @RestController handler answers through the response envelope. It fails a String return (Spring
+     * picks the String converter before the advice wraps the body), a void handler with @ResponseStatus on the method
+     * or the class (Spring then returns before any advice runs, so there is no body), and any @ResponseStatus(NO_CONTENT)
+     * (no 204: a delete answers 200 with data null). A @RawResponse method or controller may return String or use a
+     * void @ResponseStatus; NO_CONTENT stays banned there too.
+     */
+    @ArchTest
+    static void rest_controllers_answer_with_the_envelope(JavaClasses classes) {
+        freeze(methods()
+                .that().areDeclaredInClassesThat().areMetaAnnotatedWith(REST_CONTROLLER)
+                .and().areMetaAnnotatedWith(REQUEST_MAPPING)
+                .should(answerWithTheEnvelope())
+                .allowEmptyShould(true)).check(classes);
+    }
+
+    /**
      * Sanity check: the rules above allow an empty selection, so a wrong base package would make all of them pass
      * without checking anything. This fails instead when no production class was imported.
      */
@@ -147,6 +175,52 @@ class StackcrewArchitectureTest {
                 }
             }
         };
+    }
+
+    private static ArchCondition<JavaMethod> answerWithTheEnvelope() {
+        return new ArchCondition<>("answer with the response envelope") {
+            @Override
+            public void check(JavaMethod method, ConditionEvents events) {
+                JavaClass owner = method.getOwner();
+                Optional<? extends JavaAnnotation<?>> methodStatus = method.tryGetAnnotationOfType(RESPONSE_STATUS);
+                Optional<? extends JavaAnnotation<?>> classStatus = owner.tryGetAnnotationOfType(RESPONSE_STATUS);
+                boolean raw = method.isMetaAnnotatedWith(RAW_RESPONSE) || owner.isMetaAnnotatedWith(RAW_RESPONSE);
+                if (isNoContent(methodStatus) || isNoContent(classStatus)) {
+                    violated(events, method, "uses @ResponseStatus(NO_CONTENT); answer 200 with data null");
+                }
+                if (raw) {
+                    return;
+                }
+                if (returnsString(method)) {
+                    violated(events, method, "returns String, which the envelope cannot wrap; return a record or mark it @RawResponse");
+                }
+                if ("void".equals(method.getRawReturnType().getName()) && (methodStatus.isPresent() || classStatus.isPresent())) {
+                    violated(events, method, "is void with @ResponseStatus, so Spring sends no body; drop the annotation (200, data null)");
+                }
+            }
+        };
+    }
+
+    private static void violated(ConditionEvents events, JavaMethod method, String problem) {
+        events.add(SimpleConditionEvent.violated(method, method.getFullName() + " " + problem + " (SC-ENVELOPE)"));
+    }
+
+    /** @ResponseStatus has two aliases, value and code; ArchUnit reads each as declared. */
+    private static boolean isNoContent(Optional<? extends JavaAnnotation<?>> status) {
+        return status.isPresent() && List.of("value", "code").stream()
+                .map(property -> status.get().get(property))
+                .anyMatch(value -> value.isPresent() && value.get() instanceof JavaEnumConstant constant && NO_CONTENT.equals(constant.name()));
+    }
+
+    /** String, or ResponseEntity<String> / HttpEntity<String>. */
+    private static boolean returnsString(JavaMethod method) {
+        if (STRING.equals(method.getRawReturnType().getName())) {
+            return true;
+        }
+        return method.getReturnType() instanceof JavaParameterizedType parameterized
+                && parameterized.toErasure().isAssignableTo(HTTP_ENTITY)
+                && parameterized.getActualTypeArguments().size() == 1
+                && STRING.equals(parameterized.getActualTypeArguments().get(0).toErasure().getName());
     }
 
     private static void report(ConditionEvents events, JavaClass owner, String message, JavaType type) {

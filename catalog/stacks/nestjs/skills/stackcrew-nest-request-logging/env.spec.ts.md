@@ -2,7 +2,7 @@ Goes to `src/config/env.spec.ts`.
 
 ```ts
 // Default location: src/config/env.spec.ts
-import { AuthEnv, LoggingEnv, parseEnvSection, ServerEnv, TenancyEnv, validateEnv } from './env';
+import { ApiEnv, AuthEnv, LoggingEnv, parseEnvSection, ServerEnv, TenancyEnv, validateEnv } from './env';
 
 describe('environment sections', () => {
   it('converts the strings the environment holds', () => {
@@ -21,10 +21,17 @@ describe('environment sections', () => {
     expect(() => parseEnvSection(AuthEnv, { JWKS_URI: 'not a url with a secret', JWT_ISSUER: 'i' })).toThrow(/^Invalid environment: JWKS_URI, JWT_AUDIENCE$/);
   });
 
+  it('requires a two-digit SERVICE_NUMBER: the boot fails without one', () => {
+    expect(parseEnvSection(ApiEnv, { SERVICE_NUMBER: '07' }).SERVICE_NUMBER).toBe('07');
+    for (const raw of [{}, { SERVICE_NUMBER: '7' }, { SERVICE_NUMBER: '007' }, { SERVICE_NUMBER: 'ab' }, { SERVICE_NUMBER: '07\n' }]) {
+      expect(() => parseEnvSection(ApiEnv, raw)).toThrow(/^Invalid environment: SERVICE_NUMBER$/);
+    }
+  });
+
   it('requires https for the JWKS keys outside development and test', () => {
     // plus the variables of the sections other skills add to validateEnv (DatabaseEnv, KycProviderEnv, RabbitMqEnv);
     // a section the project does not have ignores them. Add the variables of every new section here.
-    const raw = { JWKS_URI: 'http://idp.internal/jwks', JWT_ISSUER: 'i', JWT_AUDIENCE: 'a', DATABASE_URL: 'postgres://db.internal/app',
+    const raw = { SERVICE_NUMBER: '07', JWKS_URI: 'http://idp.internal/jwks', JWT_ISSUER: 'i', JWT_AUDIENCE: 'a', DATABASE_URL: 'postgres://db.internal/app',
       KYC_PROVIDER_BASE_URL: 'https://kyc.example.com', KYC_PROVIDER_API_KEY: 'k', RABBITMQ_URL: 'amqp://mq.internal' };
     expect(() => validateEnv(raw)).toThrow('Invalid environment: JWKS_URI must use https outside development and test');
     expect(() => validateEnv({ ...raw, NODE_ENV: 'production' })).toThrow('JWKS_URI must use https');

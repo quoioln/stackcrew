@@ -11,7 +11,7 @@ title: Security
 - Encode output to prevent XSS.
 - Load secrets only from env, Vault or SSM, and block secret leaks with a scanner (gitleaks) at pre-commit and CI.
 - Check object-level authorization on every resource access to prevent IDOR/BOLA; "is logged in" is not enough.
-- Use a CORS allowlist, CSRF protection for cookie auth, security headers, and an SSRF guard on outbound URLs.
+- Use a CORS allowlist that exposes `x-request-id` and `x-support-code` (`Access-Control-Expose-Headers`), CSRF protection for cookie auth, security headers, and an SSRF guard on outbound URLs.
 
 ## Detail
 
