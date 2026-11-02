@@ -72,6 +72,7 @@ export class OutboundHttpLogger implements OnModuleInit {
     writeCallLine(this.logger, () => ({
       ...minimal(),
       ...contextLogFields(),
+      ...(response === undefined ? {} : upstreamIds(response.data)),
       ...(this.logBodies ? { reqBody: requestBody(config, this.opts), resBody: response && responseBody(response, this.opts) } : {}),
     }), minimal);
   }
@@ -82,6 +83,41 @@ export class OutboundHttpLogger implements OnModuleInit {
     } catch {
       return undefined; // a config axios cannot turn into a URL: the line goes out without it
     }
+  }
+}
+
+const ERROR_NUMBER = /^\d{7}$/;
+const SUPPORT_CODE = /^[A-Z]{6}$/;
+const SAFE_ID = /^[A-Za-z0-9._-]{1,64}$/;
+
+/**
+ * When the reply is another internal service's envelope, its ids go on the http_out line, so one search finds both
+ * sides. Each value comes from outside and goes into a log line: it is written only when it has the exact shape (six
+ * capitals, seven digits, a short safe id), so the other service cannot put text of its own into this one's logs. A
+ * reply that is not an envelope adds nothing.
+ */
+export function upstreamIds(data: unknown): Pick<CallLogLine, 'upstreamErrorNumber' | 'upstreamSupportCode' | 'upstreamRequestId'> {
+  const body = typeof data === 'string' && data.length <= CAPTURE_LIMIT_BYTES ? parseJson(data) : data;
+  if (typeof body !== 'object' || body === null || typeof (body as { success?: unknown }).success !== 'boolean') {
+    return {};
+  }
+  const { supportCode, requestId, error } = body as { supportCode?: unknown; requestId?: unknown; error?: unknown };
+  if (typeof supportCode !== 'string' || !SUPPORT_CODE.test(supportCode) || typeof requestId !== 'string' || !SAFE_ID.test(requestId)) {
+    return {};
+  }
+  const errorNumber = typeof error === 'object' && error !== null ? (error as { errorNumber?: unknown }).errorNumber : undefined;
+  return {
+    upstreamSupportCode: supportCode,
+    upstreamRequestId: requestId,
+    ...(typeof errorNumber === 'string' && ERROR_NUMBER.test(errorNumber) ? { upstreamErrorNumber: errorNumber } : {}),
+  };
+}
+
+function parseJson(text: string): unknown {
+  try {
+    return JSON.parse(text);
+  } catch {
+    return undefined;
   }
 }
 

@@ -2,9 +2,8 @@ Goes to `src/common/api/api-error.ts`.
 
 ```ts
 // Default location: src/common/api/api-error.ts
-import { HttpStatus } from '@nestjs/common';
 import type { ErrorDetail, ErrorPayload } from './api-response';
-import { CommonError, errorForStatus, type ErrorDefinition } from './error-codes';
+import type { ErrorDefinition } from './error-codes';
 
 /**
  * The one error a service, guard or pipe throws on purpose: a row of an error table and optional details.
@@ -28,31 +27,5 @@ export class UpstreamApiError extends Error {
     super(payload.errorCode);
     this.name = new.target.name;
   }
-}
-
-/**
- * @deprecated Kept only while older domain errors still declare `status` and `detail`; extend ApiError with an
- * ErrorDefinition instead. The detail is ignored: the body carries the table summary of the row the status stands for.
- */
-export abstract class ProblemError extends ApiError {
-  abstract readonly status: HttpStatus;
-  abstract readonly detail: string;
-
-  constructor() {
-    super(CommonError.INTERNAL_ERROR);
-    // the subclass's status does not exist yet: the row is looked up when the filter reads it
-    Object.defineProperty(this, 'definition', { get: () => problemDefinition(this) });
-  }
-}
-
-const PROBLEM_ROWS: ReadonlyMap<number, ErrorDefinition> = new Map<number, ErrorDefinition>([
-  [HttpStatus.NOT_FOUND, CommonError.RESOURCE_NOT_FOUND],
-  [HttpStatus.BAD_GATEWAY, CommonError.BAD_GATEWAY],
-  [HttpStatus.SERVICE_UNAVAILABLE, CommonError.DEPENDENCY_UNAVAILABLE],
-]);
-
-/** @deprecated The row a ProblemError's status stands for: a missing row, a conflict, a provider failure. */
-function problemDefinition(error: ProblemError): ErrorDefinition {
-  return PROBLEM_ROWS.get(error.status) ?? errorForStatus(error.status);
 }
 ```

@@ -7,6 +7,7 @@ import { ConfigModule } from '@nestjs/config';
 import { Test, type TestingModule } from '@nestjs/testing';
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
 import type { AddressInfo } from 'node:net';
+import { CommonError } from '../../../common/api/error-codes';
 import { runWithRequestContext } from '../../../common/context/request-context';
 import type { ProviderPolicyOptions } from '../../../common/providers/provider-policy.types';
 import { KycProviderEnv, parseEnvSection } from '../../../config/env';
@@ -116,7 +117,9 @@ describe('AcmeKycClient (against a local provider stub, never the real provider)
 
   it('gives up with ProviderUnavailableError after the first attempt and maxRetries retries', async () => {
     replies.push({ status: 500, body: '{}' }, { status: 502, body: '{}' }, { status: 500, body: '{}' });
-    await expect(provider.verify(COMMAND)).rejects.toBeInstanceOf(ProviderUnavailableError);
+    const error: unknown = await provider.verify(COMMAND).then(() => undefined, (rejected: unknown) => rejected);
+    expect(error).toBeInstanceOf(ProviderUnavailableError);
+    expect(error).toMatchObject({ definition: CommonError.DEPENDENCY_UNAVAILABLE, details: [] }); // 503 on this service's own group-80 row
     expect(hits).toHaveLength(FAST_POLICY.maxRetries + 1);
   });
 
@@ -157,7 +160,10 @@ describe('AcmeKycClient (against a local provider stub, never the real provider)
 
   it.each([400, 404, 422])('does not retry a %i: ProviderRejectedError after one call', async (status) => {
     replies.push({ status, body: '{"error":"bad request","idNumber":"079201001234"}' });
-    await expect(provider.verify(COMMAND)).rejects.toBeInstanceOf(ProviderRejectedError);
+    const error: unknown = await provider.verify(COMMAND).then(() => undefined, (rejected: unknown) => rejected);
+    expect(error).toBeInstanceOf(ProviderRejectedError);
+    expect(error).toMatchObject({ definition: CommonError.BAD_GATEWAY }); // 502; nothing of the provider's body is on the error
+    expect(JSON.stringify(error)).not.toContain('bad request');
     expect(hits).toHaveLength(1);
     expect(lines[0].resBody).toBe('{"error":"bad request","idNumber":"***"}');
   });
@@ -168,7 +174,9 @@ describe('AcmeKycClient (against a local provider stub, never the real provider)
     ['an unknown result code', JSON.stringify({ resultCode: 'MAYBE', matchScore: 10, transactionId: 'acme-tx-1' })],
   ])('rejects a reply with %s as ProviderProtocolError, without retrying', async (_case, body) => {
     replies.push(ok(body));
-    await expect(provider.verify(COMMAND)).rejects.toBeInstanceOf(ProviderProtocolError);
+    const error: unknown = await provider.verify(COMMAND).then(() => undefined, (rejected: unknown) => rejected);
+    expect(error).toBeInstanceOf(ProviderProtocolError);
+    expect(error).toMatchObject({ definition: CommonError.BAD_GATEWAY });
     expect(hits).toHaveLength(1);
   });
 

@@ -821,7 +821,8 @@ test('nest outbound-client skill: typed DTOs, ACL mapper, HttpService with timeo
     assert.ok(/@IsString\(\)/.test(dto) && !/:\s*any\b/.test(dto), 'typed provider DTOs');
     const errors = s.file('provider.errors.ts');
     for (const name of ['ProviderUnavailableError', 'ProviderRejectedError', 'ProviderProtocolError']) assert.match(errors, new RegExp(`class ${name} extends ProviderError`));
-    assert.ok(errors.includes('extends ProblemError'), 'provider errors map through AllExceptionsFilter');
+    assert.ok(errors.includes('extends ApiError') && errors.includes('CommonError.DEPENDENCY_UNAVAILABLE') && errors.includes('CommonError.BAD_GATEWAY') && !errors.includes('ProblemError'),
+      'provider errors are ApiErrors on the group-80 rows, so AllExceptionsFilter answers them');
     const mod = s.file('kyc.module.ts');
     for (const needle of ['HttpModule.registerAsync(', 'maxRedirects: 0', 'timeout:', '...outboundHttpLogging(KYC_PROVIDER_TARGET)', '{ provide: KycProvider, useClass: AcmeKycClient }']) {
       assert.ok(mod.includes(needle), `kyc.module.ts missing ${needle}`);
@@ -833,6 +834,38 @@ test('nest outbound-client skill: typed DTOs, ACL mapper, HttpService with timeo
       assert.ok(spec.includes(needle), `client spec missing ${needle}`);
     }
   });
+});
+
+test('nest internal client: upstream classification table', async () => {
+  await withRealCatalog(async (c) => {
+    const s = nestSkill(c, OUTBOUND);
+    const client = s.file('internal-service.client.ts');
+    for (const needle of ['export function unwrapEnvelope<T>(status: number, body: unknown): T', 'export function classifyTransportFailure(error: unknown): ApiError', 'UpstreamApiError(',
+      'CommonError.DEPENDENCY_UNAVAILABLE', 'CommonError.BAD_GATEWAY', 'CommonError.GATEWAY_TIMEOUT', 'ECONNABORTED', 'ETIMEDOUT', 'providerCallPolicy(', 'Idempotency-Key']) {
+      assert.ok(client.includes(needle), `internal-service.client.ts missing ${needle}`);
+    }
+    assert.ok(!client.includes('console.') && !/\bcause: /.test(client) && !client.includes('.stack'), 'no logging and no cause or stack on the errors it builds');
+    const logger = nestSkill(c, LOGGING).file('outbound-http-logger.ts');
+    for (const needle of ['upstreamErrorNumber', 'upstreamSupportCode', 'upstreamRequestId', '[A-Z]{6}', '\d{7}']) assert.ok(logger.includes(needle), `outbound-http-logger.ts missing ${needle}`);
+    const spec = s.file('internal-service.client.spec.ts');
+    for (const needle of ['createServer(', "'0530101'", '502', 'DEPENDENCY_UNAVAILABLE', 'BAD_GATEWAY', 'GATEWAY_TIMEOUT', 'upstreamErrorNumber', 'upstreamSupportCode']) {
+      assert.ok(spec.includes(needle), `internal-service.client.spec.ts missing ${needle}`);
+    }
+    assert.ok((spec.match(/^\s+it(\.each\([\s\S]*?\))?\(/gm) ?? []).length >= 9, 'one it( per classification row');
+    for (const needle of ['## Calling another internal service', 'unwrapEnvelope', 'classifyTransportFailure', 'UpstreamApiError']) assert.ok(s.body.includes(needle), `SKILL.md missing ${needle}`);
+    assert.match(s.body, /\| `internal-service.client.ts.md` \|/, 'file table: internal client row');
+    assert.match(s.body, /\| `internal-service.client.spec.ts.md` \|/, 'file table: internal client spec row');
+  });
+});
+
+test('nest ProblemError is gone', async () => {
+  const { readdirSync, readFileSync: read, statSync } = await import('node:fs');
+  const path = await import('node:path');
+  const root = path.join(import.meta.dirname, '..', 'catalog', 'stacks', 'nestjs');
+  const walk = (dir) => readdirSync(dir).flatMap((name) => { const p = path.join(dir, name); return statSync(p).isDirectory() ? walk(p) : [p]; });
+  const files = walk(root);
+  assert.ok(files.length > 20, 'the walk found the nest catalog');
+  for (const file of files) assert.ok(!read(file, 'utf8').includes('ProblemError'), `${file} mentions ProblemError`);
 });
 
 test('nest rabbitmq-consumer skill: typed message, idempotency store, DLX with wait and parking queues, header context, masked message_in, no any', async () => {
@@ -1179,12 +1212,9 @@ test('nest rules and skills no longer mention problem+json, RFC 7807 or ProblemE
   const walk = (dir) => { for (const name of readdirSync(dir)) { const p = path.join(dir, name); if (statSync(p).isDirectory()) walk(p); else files.push(p); } };
   walk(root);
   assert.ok(files.length > 20, 'the walk found the nest catalog');
-  // ProblemError: the deprecated alias lives in api-error.ts; Task 7 converts the outbound-client siblings and tightens this list
-  const aliasAllowed = (file) => file.endsWith('api-error.ts.md') || file.includes(`${path.sep}stackcrew-nest-outbound-client${path.sep}`);
   for (const file of files) {
     const text = read(file, 'utf8');
     assert.ok(!text.includes('problem+json'), `${file} mentions problem+json`);
     assert.ok(!text.includes('RFC 7807'), `${file} mentions RFC 7807`);
-    assert.ok(aliasAllowed(file) || !text.includes('ProblemError'), `${file} mentions ProblemError`);
   }
 });

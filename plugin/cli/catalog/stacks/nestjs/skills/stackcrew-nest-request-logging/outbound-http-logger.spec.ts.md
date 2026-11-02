@@ -26,6 +26,10 @@ function answer(req: IncomingMessage, res: ServerResponse): void {
       res.writeHead(200, { 'content-type': 'application/json' }); // no Content-Length: sent chunked
       res.write(OVER_CAP_JSON.slice(0, 10));
       res.end(OVER_CAP_JSON.slice(10));
+    } else if (req.url === '/envelope') {
+      res.writeHead(404, { 'content-type': 'application/json' }).end(JSON.stringify({ success: false, supportCode: 'QWERTY', requestId: 'b7f0c0de-0000-4000-8000-000000000001', error: { errorNumber: '0530101' } }));
+    } else if (req.url === '/hostile-envelope') {
+      res.writeHead(404, { 'content-type': 'application/json' }).end(JSON.stringify({ success: false, supportCode: 'abc\nERROR forged', requestId: 'x y', error: { errorNumber: '53\n01' } }));
     } else if (req.url === '/big-text') {
       res.writeHead(200, { 'content-type': 'text/plain' }).end(OVER_CAP_TEXT);
     } else {
@@ -83,6 +87,19 @@ describe('OutboundHttpLogger', () => {
     expect(typeof res.data === 'string' ? res.data : JSON.stringify(res.data)).toBe(OVER_CAP_JSON); // the caller still gets the whole body
     expect(lines).toHaveLength(1);
     expect(lines[0].resBody).toBe(`<application/json ${CAPTURE_LIMIT + 1} bytes>`);
+  });
+
+  it('adds the upstream ids when another service answered with an envelope', async () => {
+    await expect(firstValueFrom(http.get(`${base}/envelope`))).rejects.toMatchObject({ response: { status: 404 } });
+    expect(lines[0]).toMatchObject({ status: 404, upstreamErrorNumber: '0530101', upstreamSupportCode: 'QWERTY', upstreamRequestId: 'b7f0c0de-0000-4000-8000-000000000001' });
+  });
+
+  it('writes no upstream id that is not exactly shaped, and none for a body that is not an envelope', async () => {
+    await expect(firstValueFrom(http.get(`${base}/hostile-envelope`))).rejects.toMatchObject({ response: { status: 404 } });
+    await firstValueFrom(http.get(`${base}/verify`));
+    for (const line of lines) {
+      expect(Object.keys(line).filter((key) => key.startsWith('upstream'))).toEqual([]);
+    }
   });
 
   it('logs only the size of a text response over 2 MiB', async () => {

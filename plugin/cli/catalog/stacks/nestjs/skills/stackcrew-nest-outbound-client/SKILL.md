@@ -7,7 +7,7 @@ kind: task
 
 Follow these steps in order. Write the SC-PREFLIGHT note first: the port, the adapters, `src/common/providers/` (errors and policy), the module's `HttpModule` registration, `OutboundHttpLogger`, the env section and the mappers that already exist and that you will reuse. If the port exists you add an adapter; you never create a second port, policy or error family.
 
-The example verifies an identity with a provider called Acme. Request logging (`OutboundHttpLogger`, `outboundHttpLogging(target)`) and `ProblemError` come from `stackcrew-nest-request-logging`; set that up first.
+The example verifies an identity with a provider called Acme. Request logging (`OutboundHttpLogger`, `outboundHttpLogging(target)`) `ApiError`, `UpstreamApiError` and `CommonError` come from `stackcrew-nest-request-logging`; set that up first.
 
 ## 1. Shape
 
@@ -26,7 +26,7 @@ Each `<file>.md` next to this skill holds one source file: its first line says w
 
 | File | What it does |
 |---|---|
-| `provider.errors.ts.md` | `ProviderUnavailableError` (503), `ProviderRejectedError` (502), `ProviderProtocolError` (502): `ProblemError`s with constant details. |
+| `provider.errors.ts.md` | `ProviderUnavailableError` (`DEPENDENCY_UNAVAILABLE`, 503), `ProviderRejectedError` and `ProviderProtocolError` (`BAD_GATEWAY`, 502): `ApiError`s on this service's own group-80 rows, so the body carries the table summary and never the provider's text. |
 | `provider-policy.types.ts.md` | `ProviderPolicyOptions` and `ProviderCall`. |
 | `provider-call.policy.ts.md` | `providerCallPolicy(options)`: breaker, retry, bulkhead (cockatiel). |
 | `kyc-verification.ts.md` | Domain types: `VerifyIdentityCommand`, `KycEvidence`, `VerifyIdentityResult`, `KycDecision`, and the side-write seam `KycOutcomeEffects`. |
@@ -37,6 +37,8 @@ Each `<file>.md` next to this skill holds one source file: its first line says w
 | `acme-kyc.client.ts.md` | The adapter: one `HttpService` call per attempt, typed errors. |
 | `kyc.module.ts.md` | `HttpModule.registerAsync`, `OutboundHttpLogger`, the policy and the port binding. |
 | `acme-kyc.client.spec.ts.md` | Tests against a local `node:http` provider stub. |
+| `internal-service.client.ts.md` | `InternalServiceClient`, `unwrapEnvelope`, `classifyTransportFailure`: calling another service of ours (section "Calling another internal service"). |
+| `internal-service.client.spec.ts.md` | One test per classification row, against a local `node:http` fake of the other service. |
 | `kyc-verification.entity.ts.md`, `create-kyc-verification.migration.ts.md`, `kyc-verification.repository.ts.md`, `kyc-verification.errors.ts.md` | The operation row whose id is the idempotency key, on `TenantScopedRepository`. |
 | `kyc-verification.service.ts.md`, `kyc-verification.module.ts.md` | Section 9: insert and commit the operation, call, persist the result with its side writes; the module binds the no-op `KYC_OUTCOME_EFFECTS`. |
 | `kyc-verification.service.spec.ts.md` | On Postgres with a fake port: a business retry reuses the stored key; dedupe, FAILED, overlapping runs, side writes only with the status write that won, a throwing side write rolls the status back, no transaction during the call, another tenant gets not found. |
@@ -131,7 +133,7 @@ The side-write seam:
 - Orphaned PENDING rows (the process died between the steps) are picked up by a scheduled job: it lists PENDING rows created longer ago than the whole call budget with `runAsSystem(undefined, () => runCrossTenant(reason, …))`, which only reads, then runs each one in its own tenant with `runAsSystem(row.{{sc:tenantColumn}}, () => service.run(row.id, evidence))`, or flags it for review when its evidence is gone.
 - Never generate the key at call time, and never create a new operation row for a retry; either would send a fresh key.
 - Add `CreateKycVerification1730000000002` to `migrations` in `DatabaseModule` (rename the timestamp to follow the project's last migration), and import `KycVerificationModule` where the operation is used.
-- A provider failure reaches the API as the `ProviderError` the adapter threw (502 or 503 problem details). Catch it only to take a different business path, never to swallow it into `null`.
+- A provider failure reaches the API as the `ProviderError` the adapter threw (a 502 or 503 error envelope with this service's own `errorNumber`). Catch it only to take a different business path, never to swallow it into `null`.
 - Provider callbacks (webhooks) are REST endpoints (`stackcrew-nest-rest-endpoint`): verify the signature in constant time, store the event with an insert-or-ignore on the provider's event id, answer 200 at once, and process the stored row afterwards.
 
 ## 10. Tests
@@ -140,11 +142,30 @@ The side-write seam:
 - **Code that calls the port:** a test binds a fake, `{ provide: KycProvider, useValue: { verify: jest.fn() } }`, and covers each typed error the port can throw. `kyc-verification.service.spec.ts` runs the service on Postgres with that fake. A business retry after a failed call sends the stored id again as the key, with the request id only in `traceRef`; a completed operation makes no second call; concurrent starts of a new profile and a later start by another user return the pending operation (the conflict update audited with that user), and a start after completion a new one; a rejection ends it FAILED with no further call; two runs in flight at once (one answered 409 and one approved; a refusal and a success, where COMPLETED replaces FAILED; two replies, where the one stored first is the outcome of both; a refusal after a success) leave the row COMPLETED and every caller with that outcome, each row waiting for the held call to be registered and counting both calls; the side writes (a probe table in the test) exist only for the status write that won, never for the run that lost; a side write that throws leaves the status unchanged and no probe row, and `run` rejects; no transaction is open during the provider call (`pg_stat_activity`, `idle in transaction`); another tenant gets not found.
 - Never call the real provider from a test, not even a sandbox, in the default test run. More in `stackcrew-nestjs-testing`.
 
+## Calling another internal service
+
+Another service of ours answers in the common envelope, so its errors are classified by what it said, not by status alone. `internal-service.client.ts.md` (`src/common/http/`) is the client: a module registers its own `HttpService` (`baseURL`, `maxRedirects: 0`, `maxContentLength`) and `...outboundHttpLogging(target)` as in `kyc.module.ts`, and a small subclass or provider builds `new InternalServiceClient(http, { policy, timeoutMs })` with the same breaker, retry and bulkhead as section 7. `get(path, params)` and `post(path, body, idempotencyKey)` return the envelope's `data`; every call is retry-safe by construction (a GET, or a POST with a key). Retried: 5xx, 429, 409, 401, 403 and no reply. After the last attempt the answer is decoded by `unwrapEnvelope(status, body)`:
+
+| B answered | This service throws |
+|---|---|
+| 2xx success envelope | the `data` |
+| 4xx error envelope (not 401 or 403) | `UpstreamApiError` with B's status, `errorNumber`, `errorCode` and details; the filter passes it on |
+| 5xx error envelope | `UpstreamApiError` with status **502**, B's `errorNumber` |
+| 401 or 403, envelope or not | `DEPENDENCY_UNAVAILABLE` (our credential, not the caller's fault) |
+| 5xx without an envelope (an HTML 502 from a proxy) | `DEPENDENCY_UNAVAILABLE` |
+| 2xx, 3xx or 4xx with a body that is not an envelope, or an envelope whose `errorNumber` is not seven digits | `BAD_GATEWAY` |
+| no reply: refused, reset, open circuit | `DEPENDENCY_UNAVAILABLE` |
+| no reply in time (`classifyTransportFailure`: `ECONNABORTED`, `ETIMEDOUT`, the attempt bound) | `GATEWAY_TIMEOUT` |
+
+- Only B's own envelope payload crosses on the first two rows, rebuilt from plain strings (a malformed detail is dropped). The error body keeps this service's `supportCode`, `requestId` and `timestamp`. Every other row is an `ApiError` with this service's `errorNumber` and a fixed summary: no exception message, response text or cause reaches the response.
+- `OutboundHttpLogger` puts `upstreamErrorNumber`, `upstreamSupportCode` and `upstreamRequestId` on the `http_out` line whenever B answered with an envelope, so a search by B's `supportCode` finds both sides. Each value is written only if it is exactly `^\d{7}$`, `^[A-Z]{6}$` or a short safe id, so B cannot put text of its own into this service's logs.
+- Tests: a second `http.createServer` plays B (no `nock`); one `it` per row above, plus the hostile-id and malformed-detail cases.
+
 ## Do not
 
 - Do not use `fetch`, a bare axios instance or `axios-retry`; use the module's `HttpService` with `OutboundHttpLogger`.
 - Do not let a provider DTO, `any` or a raw `response.data` reach a service, a controller or the domain.
 - Do not hardcode base URLs, credentials, timeouts or provider codes; use config and constants.
 - Do not retry a 400, 404 or 422 (a refusal of the request), an invalid reply or a non-idempotent call without an idempotency key, and do not retry in a loop around the policy. 5xx, 429, 409, 401 and 403 are retried by the policy, with the same key.
-- Do not return provider messages or codes to API clients, and do not log a provider body yourself.
+- Do not return provider messages or codes to API clients, and do not log a provider body yourself. Only another internal service's envelope payload may cross, through `UpstreamApiError`.
 - Do not call a provider inside a transaction.
