@@ -15,7 +15,7 @@ JUnit 5, AssertJ, Mockito, Spring Boot test slices, Testcontainers, WireMock. Ex
 - Mock only true boundaries with Mockito (ports, clients). Never mock the class under test, a record or a value object.
 - Cover at least three negative or edge cases per happy path, and every branch of changed logic.
 - Keep tests deterministic: inject a `Clock`, no `Thread.sleep`, no dependence on order or on the network. Use Awaitility for async results.
-- `StackcrewArchitectureTest` (ArchUnit) must stay green: no `JsonNode`/`ObjectNode`/`Map<String, Object>` in service or domain signatures, no field injection, no controller-to-repository dependency, no domain-to-infrastructure dependency. Its baseline `archunit_store` is committed and only shrinks.
+- `StackcrewArchitectureTest` (ArchUnit) must stay green: no `JsonNode`/`ObjectNode`/`Map<String, Object>` in service or domain signatures, no field injection, no controller-to-repository dependency, no domain-to-infrastructure dependency, no controller returning `String` or answering without the envelope (SC-ENVELOPE). Its baseline `archunit_store` is committed and only shrinks.
 
 ## Slice tests
 
@@ -29,14 +29,17 @@ class VerificationControllerTest {
     void rejectsBlankDocumentNumber() throws Exception {
         mvc.perform(post("/v1/verifications").contentType(APPLICATION_JSON).content(BLANK_DOCUMENT_JSON))
             .andExpect(status().isBadRequest())
-            .andExpect(jsonPath("$.title").exists());
+            .andExpect(jsonPath("$.success").value(false))
+            .andExpect(jsonPath("$.error.errorCode").value("VALIDATION_FAILED"))
+            .andExpect(jsonPath("$.error.details[0].field").value("documentNumber"))
+            .andExpect(jsonPath("$.error.details[0].code").value("REQUIRED"));
     }
 }
 ```
 
 - `@MockitoBean` replaces `@MockBean` in Spring Boot 3.4+; use `@MockBean` on 3.0 to 3.3.
 - Request bodies in tests live in constants or `src/test/resources` fixtures, not inline literals repeated across tests.
-- Assert on `ProblemDetail` fields (`status`, `title`, `detail`) for error paths.
+- Assert on the envelope for error paths: the status, `$.error.errorCode`, `$.error.errorNumber` and each `$.error.details[*].field`/`code`; on success, `$.success` and `$.data` (a delete: 200 and `$.data` null). `@WebMvcTest` picks up `ApiResponseAdvice` and `GlobalExceptionHandler`; give the test `app.service-number`.
 
 ## Testcontainers
 

@@ -148,7 +148,7 @@ List<VolumeRow> rows = tenantContext.runCrossTenant("monthly volume report", () 
 ```
 
 - `runCrossTenant` checks the caller: a role in `app.tenancy.cross-tenant-roles` (from claim `{{sc:rolesClaim}}`), or work started with `runAsSystem`. A JWT `sub`, a message header or a `runAs` user that happens to be `{{sc:systemUser}}` does not count. It logs `event=cross_tenant` with `userId`, `tenantId` (when there is one) and `reason`, and runs the work in a new read-only transaction whose session has no tenant filter (`isRoot`). Anyone else gets `CrossTenantDeniedException`.
-- Map `CrossTenantDeniedException` to the same 404 `ProblemDetail` as a missing row. Before Hibernate 6.6 it is also what a lookup of another tenant's id throws (section 5), and a 403 there would confirm that the id exists; a 404 also gives the same answer on every Boot version.
+- `GlobalExceptionHandler` (skill `stackcrew-spring-rest-endpoint`) maps `CrossTenantDeniedException` to `RESOURCE_NOT_FOUND`, the same 404 envelope as a missing row. Before Hibernate 6.6 it is also what a lookup of another tenant's id throws (section 5), and a 403 there would confirm that the id exists; a 404 also gives the same answer on every Boot version.
 - The reason is a short, human-readable sentence; it is in the log.
 - Read only: an insert inside throws `MissingTenantException`. Return DTOs or projections; entities are detached when the work returns.
 - It works inside an outer `@Transactional` (the new transaction suspends it). It throws `IllegalStateException` when open-in-view bound an `EntityManager` to the request.

@@ -15,7 +15,7 @@ Spring Boot 3.x on Java 17+. Applies with the Java rule (SC-TYPE, SC-CONST, SC-R
 - Provider callbacks (webhooks) are authenticated, idempotent (dedupe on the provider event id with an atomic insert, not a caught exception) and acknowledged fast; process from the persisted row.
 - Entities extend `{{sc:baseEntity}}` (tenant data: `{{sc:baseTenantEntity}}` with Hibernate `@TenantId`); Spring Data JPA auditing fills the four audit fields; the tenant comes from the JWT through `JwtTenantIdentifierResolver`; no native SQL on tenant tables; cross-tenant reads only through `TenantContext.runCrossTenant`. Use skill `stackcrew-spring-jpa-entity`.
 - Log with SLF4J and structured fields: `traceId` (Micrometer Tracing), provider code, outcome, duration. HTTP bodies are logged only by `HttpLoggingFilter` (inbound) and `LoggingClientInterceptor` (outbound) through the shared `BodyMasker` (skill `stackcrew-spring-request-logging`); never log a request or record by hand (its `toString` prints every field). Add a Micrometer metric tagged by provider.
-- Errors are RFC 7807 `ProblemDetail` through one `@RestControllerAdvice` with a stable, safe `detail`; request DTOs are records with `@Valid` and Bean Validation (`jakarta.validation.*`).
+- Every response is the common envelope (skill `stackcrew-spring-rest-endpoint`): a controller returns data or throws `ApiException` with an `ErrorCode`, `ApiResponseAdvice` wraps it, and one `GlobalExceptionHandler` answers every error with the code's fixed summary, never `ex.getMessage()`. A controller never returns `String`, a `void` handler never has `@ResponseStatus`, and nothing answers 204 (ArchUnit SC-ENVELOPE). Request DTOs are records with `@Valid` and Bean Validation (`jakarta.validation.*`).
 - Configuration is typed `@ConfigurationProperties` records (`@Validated`), one map keyed by provider code rather than a class per provider; no scattered `@Value`, no secrets in `application.yml` (env or a vault).
 - Use `RestClient` (or `WebClient` on a reactive stack) for HTTP; `RestTemplate` is legacy. URLs come from properties, paths and header names from constants.
 - `@Transactional` on service methods only, `readOnly = true` for queries, never around a remote call, and never relied on through `this.` self-invocation.
@@ -43,19 +43,17 @@ RestClient create(String providerCode) {
 }
 ```
 
-- Error responses use `ProblemDetail` with a constant, safe `detail`; never `ex.getMessage()` (it can carry provider codes or PII):
+- Error responses are the error envelope built by `GlobalExceptionHandler` from the error table: `errorNumber`, `errorCode` and the code's fixed summary; never `ex.getMessage()` (it can carry provider codes or PII). Framework exceptions go through the same handler, not through Spring's own error body. A provider failure is one of this service's group-80 errors (two handlers added to `GlobalExceptionHandler`):
 
 ```java
-@RestControllerAdvice
-class ApiExceptionHandler {
-    @ExceptionHandler(ProviderUnavailableException.class)
-    ProblemDetail onProviderDown(ProviderUnavailableException ex) {
-        return ProblemDetail.forStatusAndDetail(HttpStatus.BAD_GATEWAY, ProblemDetails.PROVIDER_UNAVAILABLE);
-    }
+@ExceptionHandler(ProviderUnavailableException.class)
+ResponseEntity<ErrorResponse> onProviderDown(ProviderUnavailableException ex, HttpServletRequest request, HttpServletResponse response) {
+    return failure(CommonErrorCode.DEPENDENCY_UNAVAILABLE, List.of(), request, response);   // Protocol and unmapped Rejected: BAD_GATEWAY
 }
 ```
 
-- Enable `spring.mvc.problemdetails.enabled=true` so framework exceptions use `ProblemDetail` too.
+- A JSON controller never returns `String`: the String converter is chosen before the advice wraps the body and the call fails. Return a record, or mark a deliberately raw method `@RawResponse`.
+- `app.service-number` (two digits, quoted in YAML) is the `SS` of every `errorNumber`; it comes from configuration, never from code.
 - Observability: Actuator (`health` with liveness and readiness groups), Micrometer metrics, Micrometer Tracing with the OpenTelemetry or Brave bridge. A `RestClient` built from the injected `RestClient.Builder` propagates `traceparent` automatically.
 
 ## Layering and design
@@ -124,7 +122,7 @@ Full steps with code: skill `stackcrew-spring-integration-provider`.
 
 ## Security
 
-- Spring Security with method-level authorization (`@PreAuthorize`), deny by default, CSRF protection for cookie auth, a CORS allowlist, and object-level checks (no IDOR).
+- Spring Security with method-level authorization (`@PreAuthorize`), deny by default, CSRF protection for cookie auth, a CORS allowlist and expose `x-request-id` and `x-support-code` (`Access-Control-Expose-Headers`), and object-level checks (no IDOR). 401 and 403 from the filter chain are written by `ApiSecurityHandlers` as the error envelope.
 - Store provider credentials in a vault or env variables bound through `@ConfigurationProperties`; never in code, logs or the repository.
 
 ## Logging and observability config

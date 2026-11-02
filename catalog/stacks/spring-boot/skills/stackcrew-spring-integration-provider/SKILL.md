@@ -516,5 +516,5 @@ Skip this section unless `stackcrew.json` has `camel` in `addons`. When it does,
 - Do not build a template base, registry or strategy for a single provider when `docs/stackcrew/architecture-profile.md` does not record that more are expected (`ProviderClientFactory` and `ProviderProperties` are plain configuration plumbing and are fine from the first provider).
 - Do not retry non-idempotent calls blindly, do not retry or trip the breaker on a refusal (400, 404, 422), and do not swallow provider errors into `null` or an empty result.
 - Do not call the provider inside a `@Transactional` method, and do not rely on `@Transactional`, `@Retry` or `@CircuitBreaker` through `this.` self-invocation.
-- Do not return provider messages or codes to API clients; use a stable `ProblemDetail` detail.
+- Do not return provider messages or codes to API clients; `GlobalExceptionHandler` answers a provider failure with this service's own `DEPENDENCY_UNAVAILABLE` or `BAD_GATEWAY` envelope (skill `stackcrew-spring-rest-endpoint`).
 - Do not test against the real provider; use WireMock.

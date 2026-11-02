@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import path from 'node:path';
 import os from 'node:os';
-import { mkdtemp, rm, writeFile, mkdir, readFile } from 'node:fs/promises';
+import { mkdtemp, rm, writeFile, mkdir, readFile, readdir } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 import { loadCatalog } from '../src/catalog/load.js';
 import { validateCatalog } from '../src/catalog/validate.js';
@@ -18,7 +18,7 @@ const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const ALL = ['claude', 'cursor', 'codex', 'antigravity'];
 const SKILLS = ['stackcrew-spring-integration-provider', 'stackcrew-spring-rest-endpoint', 'stackcrew-spring-boot-testing',
   'stackcrew-spring-jpa-entity', 'stackcrew-spring-request-logging'];
-const NEW_SKILLS = ['stackcrew-spring-jpa-entity', 'stackcrew-spring-request-logging'];
+const NEW_SKILLS = ['stackcrew-spring-jpa-entity', 'stackcrew-spring-request-logging', 'stackcrew-spring-rest-endpoint'];
 const WAIVER = '// stackcrew-allow: SC-TYPE log masking walks arbitrary JSON before it is written';
 const WIRE_PATH = 'src/test/java/com/acme/kyc/stackcrew/StackcrewArchitectureTest.java';
 
@@ -202,7 +202,8 @@ test('wire template fills basePackage and keeps the ArchUnit rules', async () =>
 // "Tests run: 0" and a green build even with violations. @ArchTest methods carry a MethodSource and are reported.
 const FIELD_RULE = /@ArchTest\s+(?:public\s+)?static\s+final\s+ArchRule\b/;
 const RULE_METHODS = ['no_untyped_payloads_in_service_and_domain', 'no_field_injection',
-  'controllers_do_not_depend_on_repositories', 'domain_does_not_depend_on_infrastructure', 'entities_extend_the_base_entity'];
+  'controllers_do_not_depend_on_repositories', 'domain_does_not_depend_on_infrastructure', 'entities_extend_the_base_entity',
+  'rest_controllers_answer_with_the_envelope'];
 
 test('wire template declares every rule as an @ArchTest method, plus a non-empty import check', async () => {
   assert.match('@ArchTest\n    static final ArchRule x = y;', FIELD_RULE, 'FIELD_RULE regex lost its escapes');
@@ -370,7 +371,7 @@ test('new spring skills are task skills under 350 lines with sibling code that i
       for (const f of k.files) {
         assert.ok(!/test/i.test(f.relPath), `${name}/${f.relPath}: sibling files are not named like tests`);
         assert.ok(/^[A-Za-z]+\.java\.md$/.test(f.relPath), `${name}/${f.relPath}: Java siblings ship as <File>.java.md`);
-        assert.match(f.content, /^Goes to `src\/main\/java`, package `\{\{sc:basePackage\}\}\.common\.(logging|context|persistence)`, as `[^`]+\.java`\.\n\n```java\n/,
+        assert.match(f.content, /^Goes to `src\/main\/java`, package `\{\{sc:basePackage\}\}\.common\.(logging|context|persistence|api)`, as `[^`]+\.java`\.\n\n```java\n/,
           `${name}/${f.relPath}: a "Goes to" line, then the code`);
         assert.equal(f.content.split('```').length, 3, `${name}/${f.relPath}: exactly one fenced block`);
         assert.ok(f.content.endsWith('```\n'), `${name}/${f.relPath}: nothing after the block`);
@@ -640,5 +641,221 @@ test('request logging: a chunked request that filled the 2 MiB cache logs the un
     const masker = s.file('BodyMasker.java');
     assert.ok(masker.includes('public String placeholderAtLeast(String contentType, long size)') && masker.includes('size + "+"'), 'the masker renders N+');
     assert.ok(s.body.includes('`<CT 2097152+ bytes>`'), 'SKILL.md documents the chunked case');
+  });
+});
+
+// ---- Common response envelope (spec 2026-11-02, shared contract) ----
+
+const ENDPOINT = 'stackcrew-spring-rest-endpoint';
+
+/** The error table, exact in every stack: category, seq, code, HttpStatus constant, summary. */
+const ERROR_TABLE = [
+  [10, 1, 'VALIDATION_FAILED', 'BAD_REQUEST', 'Request validation failed'],
+  [11, 1, 'MALFORMED_REQUEST', 'BAD_REQUEST', 'The request body is malformed'],
+  [11, 2, 'METHOD_NOT_ALLOWED', 'METHOD_NOT_ALLOWED', 'The HTTP method is not supported'],
+  [11, 3, 'UNSUPPORTED_MEDIA_TYPE', 'UNSUPPORTED_MEDIA_TYPE', 'The content type is not supported'],
+  [11, 4, 'INVALID_PARAMETER', 'BAD_REQUEST', 'A query or path parameter is invalid'],
+  [11, 5, 'PAYLOAD_TOO_LARGE', 'PAYLOAD_TOO_LARGE', 'The request body is too large'],
+  [11, 6, 'ENDPOINT_NOT_FOUND', 'NOT_FOUND', 'The endpoint does not exist'],
+  [20, 1, 'UNAUTHENTICATED', 'UNAUTHORIZED', 'Authentication is required'],
+  [21, 1, 'ACCESS_DENIED', 'FORBIDDEN', 'You are not allowed to do this'],
+  [30, 1, 'RESOURCE_NOT_FOUND', 'NOT_FOUND', 'The resource does not exist'],
+  [40, 1, 'BUSINESS_CONFLICT', 'CONFLICT', 'The request conflicts with the current state'],
+  [41, 1, 'BUSINESS_RULE_VIOLATION', 'UNPROCESSABLE_ENTITY', 'The request violates a business rule'],
+  [50, 1, 'RATE_LIMIT_EXCEEDED', 'TOO_MANY_REQUESTS', 'Too many requests'],
+  [80, 1, 'DEPENDENCY_UNAVAILABLE', 'SERVICE_UNAVAILABLE', 'A required service is unavailable'],
+  [80, 2, 'BAD_GATEWAY', 'BAD_GATEWAY', 'An upstream service returned an invalid response'],
+  [80, 3, 'GATEWAY_TIMEOUT', 'GATEWAY_TIMEOUT', 'An upstream service did not respond in time'],
+  [90, 1, 'INTERNAL_ERROR', 'INTERNAL_SERVER_ERROR', 'An unexpected error occurred'],
+];
+
+test('spring envelope: sealed success/error types, the error table and the formatter', async () => {
+  await withRealCatalog(async (c) => {
+    const s = skillText(c, ENDPOINT);
+    const api = s.file('ApiResponse.java');
+    for (const needle of ['public sealed interface ApiResponse<T> permits SuccessResponse, ErrorResponse',
+      '@JsonInclude(JsonInclude.Include.ALWAYS) T data', 'static <T> SuccessResponse<T> success(T data, String supportCode, String requestId)',
+      'static ErrorResponse failure(String summary, ErrorPayload error, String supportCode, String requestId)',
+      'Instant.now().truncatedTo(ChronoUnit.MILLIS)', '@JsonPropertyOrder({"success", "timestamp", "supportCode", "requestId", "data"})',
+      '@JsonPropertyOrder({"success", "message", "timestamp", "supportCode", "requestId", "error"})', '@JsonProperty("message") String summary',
+      'record ErrorPayload(String errorNumber, String errorCode, List<ErrorDetail> details)',
+      'record ErrorDetail(@JsonInclude(JsonInclude.Include.ALWAYS) String field, String code, String message)']) {
+      assert.ok(api.includes(needle), `ApiResponse missing ${needle}`);
+    }
+    // package-private records: their constructors are package-private, so the two factories are the only way in
+    assert.match(api, /^record SuccessResponse<T>\(/m);
+    assert.match(api, /^record ErrorResponse\(/m);
+    assert.ok(!/\bdata\b/.test(api.split(/^record ErrorResponse\(/m)[1].split('{')[0]), 'an error has no data key');
+    const table = s.file('CommonErrorCode.java');
+    assert.ok(table.includes('public enum CommonErrorCode implements ErrorCode'));
+    for (const [category, seq, code, status, summary] of ERROR_TABLE) {
+      assert.ok(table.includes(`${code}(${category}, ${seq}, "${code}", HttpStatus.${status}, "${summary}")`), `CommonErrorCode row ${code}`);
+    }
+    assert.equal(table.match(/^ {4}[A-Z_]+\(\d+, \d+, "/gm).length, ERROR_TABLE.length, 'no extra rows');
+    const errorCode = s.file('ErrorCode.java');
+    for (const needle of ['int category();', 'int seq();', 'String code();', 'HttpStatus status();', 'String summary();']) {
+      assert.ok(errorCode.includes(needle), `ErrorCode missing ${needle}`);
+    }
+    const detailCodes = s.file('DetailCode.java');
+    for (const code of ['REQUIRED', 'INVALID_FORMAT', 'INVALID_TYPE', 'TOO_SHORT', 'TOO_LONG', 'OUT_OF_RANGE', 'INVALID_VALUE', 'ALREADY_EXISTS']) {
+      assert.match(detailCodes, new RegExp(`^ {4}${code},?$`, 'm'), `DetailCode ${code}`);
+    }
+    const numbers = s.file('ErrorNumbers.java');
+    assert.ok(numbers.includes('public static String format(String serviceNumber, ErrorCode code)'));
+    assert.ok(numbers.includes('String.format(Locale.ROOT, "%s%02d%03d"'), 'SSCCNNN with ASCII digits whatever the default locale');
+    const props = s.file('ServiceNumberProperties.java');
+    for (const needle of ['@Validated', '@ConfigurationProperties("app")', '@Pattern(regexp = "\\\\d{2}") @NotNull String serviceNumber']) {
+      assert.ok(props.includes(needle), `ServiceNumberProperties missing ${needle}`);
+    }
+    const thrown = s.file('ApiException.java');
+    assert.ok(thrown.includes('public ApiException(ErrorCode code)') && thrown.includes('public ApiException(ErrorCode code, List<ErrorDetail> details)'));
+    assert.ok(s.file('UpstreamApiException.java').includes('public UpstreamApiException(HttpStatus status, ErrorPayload payload, String summary)'));
+    assert.ok(s.body.includes('service-number: "07"'), 'SKILL.md quotes the service number in YAML');
+  });
+});
+
+test('spring envelope: void handler yields data null and SC-ENVELOPE bans the early-return shapes', async () => {
+  await withRealCatalog(async (c) => {
+    const s = skillText(c, ENDPOINT);
+    const advice = s.file('ApiResponseAdvice.java');
+    assert.ok(advice.includes('A void handler without\n * @ResponseStatus, or a null return, arrives here with a null body and answers 200 with data null'),
+      'the advice documents the void path (P3-R5 outcome A)');
+    assert.ok(advice.includes('return ApiResponse.success(body, supportCode(servletRequest), requestId(servletRequest));'), 'a null body is wrapped too');
+    assert.equal(s.file('VoidEnvelopeReturnValueHandler.java'), '', 'outcome A: no extra return value handler');
+    assert.ok(/void delete\(@PathVariable UUID id\)/.test(s.body), 'the delete example is a plain void handler');
+    assert.ok(s.body.includes('`200` with `data: null`'), 'SKILL.md states the delete answer');
+    const wire = await readFile(path.join(ROOT, 'catalog/stacks/spring-boot/wire/StackcrewArchitectureTest.java'), 'utf8');
+    for (const needle of ['static void rest_controllers_answer_with_the_envelope(JavaClasses classes)', '"java.lang.String"', 'NO_CONTENT',
+      '"org.springframework.web.bind.annotation.ResponseStatus"', '"{{sc:basePackage}}.common.api.RawResponse"', '"void".equals(method.getRawReturnType().getName())',
+      'owner.tryGetAnnotationOfType(RESPONSE_STATUS)', 'List.of("value", "code")', '(SC-ENVELOPE)']) {
+      assert.ok(wire.includes(needle), `SC-ENVELOPE missing ${needle}`);
+    }
+    const rules = c.stacks.get('spring-boot').rules.body;
+    assert.ok(/never returns `String`/.test(rules) && rules.includes('SC-ENVELOPE'), 'rules.md bans a String return and names the ArchUnit rule');
+  });
+});
+
+test("spring security handlers and the advice answer the envelope with the filter's ids", async () => {
+  await withRealCatalog(async (c) => {
+    const s = skillText(c, ENDPOINT);
+    const security = s.file('ApiSecurityHandlers.java');
+    const handler = s.file('GlobalExceptionHandler.java');
+    const advice = s.file('ApiResponseAdvice.java');
+    for (const needle of ['implements AuthenticationEntryPoint, AccessDeniedHandler', 'private final ObjectMapper objectMapper;',
+      'objectMapper.writeValue(response.getOutputStream(), body);', 'GlobalExceptionHandler.errorBody(code, List.of(), serviceNumber, request, response)',
+      'CommonErrorCode.UNAUTHENTICATED', 'CommonErrorCode.ACCESS_DENIED', 'BearerTokenAuthenticationEntryPoint']) {
+      assert.ok(security.includes(needle), `security handlers missing ${needle}`);
+    }
+    assert.ok(!security.includes('response.reset()'), 'the filter headers are never reset away');
+    for (const needle of ['request.getAttribute(LogFields.SUPPORT_CODE_ATTRIBUTE)', 'request.getAttribute(LogFields.REQUEST_ID_ATTRIBUTE)',
+      'response.setHeader(LogFields.REQUEST_ID_HEADER, requestId(request));', 'response.setHeader(LogFields.SUPPORT_CODE_HEADER, supportCode(request));',
+      'LogFields.requestIdOrNew(null)', 'LogFields.newSupportCode()']) {
+      assert.ok(advice.includes(needle), `advice missing ${needle}`);
+    }
+    // every error body sets the headers again, so a fresh security response or a reset keeps them equal to the body
+    assert.ok(handler.split('static ErrorResponse errorBody(')[1].includes('ApiResponseAdvice.writeIdHeaders(request, response);'));
+    assert.ok(handler.includes('AuthorizationDeniedException') && handler.includes('@ExceptionHandler(AccessDeniedException.class)'), 'method security inside MVC is a 403');
+    assert.match(handler, /@RestControllerAdvice\n@EnableConfigurationProperties\(ServiceNumberProperties\.class\)/, 'the handler is not scoped to a package');
+    // the Spring column of "framework exception -> error code"
+    const mappings = [
+      ['MethodArgumentNotValidException.class, BindException.class', 'VALIDATION_FAILED'], ['HandlerMethodValidationException.class', 'VALIDATION_FAILED'],
+      ['ConstraintViolationException.class', 'VALIDATION_FAILED'], ['HttpMessageNotReadableException.class', 'MALFORMED_REQUEST'],
+      ['HttpMediaTypeNotSupportedException.class', 'UNSUPPORTED_MEDIA_TYPE'], ['MaxUploadSizeExceededException.class', 'PAYLOAD_TOO_LARGE'],
+      ['MethodArgumentTypeMismatchException.class', 'INVALID_PARAMETER'], ['MissingPathVariableException.class', 'INVALID_PARAMETER'],
+      ['HttpRequestMethodNotSupportedException.class', 'METHOD_NOT_ALLOWED'], ['NoResourceFoundException.class, NoHandlerFoundException.class', 'ENDPOINT_NOT_FOUND'],
+      ['AccessDeniedException.class', 'ACCESS_DENIED'], ['CrossTenantDeniedException.class', 'RESOURCE_NOT_FOUND'], ['Exception.class', 'INTERNAL_ERROR'],
+      ['ApiException.class', 'ex.errorCode()'], ['MissingServletRequestParameterException.class', 'VALIDATION_FAILED'],
+    ];
+    const handlers = Object.fromEntries(handler.split('@ExceptionHandler(').slice(1).map((chunk) => {
+      const types = chunk.slice(0, chunk.indexOf(')')).replace(/^\{|\}$/g, '');
+      return [types, chunk];
+    }));
+    for (const [types, code] of mappings) {
+      assert.ok(handlers[types], `no @ExceptionHandler for ${types}`);
+      assert.ok(handlers[types].includes(code), `${types} -> ${code}`);
+    }
+    assert.ok(handlers['MethodArgumentTypeMismatchException.class'].includes('hasParameterAnnotation(PathVariable.class) ? CommonErrorCode.INVALID_PARAMETER : CommonErrorCode.VALIDATION_FAILED'),
+      'a query parameter of the wrong type is VALIDATION_FAILED (P3-R11)');
+    assert.ok(/log\.error\("unhandled_exception", ex\)/.test(handlers['Exception.class']), 'unknown exceptions logged at ERROR with the stack');
+    assert.ok(!/getMessage\(\)|\.message\b/.test(handler), 'the handler never reads an exception message');
+    assert.ok(handlers['UpstreamApiException.class'].includes('ex.payload()') && handlers['UpstreamApiException.class'].includes('ex.status()'), 'the upstream error passes through');
+    for (const needle of ['.authenticationEntryPoint(handlers).accessDeniedHandler(handlers)', 'exceptionHandling(', 'oauth2ResourceServer(']) {
+      assert.ok(s.body.includes(needle), `SKILL.md security wiring missing ${needle}`);
+    }
+    const validation = s.file('ValidationDetails.java');
+    for (const needle of ['case "NotNull", "NotBlank", "NotEmpty" -> DetailCode.REQUIRED;', 'case "Email", "Pattern" -> DetailCode.INVALID_FORMAT;',
+      'case "Size" -> sizeCode(violation);', '"Min", "Max", "DecimalMin", "DecimalMax", "Positive", "PositiveOrZero", "Negative", "NegativeOrZero"',
+      '"Past", "Future", "PastOrPresent", "FutureOrPresent" -> DetailCode.OUT_OF_RANGE;', 'default -> DetailCode.INVALID_VALUE;',
+      'lengthOf(violation.getInvalidValue()) < min ? DetailCode.TOO_SHORT : DetailCode.TOO_LONG', 'fieldError.isBindingFailure()',
+      'DetailCode.INVALID_TYPE, WRONG_TYPE', 'ex.getParameterValidationResults()', 'violation.getMessage()']) {
+      assert.ok(validation.includes(needle), `ValidationDetails missing ${needle}`);
+    }
+  });
+});
+
+test('spring advice skips streams, resources, emitters and @RawResponse', async () => {
+  await withRealCatalog(async (c) => {
+    const s = skillText(c, ENDPOINT);
+    const advice = s.file('ApiResponseAdvice.java');
+    for (const needle of ['@RestControllerAdvice(basePackages = "{{sc:basePackage}}")', 'implements ResponseBodyAdvice<Object>', 'instanceof Resource',
+      'body instanceof ApiResponse<?>', 'body instanceof byte[]', 'StreamingResponseBody', 'ResponseBodyEmitter', 'RawResponse.class',
+      'returnType.hasMethodAnnotation(RawResponse.class)', 'AnnotatedElementUtils.hasAnnotation(returnType.getContainingClass(), RawResponse.class)']) {
+      assert.ok(advice.includes(needle), `advice missing ${needle}`);
+    }
+    const raw = s.file('RawResponse.java');
+    assert.ok(raw.includes('@Retention(RetentionPolicy.RUNTIME)') && raw.includes('@Target({ElementType.METHOD, ElementType.TYPE})'));
+  });
+});
+
+/** Every file under a catalog directory, recursively. */
+async function filesUnder(dir) {
+  const out = [];
+  for (const entry of await readdir(dir, { withFileTypes: true })) {
+    const abs = path.join(dir, entry.name);
+    if (entry.isDirectory()) out.push(...await filesUnder(abs));
+    else out.push(abs);
+  }
+  return out;
+}
+
+test('spring rules and skills no longer mention ProblemDetail or problemdetails.enabled', async () => {
+  const files = await filesUnder(path.join(ROOT, 'catalog/stacks/spring-boot'));
+  assert.ok(files.length > 20);
+  for (const file of files) {
+    const text = await readFile(file, 'utf8');
+    assert.ok(!text.includes('ProblemDetail'), `${path.relative(ROOT, file)} still mentions ProblemDetail`);
+    assert.ok(!text.includes('problemdetails'), `${path.relative(ROOT, file)} still mentions problemdetails`);
+  }
+});
+
+test('spring paging: PageQuery bounds and PageData.of', async () => {
+  await withRealCatalog(async (c) => {
+    const s = skillText(c, ENDPOINT);
+    const query = s.file('PageQuery.java');
+    for (const needle of ['@Min(0) @Max(PageQuery.MAX_PAGE - 1) Integer page', '@Min(1) Integer size', 'Math.min(size, MAX_PAGE_SIZE)',
+      'DEFAULT_PAGE_SIZE = 20', 'MAX_PAGE_SIZE = 100', 'MAX_PAGE = 1000', 'page = page == null ? 0 : page;']) {
+      assert.ok(query.includes(needle), `PageQuery missing ${needle}`);
+    }
+    const data = s.file('PageData.java');
+    for (const needle of ['public record PageData<T>(List<T> items, Pagination pagination)',
+      'public record Pagination(int page, int size, long totalElements, int totalPages, boolean hasNext, boolean hasPrevious)',
+      'public static <T> PageData<T> of(List<T> items, int page, int size, long totalElements)', 'totalElements == 0 ? 0 :',
+      'page + 1 < totalPages', 'hasPrevious', 'page > 0']) {
+      assert.ok(data.includes(needle), `PageData missing ${needle}`);
+    }
+    assert.ok(s.body.includes('@Valid PageQuery query') && !s.body.includes('PageResponse'), 'list endpoints take PageQuery');
+  });
+});
+
+test('spring OpenAPI shows the envelope', async () => {
+  await withRealCatalog(async (c) => {
+    const s = skillText(c, ENDPOINT);
+    const docs = s.file('EnvelopeOpenApiCustomizer.java');
+    for (const needle of ['implements OperationCustomizer, OpenApiCustomizer', 'title("SuccessResponse")', 'ErrorResponse.class',
+      '"#/components/schemas/" + ERROR_SCHEMA', 'addApiResponse("4XX"', 'addApiResponse("5XX"', 'RawResponse.class', 'status.startsWith("2")',
+      'SpringDocAnnotationsUtils.extractSchema(']) {
+      assert.ok(docs.includes(needle), `OpenAPI customizer missing ${needle}`);
+    }
+    assert.ok(/only when the service uses springdoc/i.test(docs) && /springdoc/.test(s.body), 'springdoc stays optional');
   });
 });
