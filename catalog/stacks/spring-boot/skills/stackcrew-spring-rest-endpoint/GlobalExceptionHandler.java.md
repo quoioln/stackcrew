@@ -32,6 +32,7 @@ import org.springframework.web.method.annotation.MethodArgumentTypeMismatchExcep
 import org.springframework.web.multipart.MaxUploadSizeExceededException;
 import org.springframework.web.servlet.NoHandlerFoundException;
 import org.springframework.web.servlet.resource.NoResourceFoundException;
+import org.springframework.web.util.DisconnectedClientHelper;
 
 import java.util.List;
 
@@ -155,8 +156,20 @@ public class GlobalExceptionHandler {
         return failure(CommonErrorCode.RESOURCE_NOT_FOUND, List.of(), request, response);
     }
 
+    /**
+     * The client went away (AsyncRequestNotUsableException, Tomcat's ClientAbortException, a broken pipe): nothing can
+     * be written, so no body and no ERROR line. Another framework exception that carries its own 4xx status (406, a
+     * missing part or cookie) goes through CommonErrorCode.forStatus. Anything else is INTERNAL_ERROR with the stack.
+     */
     @ExceptionHandler(Exception.class)
     ResponseEntity<ErrorResponse> onUnexpected(Exception ex, HttpServletRequest request, HttpServletResponse response) {
+        if (DisconnectedClientHelper.isClientDisconnectedException(ex)) {
+            log.debug("client_disconnected {}", ex.getClass().getName());
+            return null;
+        }
+        if (ex instanceof org.springframework.web.ErrorResponse framework && framework.getStatusCode().is4xxClientError()) {
+            return failure(CommonErrorCode.forStatus(framework.getStatusCode().value()), List.of(), request, response);
+        }
         log.error("unhandled_exception", ex);
         return failure(CommonErrorCode.INTERNAL_ERROR, List.of(), request, response);
     }

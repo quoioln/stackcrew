@@ -39,7 +39,7 @@ class VerificationControllerTest {
 
 - `@MockitoBean` replaces `@MockBean` in Spring Boot 3.4+; use `@MockBean` on 3.0 to 3.3.
 - Request bodies in tests live in constants or `src/test/resources` fixtures, not inline literals repeated across tests.
-- Assert on the envelope for error paths: the status, `$.error.errorCode`, `$.error.errorNumber` and each `$.error.details[*].field`/`code`; on success, `$.success` and `$.data` (a delete: 200 and `$.data` null). `@WebMvcTest` picks up `ApiResponseAdvice` and `GlobalExceptionHandler`; give the test `app.service-number`.
+- Assert on the envelope for error paths: the status, `$.error.errorCode`, `$.error.errorNumber` and each `$.error.details[*].field`/`code`; on success, `$.success` and `$.data` (a delete: 200 and `$.data` null). `@WebMvcTest` picks up `ApiResponseAdvice`, `GlobalExceptionHandler` and `EnvelopeErrorController` by itself (no `@Import`); its context needs `app.service-number` (from `application.yml`, or `@WebMvcTest(properties = "app.service-number=07")`).
 
 ## Testcontainers
 

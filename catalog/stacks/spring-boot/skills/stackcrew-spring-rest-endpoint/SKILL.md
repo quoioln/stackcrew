@@ -22,6 +22,7 @@ Copy each sibling once per service; reuse it after that. They need `stackcrew-sp
 | `RawResponse.java` | opt-out annotation for a method or controller |
 | `ApiResponseAdvice.java` | `ResponseBodyAdvice` that wraps what controllers return; reads the ids from the request |
 | `GlobalExceptionHandler.java` | `@RestControllerAdvice`: every exception becomes the error envelope |
+| `EnvelopeErrorController.java` | `/error` as the error envelope, for what escapes MVC (a filter exception, a firewall rejection), through `CommonErrorCode.forStatus` |
 | `ValidationDetails.java` | Bean Validation failures as `details[]` |
 | `ApiSecurityHandlers.java` | 401 and 403 from the security chain as the error envelope |
 | `PageQuery.java`, `PageData.java` | validated `page`/`size` query and the `{ items, pagination }` data |
@@ -122,13 +123,14 @@ throw new ApiException(VerificationErrorCode.ALREADY_SUBMITTED,
         List.of(new ErrorDetail("documentNumber", DetailCode.ALREADY_EXISTS, "already exists")));
 ```
 
-- Framework errors are mapped once in `GlobalExceptionHandler`: validation (`MethodArgumentNotValidException`, `BindException`, `HandlerMethodValidationException`, `ConstraintViolationException`, a missing or mistyped query parameter) is `VALIDATION_FAILED` with details; a malformed body `MALFORMED_REQUEST`; a wrong media type `UNSUPPORTED_MEDIA_TYPE`; a body over the limit `PAYLOAD_TOO_LARGE`; a mistyped path variable `INVALID_PARAMETER`; a wrong method `METHOD_NOT_ALLOWED` (with `Allow`); an unknown route `ENDPOINT_NOT_FOUND`; a `@PreAuthorize` denial `ACCESS_DENIED`; `CrossTenantDeniedException` the same `RESOURCE_NOT_FOUND` as a missing row; anything else `INTERNAL_ERROR`, logged at ERROR with the stack. Never throw `ResponseStatusException`; add a handler to this class rather than catching in a controller.
+- Framework errors are mapped once in `GlobalExceptionHandler`: validation (`MethodArgumentNotValidException`, `BindException`, `HandlerMethodValidationException`, `ConstraintViolationException`, a missing or mistyped query parameter) is `VALIDATION_FAILED` with details; a malformed body `MALFORMED_REQUEST`; a wrong media type `UNSUPPORTED_MEDIA_TYPE`; a body over the limit `PAYLOAD_TOO_LARGE`; a mistyped path variable `INVALID_PARAMETER`; a wrong method `METHOD_NOT_ALLOWED` (with `Allow`); an unknown route `ENDPOINT_NOT_FOUND`; a `@PreAuthorize` denial `ACCESS_DENIED`; `CrossTenantDeniedException` the same `RESOURCE_NOT_FOUND` as a missing row; another framework exception with its own 4xx status (406, a missing part or cookie) through `CommonErrorCode.forStatus` (401, 403, 404, 405, 409, 413, 415, 422, 429 by name, any other 4xx `INVALID_PARAMETER`); a client disconnect writes nothing and logs at DEBUG; anything else `INTERNAL_ERROR`, logged at ERROR with the stack. What escapes MVC (a filter exception, a request the firewall rejects) reaches `EnvelopeErrorController` on `/error`, mapped by the same `forStatus`. Never throw `ResponseStatusException`; add a handler to this class rather than catching in a controller.
 - Provider failures (`stackcrew-spring-integration-provider`) get two handlers in `GlobalExceptionHandler`: `ProviderUnavailableException` is `DEPENDENCY_UNAVAILABLE`; `ProviderProtocolException` and an unmapped `ProviderRejectedException` are `BAD_GATEWAY`. An internal service's error envelope is thrown as `UpstreamApiException` and keeps its `errorNumber`.
 - `details[]`: one per (field, constraint), `field` a dotted path with `[index]` for list items (`items[1].sku`), `code` from `ValidationDetails` (`NotNull`/`NotBlank`/`NotEmpty` `REQUIRED`, `Email`/`Pattern` `INVALID_FORMAT`, a type mismatch `INVALID_TYPE`, `Size` `TOO_SHORT` or `TOO_LONG`, `Min`/`Max`/`Positive`/`Past`... `OUT_OF_RANGE`, anything else `INVALID_VALUE`), `message` the rule text, never the submitted value.
-- Spring Security answers 401 and 403 before MVC: register `ApiSecurityHandlers` on both the exception handling and the resource server (an invalid token goes through the latter). CORS exposes `x-request-id` and `x-support-code`.
+- Spring Security answers 401 and 403 before MVC: register `ApiSecurityHandlers` on both the exception handling and the resource server (an invalid token goes through the latter). Its 401 `WWW-Authenticate` is a constant (`Bearer error="invalid_token"`), never the decoder's message. Permit the ERROR dispatch, or the error page answers 401. CORS exposes `x-request-id` and `x-support-code`.
 
 ```java
-http.exceptionHandling(e -> e.authenticationEntryPoint(handlers).accessDeniedHandler(handlers))
+http.authorizeHttpRequests(a -> a.dispatcherTypeMatchers(DispatcherType.ERROR).permitAll().anyRequest().authenticated())
+    .exceptionHandling(e -> e.authenticationEntryPoint(handlers).accessDeniedHandler(handlers))
     .oauth2ResourceServer(o -> o.jwt(Customizer.withDefaults()).authenticationEntryPoint(handlers).accessDeniedHandler(handlers));
 ```
 
@@ -158,7 +160,7 @@ PageData<VerificationResponse> list(@Valid PageQuery query) {
 
 ## 8. Tests
 
-- `@WebMvcTest` for the controller, importing `ApiResponseAdvice` and `GlobalExceptionHandler`: the happy path asserts `$.success` true and `$.data` with the exact response record; validation failure asserts 400, `$.error.errorCode` `VALIDATION_FAILED` and each `$.error.details[*].field`/`code`; not found and forbidden assert their `errorCode` and status; a delete asserts 200 and `$.data` null. Assert the `x-request-id` and `x-support-code` headers on an error.
+- `@WebMvcTest` for the controller. `@WebMvcTest` picks up `ApiResponseAdvice`, `GlobalExceptionHandler` and `EnvelopeErrorController` by itself (no `@Import`); its context needs `app.service-number` (from `application.yml`, or `@WebMvcTest(properties = "app.service-number=07")`). The happy path asserts `$.success` true and `$.data` with the exact response record; validation failure asserts 400, `$.error.errorCode` `VALIDATION_FAILED` and each `$.error.details[*].field`/`code`; not found and forbidden assert their `errorCode` and status; a delete asserts 200 and `$.data` null. Assert the `x-request-id` and `x-support-code` headers on an error.
 - Service unit tests with mocked ports; repository tests with Testcontainers. See `stackcrew-spring-boot-testing`.
 
 ## Do not

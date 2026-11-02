@@ -40,6 +40,25 @@ public enum CommonErrorCode implements ErrorCode {
         this.summary = summary;
     }
 
+    /**
+     * The one status-to-code mapping for errors that carry only an HTTP status: the error page (EnvelopeErrorController)
+     * and framework exceptions with their own 4xx status. Any other 4xx is INVALID_PARAMETER, anything else INTERNAL_ERROR.
+     */
+    public static CommonErrorCode forStatus(int status) {
+        return switch (status) {
+            case 401 -> UNAUTHENTICATED;
+            case 403 -> ACCESS_DENIED;
+            case 404 -> ENDPOINT_NOT_FOUND;
+            case 405 -> METHOD_NOT_ALLOWED;
+            case 409 -> BUSINESS_CONFLICT;
+            case 413 -> PAYLOAD_TOO_LARGE;
+            case 415 -> UNSUPPORTED_MEDIA_TYPE;
+            case 422 -> BUSINESS_RULE_VIOLATION;
+            case 429 -> RATE_LIMIT_EXCEEDED;
+            default -> status >= 400 && status < 500 ? INVALID_PARAMETER : INTERNAL_ERROR;
+        };
+    }
+
     @Override
     public int category() {
         return category;

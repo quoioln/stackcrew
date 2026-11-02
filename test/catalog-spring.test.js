@@ -743,9 +743,13 @@ test("spring security handlers and the advice answer the envelope with the filte
     const advice = s.file('ApiResponseAdvice.java');
     for (const needle of ['implements AuthenticationEntryPoint, AccessDeniedHandler', 'private final ObjectMapper objectMapper;',
       'objectMapper.writeValue(response.getOutputStream(), body);', 'GlobalExceptionHandler.errorBody(code, List.of(), serviceNumber, request, response)',
-      'CommonErrorCode.UNAUTHENTICATED', 'CommonErrorCode.ACCESS_DENIED', 'BearerTokenAuthenticationEntryPoint']) {
+      'CommonErrorCode.UNAUTHENTICATED', 'CommonErrorCode.ACCESS_DENIED', 'BearerTokenAccessDeniedHandler',
+      'BEARER_INVALID_TOKEN = "Bearer error=\\"invalid_token\\""', 'BEARER = "Bearer"',
+      'response.setHeader(HttpHeaders.WWW_AUTHENTICATE, authException instanceof OAuth2AuthenticationException ? BEARER_INVALID_TOKEN : BEARER);']) {
       assert.ok(security.includes(needle), `security handlers missing ${needle}`);
     }
+    // the bearer entry point would send the decoder's message as error_description ("Jwt expired at ...")
+    assert.ok(!security.includes('BearerTokenAuthenticationEntryPoint') && !/getMessage\(\)|getDescription\(\)/.test(security), 'the 401 header is a constant');
     assert.ok(!security.includes('response.reset()'), 'the filter headers are never reset away');
     for (const needle of ['request.getAttribute(LogFields.SUPPORT_CODE_ATTRIBUTE)', 'request.getAttribute(LogFields.REQUEST_ID_ATTRIBUTE)',
       'response.setHeader(LogFields.REQUEST_ID_HEADER, requestId(request));', 'response.setHeader(LogFields.SUPPORT_CODE_HEADER, supportCode(request));',
@@ -857,5 +861,36 @@ test('spring OpenAPI shows the envelope', async () => {
       assert.ok(docs.includes(needle), `OpenAPI customizer missing ${needle}`);
     }
     assert.ok(/only when the service uses springdoc/i.test(docs) && /springdoc/.test(s.body), 'springdoc stays optional');
+  });
+});
+
+test('spring error page and catch-all: one status mapper, framework 4xx without a stack, client disconnects write nothing', async () => {
+  await withRealCatalog(async (c) => {
+    const s = skillText(c, ENDPOINT);
+    const table = s.file('CommonErrorCode.java');
+    assert.ok(table.includes('public static CommonErrorCode forStatus(int status)'));
+    for (const [status, code] of [[401, 'UNAUTHENTICATED'], [403, 'ACCESS_DENIED'], [404, 'ENDPOINT_NOT_FOUND'], [405, 'METHOD_NOT_ALLOWED'],
+      [409, 'BUSINESS_CONFLICT'], [413, 'PAYLOAD_TOO_LARGE'], [415, 'UNSUPPORTED_MEDIA_TYPE'], [422, 'BUSINESS_RULE_VIOLATION'], [429, 'RATE_LIMIT_EXCEEDED']]) {
+      assert.ok(table.includes(`case ${status} -> ${code};`), `forStatus ${status} -> ${code}`);
+    }
+    assert.ok(table.includes('default -> status >= 400 && status < 500 ? INVALID_PARAMETER : INTERNAL_ERROR;'), 'any other 4xx / 5xx');
+    const page = s.file('EnvelopeErrorController.java');
+    for (const needle of ['implements ErrorController', '@RequestMapping("${server.error.path:${error.path:/error}}")', 'RequestDispatcher.ERROR_STATUS_CODE',
+      'CommonErrorCode.forStatus(status)', 'GlobalExceptionHandler.errorBody(code, List.of(), serviceNumber, request, response)',
+      'dispatcherTypeMatchers(DispatcherType.ERROR).permitAll()']) {
+      assert.ok(page.includes(needle), `error controller missing ${needle}`);
+    }
+    assert.ok(!page.includes('ERROR_MESSAGE') && !/getMessage\(\)/.test(page), 'the error message attribute is never sent');
+    const handler = s.file('GlobalExceptionHandler.java');
+    const catchAll = handler.split('@ExceptionHandler(Exception.class)')[1];
+    const disconnect = catchAll.indexOf('DisconnectedClientHelper.isClientDisconnectedException(ex)');
+    const framework = catchAll.indexOf('ex instanceof org.springframework.web.ErrorResponse framework && framework.getStatusCode().is4xxClientError()');
+    const stack = catchAll.indexOf('log.error("unhandled_exception", ex);');
+    assert.ok(disconnect > 0 && framework > disconnect && stack > framework, 'disconnect, then framework 4xx, then INTERNAL_ERROR with the stack');
+    assert.ok(catchAll.slice(disconnect, framework).includes('log.debug(') && catchAll.slice(disconnect, framework).includes('return null;'), 'no body, no ERROR line');
+    assert.ok(catchAll.slice(framework, stack).includes('CommonErrorCode.forStatus(framework.getStatusCode().value())'));
+    assert.ok(s.body.includes('dispatcherTypeMatchers(DispatcherType.ERROR).permitAll()') && s.body.includes('`EnvelopeErrorController`'), 'SKILL.md wires the error page');
+    const slice = '`@WebMvcTest` picks up `ApiResponseAdvice`, `GlobalExceptionHandler` and `EnvelopeErrorController` by itself (no `@Import`)';
+    assert.ok(s.body.includes(slice) && c.stacks.get('spring-boot').testing.body.includes(slice), 'both docs state the verified slice behavior');
   });
 });
