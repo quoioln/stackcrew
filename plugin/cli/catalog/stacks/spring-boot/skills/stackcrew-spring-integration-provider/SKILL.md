@@ -44,26 +44,33 @@ public final class ProviderCodes {
 }
 ```
 
-Typed errors, one base, so callers and Resilience4j can tell the cases apart:
+Typed errors, one base, so callers and Resilience4j can tell the cases apart. The base extends `ApiException` (skill `stackcrew-spring-rest-endpoint`), so `GlobalExceptionHandler` answers each with this service's own group-80 envelope and no handler is added:
 
 ```java
-public abstract class ProviderException extends RuntimeException {
+public abstract class ProviderException extends ApiException {
     @Serial private static final long serialVersionUID = 1L;       // required: the build compiles with -Xlint:all -Werror
     private final String providerCode;
-    protected ProviderException(String providerCode, String message, Throwable cause) { super(message, cause); this.providerCode = providerCode; }
+    private final String diagnostic;                               // for logs only: the envelope shows the code's fixed summary
+    protected ProviderException(String providerCode, ErrorCode code, String message, Throwable cause) {
+        super(code);
+        this.providerCode = providerCode;
+        this.diagnostic = message;
+        if (cause != null) { initCause(cause); }
+    }
     public String providerCode() { return providerCode; }
+    @Override public String getMessage() { return diagnostic; }
 }
-public class ProviderUnavailableException extends ProviderException {   // timeout, connection refused, 5xx, 429, 409, 401, 403
+public class ProviderUnavailableException extends ProviderException {   // timeout, connection refused, 5xx, 429, 409, 401, 403: DEPENDENCY_UNAVAILABLE
     @Serial private static final long serialVersionUID = 1L;
-    public ProviderUnavailableException(String code, String message, Throwable cause) { super(code, message, cause); }
+    public ProviderUnavailableException(String code, String message, Throwable cause) { super(code, CommonErrorCode.DEPENDENCY_UNAVAILABLE, message, cause); }
 }
-public class ProviderRejectedException extends ProviderException {      // 400, 404, 422 (any other 4xx): our request was refused; retrying will not help
+public class ProviderRejectedException extends ProviderException {      // 400, 404, 422 (any other 4xx): BAD_GATEWAY, unless a feature catches it and throws its own domain error
     @Serial private static final long serialVersionUID = 1L;
-    public ProviderRejectedException(String code, String message, Throwable cause) { super(code, message, cause); }
+    public ProviderRejectedException(String code, String message, Throwable cause) { super(code, CommonErrorCode.BAD_GATEWAY, message, cause); }
 }
-public class ProviderProtocolException extends ProviderException {      // undecodable body, unknown result code
+public class ProviderProtocolException extends ProviderException {      // undecodable body, unknown result code: BAD_GATEWAY
     @Serial private static final long serialVersionUID = 1L;
-    public ProviderProtocolException(String code, String message, Throwable cause) { super(code, message, cause); }
+    public ProviderProtocolException(String code, String message, Throwable cause) { super(code, CommonErrorCode.BAD_GATEWAY, message, cause); }
 }
 ```
 
@@ -497,6 +504,37 @@ One test class per adapter (`C06AdapterTest`) with `@WireMockTest`. Because Resi
 
 Add the new code to `ProviderRegistryTest`, and make sure `StackcrewArchitectureTest` still passes.
 
+## Calling another internal service
+
+Another service of ours answers in the common envelope, so its errors are classified by what it said, not by status alone. Keep the `RestClient` factory, `LoggingClientInterceptor`, retry, breaker and bulkhead of steps 4 and 7 with the same retried statuses (5xx, 429, 409, 401, 403). The differences from a third party:
+
+- Read the answer with `exchange(...)` (no status handler throws) as `ResponseEntity<String>`, and decode it with `InternalServiceErrors` (sibling, package `common.api`) after the retries are spent. A retried status is thrown as a `RetriedStatusException` (a `RuntimeException` with a `response()` accessor, listed in `retryExceptions` and `recordExceptions`), so Resilience4j retries and counts it; when attempts run out its last response is unwrapped.
+
+```java
+ResponseEntity<String> attempt(String id) {
+    ResponseEntity<String> response = client.get().uri("/customers/{id}", id)
+        .exchange((request, upstream) -> ResponseEntity.status(upstream.getStatusCode()).headers(upstream.getHeaders())
+            .body(StreamUtils.copyToString(upstream.getBody(), StandardCharsets.UTF_8)));
+    if (isRetryableStatus(response.getStatusCode())) { throw new RetriedStatusException(response); }
+    return response;
+}
+
+CustomerData fetch(String id) {
+    try {
+        return InternalServiceErrors.unwrap(guarded.apply(id), CustomerData.class, mapper);     // guarded = breaker(retry(bulkhead(attempt)))
+    } catch (RetriedStatusException e) {
+        return InternalServiceErrors.unwrap(e.response(), CustomerData.class, mapper);
+    } catch (ResourceAccessException | CallNotPermittedException | BulkheadFullException e) {
+        throw InternalServiceErrors.onTransportFailure(e);
+    }
+}
+```
+
+- `unwrap` returns the success envelope's `data`. A 4xx envelope (not 401 or 403) is thrown as `UpstreamApiException` with B's status, `errorNumber`, `errorCode` and details; a 5xx envelope the same with status 502. B's 401 or 403, envelope or not, is `DEPENDENCY_UNAVAILABLE`: our credential is wrong, which is not the caller's fault.
+- A timeout is `GATEWAY_TIMEOUT`; connection refused or reset, or a 5xx without an envelope (an HTML 502 from a proxy), is `DEPENDENCY_UNAVAILABLE`; a 2xx or 4xx whose body is not an envelope is `BAD_GATEWAY`. These carry this service's own `errorNumber`.
+- The `http_out` line from `LoggingClientInterceptor` carries `upstreamErrorNumber`, `upstreamSupportCode` and `upstreamRequestId` whenever B answered with an envelope: search B's logs by `upstreamSupportCode`. The error body keeps this service's own `supportCode` and `requestId`.
+- WireMock tests, one row each: success envelope gives data; 404 envelope gives `UpstreamApiException` 404 with B's number; 500 envelope gives 502 with B's number; 401 envelope gives `DEPENDENCY_UNAVAILABLE`; an HTML 502 gives `DEPENDENCY_UNAVAILABLE`; a 200 without an envelope gives `BAD_GATEWAY`; a delay over the read timeout gives `GATEWAY_TIMEOUT`.
+
 ## Camel variant (only if the profile lists the camel add-on)
 
 Skip this section unless `stackcrew.json` has `camel` in `addons`. When it does, route many providers with Apache Camel instead of the hand-written template base:
@@ -516,5 +554,5 @@ Skip this section unless `stackcrew.json` has `camel` in `addons`. When it does,
 - Do not build a template base, registry or strategy for a single provider when `docs/stackcrew/architecture-profile.md` does not record that more are expected (`ProviderClientFactory` and `ProviderProperties` are plain configuration plumbing and are fine from the first provider).
 - Do not retry non-idempotent calls blindly, do not retry or trip the breaker on a refusal (400, 404, 422), and do not swallow provider errors into `null` or an empty result.
 - Do not call the provider inside a `@Transactional` method, and do not rely on `@Transactional`, `@Retry` or `@CircuitBreaker` through `this.` self-invocation.
-- Do not return provider messages or codes to API clients; `GlobalExceptionHandler` answers a provider failure with this service's own `DEPENDENCY_UNAVAILABLE` or `BAD_GATEWAY` envelope (skill `stackcrew-spring-rest-endpoint`).
+- Do not return provider messages or codes to API clients; a provider exception is an `ApiException`, so `GlobalExceptionHandler` answers it with this service's own `DEPENDENCY_UNAVAILABLE` or `BAD_GATEWAY` envelope (skill `stackcrew-spring-rest-endpoint`).
 - Do not test against the real provider; use WireMock.

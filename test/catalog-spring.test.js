@@ -894,3 +894,49 @@ test('spring error page and catch-all: one status mapper, framework 4xx without 
     assert.ok(s.body.includes(slice) && c.stacks.get('spring-boot').testing.body.includes(slice), 'both docs state the verified slice behavior');
   });
 });
+
+test('spring internal client: upstream classification table', async () => {
+  await withRealCatalog(async (c) => {
+    const s = skillText(c, 'stackcrew-spring-integration-provider');
+    const errors = s.file('InternalServiceErrors.java');
+    assert.ok(errors.includes('package {{sc:basePackage}}.common.api;'));
+    assert.match(errors, /status == HttpStatus\.UNAUTHORIZED\.value\(\) \|\| status == HttpStatus\.FORBIDDEN\.value\(\)\) \{\n\s+throw new ApiException\(CommonErrorCode\.DEPENDENCY_UNAVAILABLE\)/, 'B 401/403 is DEPENDENCY_UNAVAILABLE');
+    assert.match(errors, /new UpstreamApiException\(code\.is5xxServerError\(\) \? HttpStatus\.BAD_GATEWAY : resolved, failure\.error\(\)/, 'a 5xx envelope passes on as 502');
+    assert.match(errors, /code\.is5xxServerError\(\) \? CommonErrorCode\.DEPENDENCY_UNAVAILABLE : CommonErrorCode\.BAD_GATEWAY/, '5xx without envelope unavailable, other non-envelope bad gateway');
+    assert.ok(errors.includes('throw new ApiException(CommonErrorCode.BAD_GATEWAY)'), 'a non-envelope 2xx body is BAD_GATEWAY');
+    assert.ok(errors.includes('SocketTimeoutException') && errors.includes('CommonErrorCode.GATEWAY_TIMEOUT') && errors.includes('CommonErrorCode.DEPENDENCY_UNAVAILABLE'), 'timeout vs refused');
+    assert.ok(!/getMessage\(\)/.test(errors), 'an exception message is never read');
+    for (const needle of ['upstreamErrorNumber', 'upstreamSupportCode', 'upstreamRequestId', '## Calling another internal service', 'InternalServiceErrors.unwrap(', 'InternalServiceErrors.onTransportFailure(']) {
+      assert.ok(s.body.includes(needle), `integration-provider SKILL.md missing ${needle}`);
+    }
+    const logging = skillText(c, 'stackcrew-spring-request-logging');
+    const out = logging.file('LoggingClientInterceptor.java');
+    for (const needle of ['LogFields.UPSTREAM_ERROR_NUMBER', 'LogFields.UPSTREAM_SUPPORT_CODE', 'LogFields.UPSTREAM_REQUEST_ID']) {
+      assert.ok(out.includes(needle), `http_out line missing ${needle}`);
+    }
+    assert.ok(c.stacks.get('spring-boot').rules.body.includes('InternalServiceErrors'), 'rules point to the internal-service section');
+  });
+});
+
+test('spring provider exceptions are ApiExceptions, so no provider handler is left to add', async () => {
+  await withRealCatalog(async (c) => {
+    const p = skillText(c, 'stackcrew-spring-integration-provider').body;
+    assert.ok(p.includes('public abstract class ProviderException extends ApiException'));
+    assert.match(p, /ProviderUnavailableException[^\n]*\n[^\n]*\n[^\n]*CommonErrorCode\.DEPENDENCY_UNAVAILABLE/);
+    assert.match(p, /ProviderRejectedException[^\n]*\n[^\n]*\n[^\n]*CommonErrorCode\.BAD_GATEWAY/);
+    assert.match(p, /ProviderProtocolException[^\n]*\n[^\n]*\n[^\n]*CommonErrorCode\.BAD_GATEWAY/);
+    const handler = skillText(c, ENDPOINT).file('GlobalExceptionHandler.java');
+    assert.ok(!/add\s+ProviderUnavailableException|ProviderUnavailableException ->/.test(handler), 'no stale add-a-handler note');
+    assert.ok(!c.stacks.get('spring-boot').rules.body.includes('@ExceptionHandler(ProviderUnavailableException.class)'));
+  });
+});
+
+test('spring message consumers mint their own supportCode and remove it on every exit', async () => {
+  await withRealCatalog(async (c) => {
+    const k = skillText(c, 'stackcrew-spring-kafka-consumer').body;
+    assert.ok(k.includes('MDC.put(LogFields.SUPPORT_CODE, LogFields.newSupportCode())') && k.includes('MDC.remove(LogFields.SUPPORT_CODE)'), 'ConsumerMdc');
+    const s6 = skillText(c, 'stackcrew-spring-request-logging').body.split('## 6.')[1].split('\n## ')[0];
+    assert.ok(s6.includes('MDC.put(LogFields.SUPPORT_CODE, LogFields.newSupportCode())') && /finally \{[^}]*MDC\.remove\(LogFields\.SUPPORT_CODE\)/.test(s6), 'generic consumer');
+    assert.ok(!/SUPPORT_CODE_HEADER/.test(k + s6), 'never read from a header');
+  });
+});

@@ -92,19 +92,20 @@ RestClient client = builder.clone().baseUrl(baseUrl)
 ```
 
 - `BufferingClientHttpRequestFactory` is required: the interceptor reads the response body to log it, and without buffering the caller then reads an empty body. Set it after any other `requestFactory(...)` call on the builder, since the last one wins.
-- `target` is the service or provider code. The line: `event=http_out`, `target`, `method`, `url` (scheme, host, port and path; no query string, no user info), `status`, `durationMs`, `reqBody`, `resBody`, or `error` with the exception class on an I/O failure. A response body that breaks off while it is read still gives one line, with the status and `error` and no `resBody`.
+- `target` is the service or provider code. The line: `event=http_out`, `target`, `method`, `url` (scheme, host, port and path; no query string, no user info), `status`, `durationMs`, `reqBody`, `resBody`, or `error` with the exception class on an I/O failure. When the response is another internal service's envelope, the line also has `upstreamErrorNumber`, `upstreamSupportCode` and `upstreamRequestId` (each checked before it is written). A response body that breaks off while it is read still gives one line, with the status and `error` and no `resBody`.
 - On Boot 3.0 and 3.1 (no `RestClient`), add the same interceptor to `RestTemplateBuilder` with `.requestFactory(() -> new BufferingClientHttpRequestFactory(...))`.
 - Adapters, services and controllers never log bodies themselves.
 
 ## 6. Message consumers
 
-Producers send the headers `x-request-id`, `x-tenant-id` and `x-user-id` (`LogFields.*_HEADER`). A consumer checks them (`LogFields.safeRequestIdOrNew`, `safeIdOrNull`: an unsafe tenant or user counts as absent), puts them in MDC, logs one `message_in` line with the payload through the same masker, runs the handler inside `TenantContext.runAs` (skill `stackcrew-spring-jpa-entity`), and clears MDC on every exit path. `runAs` never grants the system identity, so `x-user-id: {{sc:systemUser}}` cannot read across tenants. The Kafka version is in `stackcrew-spring-kafka-consumer` (`ConsumerMdc`); any other broker follows the same shape:
+Producers send the headers `x-request-id`, `x-tenant-id` and `x-user-id` (`LogFields.*_HEADER`). A consumer checks them (`LogFields.safeRequestIdOrNew`, `safeIdOrNull`: an unsafe tenant or user counts as absent), puts them in MDC, mints its own `supportCode` (`LogFields.newSupportCode()`, never read from a header), logs one `message_in` line with the payload through the same masker, runs the handler inside `TenantContext.runAs` (skill `stackcrew-spring-jpa-entity`), and clears MDC on every exit path. `runAs` never grants the system identity, so `x-user-id: {{sc:systemUser}}` cannot read across tenants. The Kafka version is in `stackcrew-spring-kafka-consumer` (`ConsumerMdc`); any other broker follows the same shape:
 
 ```java
 void onMessage(String payload, String requestIdHeader, String tenantIdHeader, String userIdHeader) {
     String tenantId = LogFields.safeIdOrNull(tenantIdHeader);
     String userId = LogFields.safeIdOrNull(userIdHeader);
     MDC.put(LogFields.REQUEST_ID, LogFields.safeRequestIdOrNew(requestIdHeader));
+    MDC.put(LogFields.SUPPORT_CODE, LogFields.newSupportCode());   // minted here: a support code is never read from a header
     if (tenantId != null) { MDC.put(LogFields.TENANT_ID, tenantId); }
     if (userId != null) { MDC.put(LogFields.USER_ID, userId); }
     try {
@@ -118,6 +119,7 @@ void onMessage(String payload, String requestIdHeader, String tenantIdHeader, St
         TenantContext.runAs(tenantId, userId, () -> handler.handle(codec.read(payload)));
     } finally {
         MDC.remove(LogFields.REQUEST_ID);
+        MDC.remove(LogFields.SUPPORT_CODE);
         MDC.remove(LogFields.TENANT_ID);
         MDC.remove(LogFields.USER_ID);
     }

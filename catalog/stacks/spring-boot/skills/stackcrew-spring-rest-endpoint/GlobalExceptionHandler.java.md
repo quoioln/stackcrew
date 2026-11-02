@@ -40,9 +40,8 @@ import java.util.List;
  * Every exception becomes the error envelope: status, errorNumber, errorCode and summary from the error table, never
  * from the exception. Not scoped to a package, so unknown routes, wrong methods and wrong media types (no controller
  * method was resolved) are answered here too. Anything unmapped is INTERNAL_ERROR, logged at ERROR with the stack.
- * Provider failures (skill stackcrew-spring-integration-provider) are mapped here as well: add
- * ProviderUnavailableException -> DEPENDENCY_UNAVAILABLE, and ProviderProtocolException and an unmapped
- * ProviderRejectedException -> BAD_GATEWAY.
+ * Provider failures need no handler: the provider exceptions (skill stackcrew-spring-integration-provider) extend
+ * ApiException with DEPENDENCY_UNAVAILABLE or BAD_GATEWAY.
  */
 @RestControllerAdvice
 @EnableConfigurationProperties(ServiceNumberProperties.class)

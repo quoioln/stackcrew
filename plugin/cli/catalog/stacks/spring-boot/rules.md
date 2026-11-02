@@ -43,14 +43,7 @@ RestClient create(String providerCode) {
 }
 ```
 
-- Error responses are the error envelope built by `GlobalExceptionHandler` from the error table: `errorNumber`, `errorCode` and the code's fixed summary; never `ex.getMessage()` (it can carry provider codes or PII). Framework exceptions go through the same handler, not through Spring's own error body. A provider failure is one of this service's group-80 errors (two handlers added to `GlobalExceptionHandler`):
-
-```java
-@ExceptionHandler(ProviderUnavailableException.class)
-ResponseEntity<ErrorResponse> onProviderDown(ProviderUnavailableException ex, HttpServletRequest request, HttpServletResponse response) {
-    return failure(CommonErrorCode.DEPENDENCY_UNAVAILABLE, List.of(), request, response);   // Protocol and unmapped Rejected: BAD_GATEWAY
-}
-```
+- Error responses are the error envelope built by `GlobalExceptionHandler` from the error table: `errorNumber`, `errorCode` and the code's fixed summary; never `ex.getMessage()` (it can carry provider codes or PII). Framework exceptions go through the same handler, not through Spring's own error body. A provider failure is one of this service's group-80 errors with no handler to add: `ProviderUnavailableException` extends `ApiException` with `DEPENDENCY_UNAVAILABLE`, `ProviderRejectedException` and `ProviderProtocolException` with `BAD_GATEWAY` (a feature may catch a rejection and throw its own domain error).
 
 - A JSON controller never returns `String`: the String converter is chosen before the advice wraps the body and the call fails. Return a record, or mark a deliberately raw method `@RawResponse`.
 - `app.service-number` (two digits, quoted in YAML) is the `SS` of every `errorNumber`; it comes from configuration, never from code.
@@ -129,7 +122,8 @@ Full steps with code: skill `stackcrew-spring-integration-provider`.
 
 - Logback with a plain pattern for dev (add `%kvp` so the key-value fields print) and JSON for prod (`logging.structured.format.console=logstash` on Boot 3.4+, logstash-logback-encoder before), switched by Spring profile.
 - Request logging per `core-logging`: `HttpLoggingFilter` (a `OncePerRequestFilter` with `ContentCachingRequestWrapper` for the request and the write-through `TeeResponseWrapper` for the response) is added to the security filter chain before `CorsFilter`, so CORS, 401 and 403 rejections get their line too, and `HttpLoggingFilter.UserMdc` after `BearerTokenAuthenticationFilter`. MDC carries `requestId`, `userId` and `tenantId` (`traceId`, `spanId` come from Micrometer Tracing) and is cleared in `finally`. One `http_in` line per request: method, templated route, status, `durationMs`, `reqBody`, `resBody`. Responses are never held back: headers and bytes go straight to the client, and only JSON and form bodies of non-streaming requests are copied for masking; everything else logs its size.
-- Message consumers check the `x-request-id`, `x-tenant-id` and `x-user-id` headers, put them in MDC, log one `message_in` line with the masked payload, run the handler inside `TenantContext.runAs` (never as the system identity), and clear MDC in `finally`. Producers send the three headers.
+- Message consumers check the `x-request-id`, `x-tenant-id` and `x-user-id` headers, put them in MDC, mint their own `supportCode` (`LogFields.newSupportCode()`, never read from a header), log one `message_in` line with the masked payload, run the handler inside `TenantContext.runAs` (never as the system identity), and clear MDC (including `supportCode`) in `finally`. Producers send the three headers.
+- Calling another internal service of ours: keep the retry and breaker below, and give `RestClient` the `InternalServiceErrors` helper (skill `stackcrew-spring-integration-provider`, section "Calling another internal service"): its 4xx envelope keeps the origin `errorNumber`.
 - Outbound calls: one `LoggingClientInterceptor` per `RestClient`, on a `BufferingClientHttpRequestFactory`, writes one `http_out` line with target, sanitized URL, status, duration and both bodies.
 - Bodies go only through `BodyMasker`, configured by `MaskingProperties`: `app.logging.mask-fields` (PII list; empty means the default), `app.logging.max-body-bytes` (16384), `app.logging.log-bodies` (true). Never the `Authorization` header or cookies. Do not log a command or request record directly: its `toString` prints every field. Full setup: skill `stackcrew-spring-request-logging`.
 - Levels per package through `logging.level.*`; never DEBUG SQL in prod. Use `org.hibernate.SQL=DEBUG` and `org.hibernate.orm.jdbc.bind=TRACE` in dev only, and a slow-query log (datasource-proxy or p6spy at about 300 ms) in prod.

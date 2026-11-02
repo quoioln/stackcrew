@@ -26,6 +26,10 @@ public final class LogFields {
     public static final String ERROR = "error";
     public static final String REQ_BODY = "reqBody";
     public static final String RES_BODY = "resBody";
+    /** http_out, when another internal service answered with an envelope: its errorNumber, supportCode and requestId. */
+    public static final String UPSTREAM_ERROR_NUMBER = "upstreamErrorNumber";
+    public static final String UPSTREAM_SUPPORT_CODE = "upstreamSupportCode";
+    public static final String UPSTREAM_REQUEST_ID = "upstreamRequestId";
 
     /** MDC keys; traceId and spanId come from Micrometer Tracing. */
     public static final String REQUEST_ID = "requestId";

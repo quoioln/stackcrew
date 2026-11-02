@@ -3,6 +3,8 @@ Goes to `src/main/java`, package `{{sc:basePackage}}.common.logging`, as `Loggin
 ```java
 package {{sc:basePackage}}.common.logging;
 
+import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.slf4j.event.Level;
@@ -18,6 +20,7 @@ import java.io.IOException;
 import java.net.URI;
 import java.util.concurrent.TimeUnit;
 import java.util.function.Supplier;
+import java.util.regex.Pattern;
 
 /**
  * One http_out line per outbound call, with masked bodies. One instance per client, named after the target service.
@@ -27,6 +30,10 @@ import java.util.function.Supplier;
 public class LoggingClientInterceptor implements ClientHttpRequestInterceptor {
 
     private static final Logger log = LoggerFactory.getLogger(LoggingClientInterceptor.class);
+    private static final ObjectMapper JSON = new ObjectMapper();
+    private static final Pattern ERROR_NUMBER = Pattern.compile("\\d{7}");
+    private static final Pattern SUPPORT_CODE = Pattern.compile("[A-Z]{6}");
+    private static final Pattern SAFE_ID = Pattern.compile("[A-Za-z0-9._-]{1,64}");
 
     private final String target;
     private final BodyMasker masker;
@@ -51,7 +58,8 @@ public class LoggingClientInterceptor implements ClientHttpRequestInterceptor {
         int status = response.getStatusCode().value();
         Level level = HttpLoggingFilter.levelFor(status);
         byte[] responseBody = null;
-        if (masker.logBodies()) {
+        MediaType responseType = response.getHeaders().getContentType();
+        if (masker.logBodies() || BodyMasker.isMaskable(responseType == null ? null : responseType.toString())) { // JSON is read for the upstream ids too
             try {
                 responseBody = response.getBody().readAllBytes();
             } catch (IOException | RuntimeException e) {
@@ -62,8 +70,8 @@ public class LoggingClientInterceptor implements ClientHttpRequestInterceptor {
             }
         }
         byte[] readBody = responseBody;
-        logSafely(() -> withBody(line(request, body, start, level).addKeyValue(LogFields.STATUS, status), LogFields.RES_BODY, readBody,
-                response.getHeaders().getContentType()), request, start, level, status);
+        logSafely(() -> withResponse(line(request, body, start, level).addKeyValue(LogFields.STATUS, status), readBody, responseType),
+                request, start, level, status);
         return response;
     }
 
@@ -103,6 +111,42 @@ public class LoggingClientInterceptor implements ClientHttpRequestInterceptor {
         String masked = masker.mask(body, type == null ? null : type.toString());
         return masked == null ? line : line.addKeyValue(key, masked);
     }
+
+    private LoggingEventBuilder withResponse(LoggingEventBuilder line, byte[] body, MediaType type) {
+        LoggingEventBuilder out = masker.logBodies() ? withBody(line, LogFields.RES_BODY, body, type) : line;
+        return body == null ? out : withUpstreamIds(out, body);
+    }
+
+    /**
+     * When the body is another internal service's envelope, its ids go on the line, so one search finds both sides.
+     * Each value is checked first: it comes from outside and goes into a log line.
+     */
+    private static LoggingEventBuilder withUpstreamIds(LoggingEventBuilder line, byte[] body) {
+        UpstreamEnvelope envelope;
+        try {
+            envelope = JSON.readValue(body, UpstreamEnvelope.class);
+        } catch (IOException | RuntimeException notAnEnvelope) {
+            return line;
+        }
+        if (envelope == null || envelope.success() == null || !matches(SUPPORT_CODE, envelope.supportCode())
+                || !matches(SAFE_ID, envelope.requestId())) {
+            return line;
+        }
+        LoggingEventBuilder out = line.addKeyValue(LogFields.UPSTREAM_SUPPORT_CODE, envelope.supportCode())
+                .addKeyValue(LogFields.UPSTREAM_REQUEST_ID, envelope.requestId());
+        return envelope.error() != null && matches(ERROR_NUMBER, envelope.error().errorNumber())
+                ? out.addKeyValue(LogFields.UPSTREAM_ERROR_NUMBER, envelope.error().errorNumber()) : out;
+    }
+
+    private static boolean matches(Pattern pattern, String value) {
+        return value != null && pattern.matcher(value).matches();
+    }
+
+    @JsonIgnoreProperties(ignoreUnknown = true)
+    record UpstreamEnvelope(Boolean success, String supportCode, String requestId, UpstreamError error) {}
+
+    @JsonIgnoreProperties(ignoreUnknown = true)
+    record UpstreamError(String errorNumber) {}
 
     /** Scheme, host, port and path only: the query string and user info can carry secrets or PII. */
     static String sanitize(URI uri) {

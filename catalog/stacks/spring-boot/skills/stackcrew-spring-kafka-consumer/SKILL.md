@@ -217,7 +217,7 @@ The group id comes from the constant in `@KafkaListener(groupId = ...)`, so it i
 ## 6. The listener: restore the context, parse, delegate
 
 The listener only restores the context, logs the `message_in` line, parses and delegates.
-- `ConsumerMdc` reads the correlation id and `x-request-id` from the record headers, or creates them when missing or unsafe (`LogFields.safeRequestIdOrNew`). It also puts `x-tenant-id` and `x-user-id` in MDC after `LogFields.safeIdOrNull` (an unsafe value counts as absent), and its `close()` removes all four keys, so every exit path clears them.
+- `ConsumerMdc` reads the correlation id and `x-request-id` from the record headers, or creates them when missing or unsafe (`LogFields.safeRequestIdOrNew`) and mints a `supportCode` (`LogFields.newSupportCode()`, never read from a header). It also puts `x-tenant-id` and `x-user-id` in MDC after `LogFields.safeIdOrNull` (an unsafe value counts as absent), and its `close()` removes all five keys, so every exit path clears them.
 - The handler runs inside `TenantContext.runAs` with the tenant and user from the headers (skill `stackcrew-spring-jpa-entity`). Its `@Transactional` then opens the Hibernate session with that tenant. A record without `x-tenant-id` reads no tenant rows and cannot insert any (`MissingTenantException`). `runAs` never grants the system identity: `x-user-id: {{sc:systemUser}}` does not let a consumer read across tenants. Only a scheduled job started with `TenantContext.runAsSystem` can.
 - A tombstone (null value) logs its `message_in` line without `reqBody`, and `EventCodec.read` throws the non-retryable `InvalidEventException` (step 2), so it goes to the dead-letter topic at once instead of being retried.
 
@@ -259,6 +259,7 @@ final class ConsumerMdc implements AutoCloseable {
     static ConsumerMdc open(Headers headers) {
         MDC.put(MdcKeys.CORRELATION_ID, LogFields.safeRequestIdOrNew(value(headers, KafkaHeaderNames.CORRELATION_ID)));
         MDC.put(LogFields.REQUEST_ID, LogFields.safeRequestIdOrNew(value(headers, LogFields.REQUEST_ID_HEADER)));
+        MDC.put(LogFields.SUPPORT_CODE, LogFields.newSupportCode());
         ConsumerMdc context = new ConsumerMdc(LogFields.safeIdOrNull(value(headers, LogFields.TENANT_ID_HEADER)),
                 LogFields.safeIdOrNull(value(headers, LogFields.USER_ID_HEADER)));
         if (context.tenantId != null) { MDC.put(LogFields.TENANT_ID, context.tenantId); }
@@ -274,6 +275,7 @@ final class ConsumerMdc implements AutoCloseable {
     public void close() {
         MDC.remove(MdcKeys.CORRELATION_ID);
         MDC.remove(LogFields.REQUEST_ID);
+        MDC.remove(LogFields.SUPPORT_CODE);
         MDC.remove(LogFields.TENANT_ID);
         MDC.remove(LogFields.USER_ID);
     }
@@ -373,7 +375,7 @@ Cover each of these:
 - an unparseable or invalid payload reaches `KafkaTopics.ORDER_PAID_DLT` after one attempt (assert one delivery, no backoff);
 - a transient failure retries and then succeeds, and the offset is committed only after success;
 - retries are exhausted and the record lands on the dead-letter topic with the original payload;
-- a record without a correlation header gets a generated one in MDC;
+- a record without a correlation header gets a generated one in MDC, and every record gets its own six-letter `supportCode`;
 - the handler sees the tenant and user from `x-tenant-id` and `x-user-id` (`TenantContext.currentTenantId()` inside the handler), one `message_in` line has the masked payload, and MDC is empty after the listener returns or throws.
 
 Unit-test `EventCodec` and the handler without Kafka (the handler needs only a database slice test).
