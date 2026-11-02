@@ -142,7 +142,7 @@ export async function createTestApp(logger: CapturingLogger): Promise<NestExpres
 
 - `ConfigModule.forRoot({ validate })` runs when `AppModule` is imported, so `createTestApp` imports it only after `beforeAll` has set `DATABASE_URL` (from the Testcontainers database) and started the issuer. Never import `AppModule` at the top of an e2e file. The migrations run in `beforeAll` (`app.get(DataSource).runMigrations()`).
 - One app per test file, created in `beforeAll` and closed in `afterAll` (`app.close()`, then the container and the issuer).
-- Assert the error envelope of every error path (`success: false`, `error.errorCode`, `error.errorNumber` matching `^d{7}$`, `error.details`), and that `supportCode` and `requestId` equal the `x-support-code` and `x-request-id` headers; never an exception message. `createTestApp` sets `SERVICE_NUMBER` (`07`) before it imports `AppModule`, so errorNumbers read `07CCNNN`.
+- Assert the error envelope of every error path (`success: false`, `error.errorCode`, `error.errorNumber` matching `^\d{7}$`, `error.details`), and that `supportCode` and `requestId` equal the `x-support-code` and `x-request-id` headers; never an exception message. `createTestApp` sets `SERVICE_NUMBER` (`07`) before it imports `AppModule`, so errorNumbers read `07CCNNN`.
 - Request bodies used by several tests live in constants or fixture files.
 
 ## Third-party fakes
