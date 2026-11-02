@@ -449,6 +449,30 @@ test('request logging logs every request, clears MDC on every exit and never hol
   });
 });
 
+test('spring correlation: UUID request id, supportCode in MDC, attributes and headers before the chain', async () => {
+  await withRealCatalog(async (c) => {
+    const s = skillText(c, 'stackcrew-spring-request-logging');
+    const fields = s.file('LogFields.java');
+    for (const needle of ['requestIdOrNew(', 'UUID.fromString(', 'newSupportCode()', 'nextInt(26)', 'SecureRandom', '"x-support-code"', '"supportCode"']) {
+      assert.ok(fields.includes(needle), `LogFields missing ${needle}`);
+    }
+    assert.match(fields, /public static final String REQUEST_ID_ATTRIBUTE/);
+    assert.match(fields, /public static final String SUPPORT_CODE_ATTRIBUTE/);
+    assert.ok(fields.includes('safeRequestIdOrNew('), 'message headers keep the lenient check');
+    const filter = s.file('HttpLoggingFilter.java');
+    for (const needle of ['LogFields.requestIdOrNew(request.getHeader(LogFields.REQUEST_ID_HEADER))', 'request.setAttribute(LogFields.SUPPORT_CODE_ATTRIBUTE',
+      'response.setHeader(LogFields.SUPPORT_CODE_HEADER', 'MDC.put(LogFields.SUPPORT_CODE']) {
+      assert.ok(filter.includes(needle), `filter missing ${needle}`);
+    }
+    assert.ok(!filter.includes('private static final String REQUEST_ID_ATTRIBUTE'), 'the attribute name is the public LogFields constant');
+    assert.match(filter, /finally \{[^}]*MDC\.remove\(LogFields\.SUPPORT_CODE\)/, 'supportCode removed in a finally');
+    const header = filter.indexOf('setHeader(LogFields.SUPPORT_CODE_HEADER');
+    const chain = filter.search(/(?:chain|filterChain)\.doFilter\(request, response\)/);
+    assert.ok(header > 0 && chain > header, 'headers are set before the chain runs');
+    assert.ok(s.body.includes('UUID') && !s.body.includes('short and plain'));
+  });
+});
+
 test('only the system job entry grants the system identity, and roles come from the yml', async () => {
   await withRealCatalog(async (c) => {
     const s = skillText(c, 'stackcrew-spring-jpa-entity');
