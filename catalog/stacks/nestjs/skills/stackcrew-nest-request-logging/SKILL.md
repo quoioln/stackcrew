@@ -1,28 +1,34 @@
 ---
 name: stackcrew-nest-request-logging
-description: Use when setting up or changing HTTP request and response logging in a NestJS service: the shared body masker and its LOG_* settings, the request context (AsyncLocalStorage) with runAsSystem and runCrossTenant, the inbound logging middleware, the RFC 7807 exception filter, the HttpService logger for outbound calls, message consumer lines, and their tests.
+description: Use when setting up or changing HTTP request and response logging in a NestJS service: the shared body masker and its LOG_* settings, the request context (AsyncLocalStorage) with runAsSystem and runCrossTenant, the inbound logging middleware with supportCode and requestId, the response envelope (error table, exception filter, transform interceptor), the HttpService logger for outbound calls, message consumer lines, and their tests.
 kind: task
 ---
 # Masked request and response logging (NestJS 10)
 
-Implements `core-logging` ("Request and response logging", "Body masker") and the request context that `core-persistence` reads: one line per HTTP call, inbound and outbound, with both bodies after one shared masker. Write the SC-PREFLIGHT note first: which of the files below, a request-id or context middleware, an exception filter and an axios interceptor that logs already exist.
+Implements `core-logging` ("Request and response logging", "Body masker") and the request context that `core-persistence` reads: one line per HTTP call, inbound and outbound, with both bodies after one shared masker. It also owns the common response envelope every endpoint answers with (core rule backend-api). Write the SC-PREFLIGHT note first: which of the files below, a request-id or context middleware, an exception filter, a response interceptor and an axios interceptor that logs already exist.
 
 ## 1. Find the shared pieces before writing any
 
-Search the codebase and the shared libraries ({{sc:sharedLibraries}}) for `maskBody`, `AsyncLocalStorage`, `runWithRequestContext`, an `@Catch()` filter and `axiosRef.interceptors`. Extend what exists; replace a logger that writes bodies without masking. Create the missing pieces once, from the files next to this skill. Each `<file>.md` holds one source file: its first line says where the file goes, and the code block is the file's content.
+Search the codebase and the shared libraries ({{sc:sharedLibraries}}) for `maskBody`, `AsyncLocalStorage`, `runWithRequestContext`, an `@Catch()` filter, a response-wrapping interceptor and `axiosRef.interceptors`. Extend what exists; replace a logger that writes bodies without masking. Create the missing pieces once, from the files next to this skill. Each `<file>.md` holds one source file: its first line says where the file goes, and the code block is the file's content.
 
 | File | What it does |
 |---|---|
-| `env.ts.md` | `LOG_MASK_FIELDS`, `LOG_MAX_BODY_BYTES`, `LOG_BODIES`, `LOG_LEVEL`, `CROSS_TENANT_ROLES`, the JWKS settings; `validateEnv` for `ConfigModule`, lazy `loggingEnv()` and `tenancyEnv()` for code outside the injector. |
+| `env.ts.md` | `SERVICE_NUMBER`, `LOG_MASK_FIELDS`, `LOG_MAX_BODY_BYTES`, `LOG_BODIES`, `LOG_LEVEL`, `CROSS_TENANT_ROLES`, the JWKS settings; `validateEnv` for `ConfigModule`, lazy `loggingEnv()` and `tenancyEnv()` for code outside the injector. |
 | `body-masker.ts.md` | The masker: `maskBody`, `maskValue`, `serializeMasked`, `loadMaskOptions`, `loadLogBodies`, `bodyPlaceholder`, `placeholderFor`, `jsonByteLength`, `maskCapturedBody` and `CAPTURE_LIMIT_BYTES` (2 MiB). |
-| `request-context.ts.md` | `RequestContext`, `runWithRequestContext`, `runAsSystem`, `runCrossTenant`, `requireTenantId`, `currentActor`, `contextFromMessageHeaders`, the two errors. |
+| `request-context.ts.md` | `RequestContext` (with `supportCode`), `newSupportCode`, `requestIdOrNew`, `requestIdsOf`, `runWithRequestContext`, `runAsSystem`, `runCrossTenant`, `requireTenantId`, `currentActor`, `contextFromMessageHeaders`, the two errors. |
 | `request-context.interceptor.ts.md` | Global interceptor: the handler runs inside the request's context. |
 | `log-fields.ts.md` | Event and field names, `levelFor(status)`, and `writeCallLine`, the line writer that never throws. |
 | `http-logging.middleware.ts.md`, `route-template.guard.ts.md` | One `http_in` line per request, written when the response finishes; the first global guard records the route template for it. |
-| `problem-details.ts.md`, `all-exceptions.filter.ts.md` | RFC 7807 responses with constant details; `ProblemError` for domain errors. |
+| `api-response.ts.md` | The envelope types `ApiSuccess`, `ApiFailure`, `ApiResponse`, `ErrorPayload`, `ErrorDetail`, `PageData`, `Pagination`; `successEnvelope`, `failureEnvelope`, `toPageData`, and `toFailure` (exception to status and body). |
+| `error-codes.ts.md` | `ErrorDefinition`, the common table `CommonError`, `DetailCode`, `formatErrorNumber`, `errorForStatus`. |
+| `api-error.ts.md` | `ApiError(definition, details)` for errors thrown on purpose, `UpstreamApiError` for another internal service's error envelope. |
+| `validation-details.ts.md` | class-validator errors to `details[]`; `RequestValidationError` and `requestValidationError` for the `ValidationPipe`. |
+| `all-exceptions.filter.ts.md` | Every exception becomes the error envelope, with both id headers. |
+| `transform.interceptor.ts.md`, `raw-response.decorator.ts.md` | The success envelope around every handler result; `@RawResponse()` opts out. |
+| `api-envelope-response.decorator.ts.md` | `@ApiEnvelopeResponse(Dto)`: the OpenAPI document shows the envelope. |
 | `outbound-http-logger.ts.md` | `OutboundHttpLogger`: one `http_out` line per call on a module's `HttpService`. |
 | `logging.setup.ts.md`, `common.module.ts.md` | `pinoHttpOptions`, `setupApp(app)`, and the module that registers it all. |
-| `body-masker.spec.ts.md`, `log-fields.spec.ts.md`, `request-context.spec.ts.md`, `env.spec.ts.md`, `outbound-http-logger.spec.ts.md` | The masker contract, the line writer, the identity rules, the env parsing and the outbound line (section 9). |
+| `body-masker.spec.ts.md`, `log-fields.spec.ts.md`, `request-context.spec.ts.md`, `env.spec.ts.md`, `outbound-http-logger.spec.ts.md`, `api-response.spec.ts.md` | The masker contract, the line writer, the identity and id rules, the env parsing, the outbound line and the envelope (section 9). |
 
 `common.module.ts` imports the authentication pieces from the stack rule (`src/common/auth/`). The TypeORM base classes that read the context are in `stackcrew-nest-typeorm-entity`.
 
@@ -37,6 +43,7 @@ Search the codebase and the shared libraries ({{sc:sharedLibraries}}) for `maskB
 ## 3. Configuration
 
 ```bash
+SERVICE_NUMBER=07           # required, two digits: the SS of every errorNumber (SSCCNNN); assigned per service, never hardcoded
 LOG_MASK_FIELDS=            # PII keys, comma-separated; unset or empty = DEFAULT_PII_FIELDS. Secrets are always masked.
 LOG_MAX_BODY_BYTES=16384    # cap after masking
 LOG_BODIES=true             # false drops reqBody and resBody, keeps the line
@@ -49,7 +56,7 @@ CROSS_TENANT_ROLES={{sc:crossTenantRolesCsv}}   # conventions.crossTenantRoles; 
 
 ## 4. Wiring
 
-`AppModule` imports `CommonModule` (`common.module.ts`): config, `LoggerModule.forRootAsync` with `pinoHttpOptions`, `RouteTemplateGuard` and then the JWT guard (global guards run in the order listed), `RequestContextInterceptor`, `AllExceptionsFilter` and the `ValidationPipe`, all as `APP_*` providers so e2e tests get them too.
+`AppModule` imports `CommonModule` (`common.module.ts`): config, `LoggerModule.forRootAsync` with `pinoHttpOptions`, `RouteTemplateGuard` and then the JWT guard (global guards run in the order listed), `RequestContextInterceptor` and then `TransformInterceptor`, `AllExceptionsFilter` and the `ValidationPipe`, all as `APP_*` providers so e2e tests get them too.
 
 ```ts
 // src/main.ts
@@ -70,8 +77,8 @@ void bootstrap();
 ```
 
 - `rawBody: true` keeps the bytes of JSON and form request bodies, which Nest's two body parsers read anyway. Nothing else is buffered for logging.
-- `setupApp` registers the middleware with `app.use()`. Before `init()` that puts it ahead of the body parsers that `init()` adds, so a malformed JSON body still gets its line. Call `app.enableCors()` after `setupApp`. If the app uses `compression`, register it before `setupApp` so the line sees the uncompressed body.
-- `pinoHttpOptions` turns pino-http's own request lines off (`autoLogging: false`; they would be a second line), keeps the request object and its headers off every line (`quietReqLogger`), and adds `requestId`, `userId`, `tenantId`, `traceId` and `spanId` from the request context and the active OpenTelemetry span to every line (`mixin`).
+- `setupApp` registers the middleware with `app.use()`. Before `init()` that puts it ahead of the body parsers that `init()` adds, so a malformed JSON body still gets its line. Call `app.enableCors()` after `setupApp`, and expose `x-request-id` and `x-support-code` (`exposedHeaders`) so a browser client can read them. If the app uses `compression`, register it before `setupApp` so the line sees the uncompressed body.
+- `pinoHttpOptions` turns pino-http's own request lines off (`autoLogging: false`; they would be a second line), keeps the request object and its headers off every line (`quietReqLogger`), and adds `requestId`, `supportCode`, `userId`, `tenantId`, `traceId` and `spanId` from the request context and the active OpenTelemetry span to every line (`mixin`).
 
 ## 5. The masker contract
 
@@ -88,25 +95,38 @@ void bootstrap();
 
 ## 6. Inbound: one line per request
 
-The line: `event=http_in`, `method`, `route` (the Express route template, such as `/v1/customer-profiles/:id`, recorded by `RouteTemplateGuard`; `UNMATCHED` when no handler matched), `status`, `durationMs`, `reqBody`, `resBody`, `requestId`, `userId`, `tenantId`, `traceId` and `spanId` (the server span of OpenTelemetry's HTTP instrumentation, when there is one), and `error` with the exception class when the filter handled one. When the client closes the connection first, the line has `status` 499 and `error` `ClientAbort`. INFO for 2xx/3xx, WARN for 4xx, ERROR for 5xx.
+The line: `event=http_in`, `method`, `route` (the Express route template, such as `/v1/customer-profiles/:id`, recorded by `RouteTemplateGuard`; `UNMATCHED` when no handler matched), `status`, `durationMs`, `reqBody`, `resBody`, `requestId`, `supportCode`, `userId`, `tenantId`, `traceId` and `spanId` (the server span of OpenTelemetry's HTTP instrumentation, when there is one), and `error` with the exception class when the filter handled one. When the client closes the connection first, the line has `status` 499 and `error` `ClientAbort`. INFO for 2xx/3xx, WARN for 4xx, ERROR for 5xx.
 
 - Every request gets exactly one line, written when the response finishes or the connection closes: success, 401 for a missing or invalid token, 403 from a guard, 404 for an unknown route, 400 from the `ValidationPipe` or a malformed body, 413 for a body over the parser limit, 500. Only `SKIPPED_PATHS` (`/health`, `/metrics` and the paths below them) are skipped; `/health-records` is logged. They are matched against `req.path`, which includes a global prefix: with `app.setGlobalPrefix('api')` call `setupApp(app, ['/api/health', '/api/metrics'])`.
 - `userId` and `tenantId` are read from the request when the line is written, so a 403 after authentication carries them and a 401 does not. They are set even when undefined, so the pino mixin cannot fill them from another context.
 - The response is never held back. Every byte goes straight to the client. A JSON, `*+json` or form body that `res.json`/`res.send` writes in one piece (up to 2 MiB) is kept by reference and masked. Streams, `StreamableFile`, SSE and downloads are only counted and log `<CT N bytes>`.
 - Request bodies: JSON and form bodies are masked from `req.rawBody` (up to 2 MiB). Other types, and bodies the parser rejected, log `<CT N bytes>` from `Content-Length`.
-- A caller's `x-request-id` is kept only when it is short and plain (`safeRequestIdOrNew`); otherwise a new UUID is used.
+- A caller's `x-request-id` is kept only when it is a UUID (`requestIdOrNew`); otherwise a new UUID is used. Every request also gets a new `supportCode` (`newSupportCode`: six letters A-Z from `crypto.randomInt`), never read from a header. The middleware sets both response headers, `x-request-id` and `x-support-code`, before `next()`, so a 401, a parser error or an unknown route carries them too, and the envelope repeats the same values.
 - Controllers, services and guards never log bodies.
 
 ### The request context
 
-- `httpLoggingMiddleware` binds `{ requestId }` to the request. `JwtStrategy.validate` (stack rule) binds the user, `{{sc:tenantClaim}}` and `{{sc:rolesClaim}}` with `bindAuthenticatedUser`. It does not use AsyncLocalStorage there, because callbacks inside passport and jwks-rsa can run in another request's async context.
+- `httpLoggingMiddleware` binds `{ requestId, supportCode }` to the request. `JwtStrategy.validate` (stack rule) binds the user, `{{sc:tenantClaim}}` and `{{sc:rolesClaim}}` with `bindAuthenticatedUser`. It does not use AsyncLocalStorage there, because callbacks inside passport and jwks-rsa can run in another request's async context.
 - `RequestContextInterceptor` then runs the pipes, the handler and everything they await inside `runWithRequestContext`. Persistence, `runCrossTenant` and the log mixin read it with `currentContext()`; nothing reads the token again. It subscribes to the handler inside the context, so it works on every NestJS 10 release, including those before 10.0.4, which lack Nest's own async-context binding.
 - `runWithRequestContext` never grants the system identity or cross-tenant reads, whatever the context object says, and refuses to replace the context of another user.
 - `runAsSystem(tenantId, fn)` is the system job entry: the only way to act as `{{sc:systemUser}}` and to call `runCrossTenant` without a role. Call it from scheduled jobs and migrations only. A token `sub`, an `x-user-id` header or a `runWithRequestContext` user equal to `{{sc:systemUser}}` stays an ordinary user.
 
-### Errors
+### Errors and the response envelope
 
-`AllExceptionsFilter` answers every exception with `application/problem+json`: `type`, `title`, `status` and a constant `detail`, never `exception.message` (body-parser and JSON parse messages quote the input). Validation errors add `errors: [{ field, messages }]` from class-validator; never put `$value` in a validation message. A domain error extends `ProblemError` with its status and a constant detail. `CrossTenantDeniedError` becomes 404, like a missing row. Unexpected errors also log `unhandled_error` with the stack frames, not the message.
+Every response body is the envelope (`api-response.ts`), keys in this order:
+
+```json
+{ "success": true, "timestamp": "2026-11-02T02:52:00.000Z", "supportCode": "QAZWSX", "requestId": "d2142131-d6d7-442d-9d6e-6c14b33f9402", "data": { "id": "USR-001" } }
+{ "success": false, "message": "Request validation failed", "timestamp": "…", "supportCode": "QAZWSX", "requestId": "…",
+  "error": { "errorNumber": "0710001", "errorCode": "VALIDATION_FAILED", "details": [{ "field": "address.city", "code": "TOO_LONG", "message": "city must be shorter than or equal to 5 characters" }] } }
+```
+
+- **Success.** A controller returns its DTO, a list or `PageData` (`toPageData(items, page, size, totalElements)`, `page` 0-based); `TransformInterceptor` wraps it. A handler that returns nothing (`async remove(): Promise<void>`) answers `200` with `data: null`, the key always present. Status: Nest's default (201 for POST, 200 otherwise) or `@HttpCode(200)`; never 204, a delete has a body too. Not wrapped: a `StreamableFile`, an `@Sse()` stream, a handler that writes through `@Res()` without `passthrough`, and a handler or controller marked `@RawResponse()` (the terminus health check).
+- **Errors.** `AllExceptionsFilter` answers every exception with the error envelope through `toFailure`. Status, `errorCode` and `message` come from the error table (`CommonError` in `error-codes.ts`, the same rows in every stack), never from the exception: body-parser and JSON parse messages quote the input. `errorNumber` is `SERVICE_NUMBER` + category (2 digits) + seq (3 digits), always a string.
+- **Mapping.** `ApiError` uses its own row and details. `RequestValidationError` (the `ValidationPipe`'s `exceptionFactory`, body and query DTOs) is `VALIDATION_FAILED` with one detail per (field, constraint): `address.city`, `items[1].sku`, `code` from the class-validator table in `validation-details.ts`. Never put `$value` in a validation message. Malformed JSON is `MALFORMED_REQUEST`, a body over the parser limit `PAYLOAD_TOO_LARGE`, an unsupported charset or encoding `UNSUPPORTED_MEDIA_TYPE`. An `HttpException` maps by status (`errorForStatus`): 404 `ENDPOINT_NOT_FOUND` (an unknown route), 401, 403, 405, 409, 422, 429, a `Parse*Pipe` 400 `INVALID_PARAMETER`, any other 4xx `INVALID_PARAMETER`, 5xx `INTERNAL_ERROR`. `CrossTenantDeniedError` is `RESOURCE_NOT_FOUND`, like a missing row. Anything else is `INTERNAL_ERROR`, logged once as `unhandled_error` with the stack frames and both ids, never the message.
+- **Domain errors.** Services throw `ApiError` with a row of their own, seq 100-999, never an `HttpException` or `NotFoundException` (a 404 from Nest means an unknown route): `export const CUSTOMER_PROFILE_NOT_FOUND = { ...CommonError.RESOURCE_NOT_FOUND, seq: 101 } satisfies ErrorDefinition;` and `class CustomerProfileNotFound extends ApiError { constructor() { super(CUSTOMER_PROFILE_NOT_FOUND); } }`. A new code (`KYC_ALREADY_SUBMITTED`) defines its own summary.
+- **Another internal service's error** arrives as `UpstreamApiError` (stackcrew-nest-outbound-client) and is passed on with its own `errorNumber`; `supportCode`, `requestId` and `timestamp` stay this service's.
+- **OpenAPI.** `@ApiEnvelopeResponse(CustomerProfileResponse)`, `{ status: 201 }` on a create, `{ page: true }` for a page: the document shows the envelope with `data` as the DTO, and the error envelope for 4XX and 5XX. Never `@ApiOkResponse({ type: Dto })` alone.
 
 ## 7. Outbound: one logger per HttpService
 
@@ -188,12 +208,14 @@ async onMessage(payload: Buffer | undefined, contentType: string | undefined, he
 
 - `body-masker.spec.ts` is the masker contract: every row of the `core-logging` table, the configured list, the character-boundary cut, form parsing and placeholders. Keep it next to `body-masker.ts`; it needs no Nest.
 - `log-fields.spec.ts` pins `writeCallLine`: a failing build writes the fallback line, and a failing fallback or logger becomes a process warning, never an exception.
-- `request-context.spec.ts` pins the identity rules: a cross-tenant role reads (read only), other roles are denied, only `runAsSystem` is the system identity (a token or header user named `{{sc:systemUser}}` is denied), unsafe header values are dropped, and concurrent contexts stay apart.
-- `env.spec.ts` pins that numeric variables are converted from the strings the environment holds, and that an error names the variable, never its value.
+- `request-context.spec.ts` pins the identity rules: a cross-tenant role reads (read only), other roles are denied, only `runAsSystem` is the system identity (a token or header user named `{{sc:systemUser}}` is denied), unsafe header values are dropped, concurrent contexts stay apart, an HTTP request id is kept only as a UUID, and every context gets a support code.
+- `env.spec.ts` pins that numeric variables are converted from the strings the environment holds, that `SERVICE_NUMBER` is required and two digits, and that an error names the variable, never its value.
+- `api-response.spec.ts` pins the envelope: `formatErrorNumber`, `data: null` for a handler that returns nothing, the key order, paging, the validation details (nested and array paths, one per constraint, no submitted value) and every row of the exception table in `toFailure`, with no exception text in a body.
 - `outbound-http-logger.spec.ts` pins the `http_out` line against a local `node:http` stub: masked bodies, a URL without its query string, and bodies over 2 MiB logged by size only, with and without `Content-Length`.
 - e2e with supertest (ask first) through the harness in `stack-nestjs-testing` (`createTestApp`: `AppModule` imported after the env is set, `createNestApplication({ rawBody: true })`, `setupApp(app)`, a `CapturingLogger`, a local token issuer). Wait for the line: it is written after the client has the response. Cover:
   - a body with a password gives exactly one `http_in` line with `"***"` in `reqBody`, while the client gets the original body;
-  - a missing or invalid token gives a 401 with one line and no `userId`; a guard 403, an unknown route, a validation error and a malformed JSON body each give one line;
+  - a missing or invalid token gives a 401 with one line and no `userId`; a guard 403, an unknown route, a validation error and a malformed JSON body each give one line, and each answers the error envelope whose `supportCode` and `requestId` equal the `x-support-code` and `x-request-id` headers;
+  - a `void` handler answers `data: null`; a `StreamableFile`, an SSE stream and a `@RawResponse()` handler reach the client unwrapped;
   - concurrent requests of two users: each line carries its own `userId`, and an anonymous request carries none;
   - an SSE or file endpoint logs a size placeholder and reaches the client unbuffered;
   - an outbound call to a local stub server gives one `http_out` line with a URL without its query string.

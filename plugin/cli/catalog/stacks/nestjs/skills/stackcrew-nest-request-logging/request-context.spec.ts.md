@@ -6,11 +6,11 @@ process.env.CROSS_TENANT_ROLES = 'report_admin'; // read once, on the first cros
 
 import { trace, TraceFlags } from '@opentelemetry/api';
 import {
-  contextFromMessageHeaders, contextLogFields, CrossTenantDeniedError, currentActor, currentContext, MissingTenantError,
-  requireTenantId, runAsSystem, runCrossTenant, runWithRequestContext, SYSTEM_USER, type RequestContext,
+  contextFromMessageHeaders, contextLogFields, CrossTenantDeniedError, currentActor, currentContext, MissingTenantError, newSupportCode,
+  requestIdOrNew, requireTenantId, runAsSystem, runCrossTenant, runWithRequestContext, SYSTEM_USER, type RequestContextInit,
 } from './request-context';
 
-const user = (userId: string, tenantId: string, ...roles: string[]): RequestContext => ({ requestId: 'req-1', userId, tenantId, roles });
+const user = (userId: string, tenantId: string, ...roles: string[]): RequestContextInit => ({ requestId: 'req-1', userId, tenantId, roles });
 const readEverything = async (): Promise<string> => 'rows of every tenant';
 
 describe('request context', () => {
@@ -67,6 +67,23 @@ describe('request context', () => {
     expect(contextFromMessageHeaders({ 'x-tenant-id': Buffer.from('tenant-a') }).tenantId).toBe('tenant-a');
   });
 
+  it('takes an HTTP request id only as a UUID and mints a support code for every context', async () => {
+    const uuid = 'D2142131-D6D7-442D-9D6E-6C14B33F9402';
+    expect(requestIdOrNew(uuid)).toBe(uuid.toLowerCase());
+    for (const unsafe of ['req-1', 'abc', `${uuid}x`, 'd2142131d6d7442d9d6e6c14b33f9402', undefined, 42]) {
+      expect(requestIdOrNew(unsafe)).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/);
+      expect(requestIdOrNew(unsafe)).not.toBe(unsafe);
+    }
+    const codes = new Set(Array.from({ length: 200 }, () => newSupportCode()));
+    for (const code of codes) expect(code).toMatch(/^[A-Z]{6}$/);
+    expect(codes.size).toBeGreaterThan(190); // 26^6 values: repeats in 200 draws are rare
+    expect(contextFromMessageHeaders({ 'x-request-id': 'req-7', 'x-support-code': 'AAAAAA' }).supportCode).toMatch(/^[A-Z]{6}$/);
+    expect(contextFromMessageHeaders({ 'x-support-code': 'AAAAAA' }).supportCode).not.toBe('AAAAAA'); // never read from a header
+    await runAsSystem(undefined, async () => expect(currentContext()?.supportCode).toMatch(/^[A-Z]{6}$/));
+    await runWithRequestContext(user('alice', 'tenant-a'), async () => expect(currentContext()?.supportCode).toMatch(/^[A-Z]{6}$/));
+    await runWithRequestContext({ ...user('alice', 'tenant-a'), supportCode: 'QAZWSX' }, async () => expect(currentContext()?.supportCode).toBe('QAZWSX'));
+  });
+
   it('keeps concurrent contexts apart and leaves nothing behind', async () => {
     const seen = await Promise.all(['alice', 'bob'].map((name, i) => runWithRequestContext(user(name, `tenant-${i}`), async () => {
       await new Promise((resolve) => setTimeout(resolve, 20 - i * 10));
@@ -83,7 +100,7 @@ describe('request context', () => {
     const active = jest.spyOn(trace, 'getActiveSpan').mockReturnValue(span);
     try {
       await runWithRequestContext(user('alice', 'tenant-a'), async () => {
-        expect(contextLogFields()).toEqual({ requestId: 'req-1', userId: 'alice', tenantId: 'tenant-a',
+        expect(contextLogFields()).toEqual({ requestId: 'req-1', supportCode: expect.stringMatching(/^[A-Z]{6}$/), userId: 'alice', tenantId: 'tenant-a',
           traceId: '4bf92f3577b34da6a3ce929d0e0e4736', spanId: '00f067aa0ba902b7' });
       });
     } finally {

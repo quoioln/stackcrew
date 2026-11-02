@@ -3,7 +3,7 @@ Goes to `src/common/providers/provider.errors.ts`.
 ```ts
 // Default location: src/common/providers/provider.errors.ts
 import { HttpStatus } from '@nestjs/common';
-import { ProblemError } from '../errors/problem-details';
+import { ProblemError } from '../api/api-error';
 
 /**
  * Typed outcomes of a failed third-party call, so the retry policy, the circuit breaker and the API answer can tell

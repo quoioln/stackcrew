@@ -3,7 +3,7 @@ Goes to `src/modules/customer-profiles/customer-profile.errors.ts`.
 ```ts
 // Default location: src/modules/customer-profiles/customer-profile.errors.ts
 import { HttpStatus } from '@nestjs/common';
-import { ProblemError } from '../../common/errors/problem-details';
+import { ProblemError } from '../../common/api/api-error';
 
 /**
  * No such profile for the caller. Another tenant's profile looks exactly the same (the repository finds nothing), so

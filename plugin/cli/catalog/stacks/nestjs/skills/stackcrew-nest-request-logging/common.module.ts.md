@@ -8,11 +8,12 @@ import { APP_FILTER, APP_GUARD, APP_INTERCEPTOR, APP_PIPE } from '@nestjs/core';
 import { PassportModule } from '@nestjs/passport';
 import { LoggerModule } from 'nestjs-pino';
 import { validateEnv, type LoggingEnv } from '../config/env';
+import { TransformInterceptor } from './api/transform.interceptor';
+import { requestValidationError } from './api/validation-details';
 import { JwtAuthGuard } from './auth/jwt-auth.guard';
 import { JwtStrategy } from './auth/jwt.strategy';
 import { RequestContextInterceptor } from './context/request-context.interceptor';
 import { AllExceptionsFilter } from './errors/all-exceptions.filter';
-import { requestValidationError } from './errors/problem-details';
 import { pinoHttpOptions } from './logging/logging.setup';
 import { RouteTemplateGuard } from './logging/route-template.guard';
 
@@ -30,6 +31,7 @@ import { RouteTemplateGuard } from './logging/route-template.guard';
     { provide: APP_GUARD, useClass: RouteTemplateGuard }, // first: global guards run in this order
     { provide: APP_GUARD, useClass: JwtAuthGuard },
     { provide: APP_INTERCEPTOR, useClass: RequestContextInterceptor },
+    { provide: APP_INTERCEPTOR, useClass: TransformInterceptor }, // the success envelope
     { provide: APP_FILTER, useClass: AllExceptionsFilter },
     {
       provide: APP_PIPE,

@@ -3,7 +3,7 @@ Goes to `src/common/context/request-context.ts`.
 ```ts
 // Default location: src/common/context/request-context.ts
 import { AsyncLocalStorage } from 'node:async_hooks';
-import { randomUUID } from 'node:crypto';
+import { randomInt, randomUUID } from 'node:crypto';
 import type { IncomingMessage } from 'node:http';
 import { Logger } from '@nestjs/common';
 import { isSpanContextValid, trace } from '@opentelemetry/api';
@@ -16,6 +16,8 @@ import { tenancyEnv } from '../../config/env';
  */
 export type RequestContext = {
   requestId: string;
+  /** Six letters A-Z, new for every request, job and message: the body's supportCode and the x-support-code header. */
+  supportCode: string;
   userId?: string;
   tenantId?: string;
   roles: readonly string[];
@@ -25,16 +27,25 @@ export type RequestContext = {
   crossTenant?: boolean;
 };
 
+/** What a caller passes to runWithRequestContext: a missing supportCode is generated. */
+export type RequestContextInit = Omit<RequestContext, 'supportCode'> & { supportCode?: string };
+
 export const SYSTEM_USER = '{{sc:systemUser}}';
 export const REQUEST_ID_HEADER = 'x-request-id';
 export const TENANT_ID_HEADER = 'x-tenant-id';
 export const USER_ID_HEADER = 'x-user-id';
+/** Response only: a support code is never read from a request or a message. */
+export const SUPPORT_CODE_HEADER = 'x-support-code';
 
 const CROSS_TENANT_EVENT = 'cross_tenant';
-/** A request id from outside is kept only when it is short and plain. */
+/** An HTTP x-request-id is kept only when it is a UUID (requestIdOrNew). */
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+/** A message-header request id from outside is kept only when it is short and plain. */
 const SAFE_REQUEST_ID = /^[A-Za-z0-9._-]{1,64}$/;
 /** A tenant or user id from a header: visible ASCII only (no spaces, no CR/LF), at most 128 characters. */
 const SAFE_ID = /^[\x21-\x7e]{1,128}$/;
+const SUPPORT_CODE_LETTERS = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ';
+const SUPPORT_CODE_LENGTH = 6;
 
 export class MissingTenantError extends Error {
   constructor() {
@@ -80,10 +91,10 @@ export function currentActor(): string {
  * Runs fn with ctx as the context: requests (RequestContextInterceptor) and message consumers. It never grants the
  * system identity or cross-tenant reads, whatever ctx says, and refuses to replace the context of another user.
  */
-export function runWithRequestContext<T>(ctx: RequestContext, fn: () => T): T {
+export function runWithRequestContext<T>(ctx: RequestContextInit, fn: () => T): T {
   refuseInsideAUserContext();
   return storage.run(
-    Object.freeze({ requestId: ctx.requestId, userId: ctx.userId, tenantId: ctx.tenantId, roles: Object.freeze([...ctx.roles]) }),
+    Object.freeze({ requestId: ctx.requestId, supportCode: ctx.supportCode ?? newSupportCode(), userId: ctx.userId, tenantId: ctx.tenantId, roles: Object.freeze([...ctx.roles]) }),
     fn,
   );
 }
@@ -97,7 +108,14 @@ export function runAsSystem<T>(tenantId: string | undefined, fn: () => Promise<T
   refuseInsideAUserContext();
   const parent = storage.getStore();
   return storage.run(
-    Object.freeze({ requestId: parent?.requestId ?? randomUUID(), userId: SYSTEM_USER, tenantId, roles: Object.freeze([]), system: true }),
+    Object.freeze({
+      requestId: parent?.requestId ?? randomUUID(),
+      supportCode: parent?.supportCode ?? newSupportCode(),
+      userId: SYSTEM_USER,
+      tenantId,
+      roles: Object.freeze([]),
+      system: true,
+    }),
     fn,
   );
 }
@@ -123,18 +141,36 @@ export async function runCrossTenant<T>(reason: string, fn: () => Promise<T>): P
   return storage.run(Object.freeze({ ...ctx, tenantId: undefined, crossTenant: true }), fn);
 }
 
-/** The context a consumer runs with, from the message headers. Unsafe values count as absent; never the system identity. */
+/**
+ * The context a consumer runs with, from the message headers. Unsafe values count as absent; never the system identity.
+ * The support code is this consumer's own, never the producer's.
+ */
 export function contextFromMessageHeaders(headers: Readonly<Record<string, unknown>> | undefined): RequestContext {
   const header = (name: string): unknown => headerText(headers?.[name]);
   return {
     requestId: safeRequestIdOrNew(header(REQUEST_ID_HEADER)),
+    supportCode: newSupportCode(),
     tenantId: safeIdOrUndefined(header(TENANT_ID_HEADER)),
     userId: safeIdOrUndefined(header(USER_ID_HEADER)),
     roles: [],
   };
 }
 
-/** The caller's request id when it is safe to log, else a new UUID. */
+/** The caller's HTTP x-request-id when it is a UUID (lower-cased), else a new one (P3-R2: HTTP entry only). */
+export function requestIdOrNew(value: unknown): string {
+  return typeof value === 'string' && UUID.test(value) ? value.toLowerCase() : randomUUID();
+}
+
+/** Six letters A-Z from the CSPRNG, unbiased (randomInt rejects out-of-range draws). Never read from a header. */
+export function newSupportCode(): string {
+  let code = '';
+  for (let i = 0; i < SUPPORT_CODE_LENGTH; i++) {
+    code += SUPPORT_CODE_LETTERS[randomInt(0, SUPPORT_CODE_LETTERS.length)];
+  }
+  return code;
+}
+
+/** A message header's request id when it is safe to log, else a new UUID. HTTP uses requestIdOrNew. */
 export function safeRequestIdOrNew(value: unknown): string {
   return typeof value === 'string' && SAFE_REQUEST_ID.test(value) ? value : randomUUID();
 }
@@ -153,16 +189,36 @@ export function requestContextOf(req: IncomingMessage): RequestContext | undefin
   return boundToRequest.get(req);
 }
 
+/**
+ * The ids a response body carries: the ones the logging middleware bound to the request and sent as headers. A request
+ * the middleware skipped (health, metrics) gets new ones, bound to it, so the body and the filter's headers agree.
+ */
+export function requestIdsOf(req: IncomingMessage): { requestId: string; supportCode: string } {
+  const bound = boundToRequest.get(req);
+  if (bound !== undefined) {
+    return { requestId: bound.requestId, supportCode: bound.supportCode };
+  }
+  const ids = { requestId: randomUUID(), supportCode: newSupportCode() };
+  bindRequestContext(req, { ...ids, roles: [] });
+  return ids;
+}
+
 /** Called by authentication once the token is verified: the user, tenant and roles of this request. */
 export function bindAuthenticatedUser(req: IncomingMessage, user: { userId: string; tenantId?: string; roles: readonly string[] }): void {
-  const requestId = boundToRequest.get(req)?.requestId ?? randomUUID();
-  bindRequestContext(req, { requestId, userId: user.userId, tenantId: user.tenantId, roles: user.roles });
+  const bound = boundToRequest.get(req); // keeps the ids the middleware already sent as headers
+  bindRequestContext(req, {
+    requestId: bound?.requestId ?? randomUUID(),
+    supportCode: bound?.supportCode ?? newSupportCode(),
+    userId: user.userId,
+    tenantId: user.tenantId,
+    roles: user.roles,
+  });
 }
 
 /** Fields for every log line (pino mixin): the ids of the current context and the active OpenTelemetry span. */
-export function contextLogFields(): { requestId?: string; userId?: string; tenantId?: string; traceId?: string; spanId?: string } {
+export function contextLogFields(): { requestId?: string; supportCode?: string; userId?: string; tenantId?: string; traceId?: string; spanId?: string } {
   const ctx = storage.getStore();
-  const ids = ctx === undefined ? {} : { requestId: ctx.requestId, userId: ctx.userId, tenantId: ctx.tenantId };
+  const ids = ctx === undefined ? {} : { requestId: ctx.requestId, supportCode: ctx.supportCode, userId: ctx.userId, tenantId: ctx.tenantId };
   return { ...ids, ...activeTraceFields() };
 }
 
